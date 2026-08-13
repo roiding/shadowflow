@@ -1,0 +1,330 @@
+openapi: 3.1.0
+info:
+  title: ShadowFlow API
+  version: 0.1.0
+  description: 行业、概念分钟榜单，47 个盘中 5 分钟研究点，以及行业、概念、个股三类 15:00 日终数据的只读接口。
+servers:
+  - url: http://localhost:8080
+paths:
+  /health/live:
+    get:
+      summary: 进程存活检查
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+  /health/ready:
+    get:
+      summary: 数据库就绪检查
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        "503": { $ref: "#/components/responses/Error" }
+  /metrics:
+    get:
+      summary: Prometheus 文本指标
+      responses:
+        "200":
+          description: 指标文本
+          content:
+            text/plain:
+              schema: { type: string }
+  /api/v1/ranks/latest:
+    get:
+      summary: 最新完整板块榜单
+      parameters:
+        - $ref: "#/components/parameters/BoardType"
+      responses:
+        "200": { $ref: "#/components/responses/RankList" }
+        "400": { $ref: "#/components/responses/Error" }
+  /api/v1/ranks:
+    get:
+      summary: 指定交易日和时刻的板块榜单
+      parameters:
+        - $ref: "#/components/parameters/BoardType"
+        - $ref: "#/components/parameters/TradeDate"
+        - name: at
+          in: query
+          required: true
+          schema: { type: string, pattern: "^[0-2][0-9]:[0-5][0-9]$", example: "10:30" }
+      responses:
+        "200": { $ref: "#/components/responses/RankList" }
+        "400": { $ref: "#/components/responses/Error" }
+  /api/v1/ranks/daily-close:
+    get:
+      summary: 指定交易日、指定类型的完整日终榜
+      parameters:
+        - name: type
+          in: query
+          required: false
+          description: 行业和概念读取 15:00 日终快照；个股读取收盘后采集并归一到 15:00 的完整榜单。
+          schema: { type: string, enum: [industry, concept, stock], default: stock }
+        - $ref: "#/components/parameters/TradeDate"
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 50 }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [rank, name, code, dark_money, main_money_inflow, change_pct], default: rank }
+        - name: direction
+          in: query
+          schema: { type: string, enum: [asc, desc], default: asc }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        "200": { $ref: "#/components/responses/RankList" }
+  /api/v1/boards/{type}/{code}/intraday:
+    get:
+      summary: 板块当日分钟序列，盘后回退到 47 个 5 分钟研究点加 15:00 日终点
+      parameters:
+        - $ref: "#/components/parameters/BoardTypePath"
+        - $ref: "#/components/parameters/Code"
+        - $ref: "#/components/parameters/TradeDate"
+      responses:
+        "200": { $ref: "#/components/responses/RankList" }
+  /api/v1/boards/{type}/{code}/trend:
+    get:
+      summary: 板块历史 5 分钟研究序列
+      parameters:
+        - $ref: "#/components/parameters/BoardTypePath"
+        - $ref: "#/components/parameters/Code"
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - name: interval
+          in: query
+          schema: { type: string, const: 5m, default: 5m }
+      responses:
+        "200": { $ref: "#/components/responses/RankList" }
+  /api/v1/research/export:
+    get:
+      summary: 导出单板块 5 分钟研究 CSV
+      parameters:
+        - $ref: "#/components/parameters/BoardType"
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - name: format
+          in: query
+          schema: { type: string, const: csv, default: csv }
+      responses:
+        "200":
+          description: UTF-8 BOM CSV
+          content:
+            text/csv:
+              schema: { type: string }
+  /api/v1/research/daily-close/export:
+    get:
+      summary: 联合导出指定交易日的行业、概念、个股三类日终榜
+      parameters:
+        - $ref: "#/components/parameters/TradeDate"
+      responses:
+        "200":
+          description: UTF-8 BOM CSV；snapshot_kind 固定为 daily_close，snapshot_at 统一为 15:00
+          content:
+            text/csv:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+  /api/v1/research/quality:
+    get:
+      summary: 每日数据质量摘要
+      parameters:
+        - $ref: "#/components/parameters/TradeDate"
+      responses:
+        "200":
+          description: 质量摘要
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QualityEnvelope"
+  /api/v1/trading-days:
+    get:
+      summary: 查询交易日列表
+      parameters:
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+      responses:
+        "200":
+          description: 日期列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { type: string, format: date }
+                  meta: { type: object }
+  /api/v1/collection-runs:
+    get:
+      summary: 采集运行记录
+      parameters:
+        - $ref: "#/components/parameters/TradeDate"
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        "200":
+          description: 运行记录
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/CollectionRun" }
+                  meta: { type: object }
+  /api/v1/system/status:
+    get:
+      summary: 系统和市场状态
+      responses:
+        "200":
+          description: 状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/SystemStatus"
+components:
+  parameters:
+    BoardType:
+      name: type
+      in: query
+      required: true
+      schema: { type: string, enum: [industry, concept] }
+    BoardTypePath:
+      name: type
+      in: path
+      required: true
+      schema: { type: string, enum: [industry, concept] }
+    Code:
+      name: code
+      in: path
+      required: true
+      schema: { type: string, example: BK0727 }
+    TradeDate:
+      name: trade_date
+      in: query
+      required: true
+      schema: { type: string, format: date }
+    From:
+      name: from
+      in: query
+      required: true
+      schema: { type: string, description: YYYY-MM-DD 或 RFC3339 }
+    To:
+      name: to
+      in: query
+      required: true
+      schema: { type: string, description: YYYY-MM-DD 或 RFC3339 }
+  responses:
+    Success:
+      description: 成功
+      content:
+        application/json:
+          schema: { type: object }
+    Error:
+      description: 错误
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    RankList:
+      description: 榜单或序列
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data:
+                type: array
+                items: { $ref: "#/components/schemas/RankRecord" }
+              meta: { type: object }
+  schemas:
+    RankRecord:
+      type: object
+      required: [trade_date, snapshot_at, rank_type, rank, code, name, dark_money, regular_money, main_money_inflow]
+      properties:
+        trade_date: { type: string, format: date }
+        snapshot_at: { type: string, format: date-time }
+        rank_type: { type: string, enum: [stock, industry, concept] }
+        rank: { type: integer, format: int64 }
+        market: { type: integer, format: int64 }
+        code: { type: string }
+        name: { type: string }
+        quote_time: { type: string }
+        latest_price_raw: { type: integer, format: int64 }
+        change_pct: { type: number, description: 原始小数，展示时乘 100 }
+        dark_money: { type: integer, format: int64 }
+        regular_money: { type: integer, format: int64 }
+        main_money_inflow: { type: integer, format: int64 }
+        dark_activity: { type: number, description: 原始小数，展示时乘 100 }
+        dark_inflow_ratio: { type: number, description: 原始小数，展示时乘 100 }
+        up_count: { type: integer, format: int64 }
+        flat_count: { type: integer, format: int64 }
+        down_count: { type: integer, format: int64 }
+        leader_name: { type: string }
+        leader_code: { type: string }
+        fetched_at: { type: string, format: date-time }
+    CollectionRun:
+      type: object
+      properties:
+        run_id: { type: string }
+        snapshot_at: { type: string, format: date-time }
+        snapshot_kind: { type: string, enum: [minute_work, research_5m, daily_close] }
+        rank_type: { type: string, enum: [stock, industry, concept] }
+        status: { type: string, enum: [running, success, partial, failed, skipped] }
+        requested_date: { type: string, format: date }
+        actual_trade_date: { type: string }
+        expected_total: { type: integer }
+        fetched_total: { type: integer }
+        page_count: { type: integer }
+        attempt_count: { type: integer }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        duration_ms: { type: integer, format: int64 }
+        error_code: { type: string }
+        error_message: { type: string }
+    SystemStatus:
+      type: object
+      properties:
+        server_time: { type: string, format: date-time }
+        timezone: { type: string, const: Asia/Shanghai }
+        market_status: { type: string, enum: [pre_open, open, lunch_break, closed] }
+        trading_day: { type: boolean }
+        uptime_seconds: { type: integer, format: int64 }
+    QualityEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              trade_date: { type: string, format: date }
+              rank_type: { type: string, enum: [industry, concept] }
+              expected_minutes: { type: integer }
+              collected_minutes: { type: integer }
+              expected_research_snapshots: { type: integer }
+              collected_research_snapshots: { type: integer }
+              expected_daily_close_snapshots: { type: integer }
+              collected_daily_close_snapshots: { type: integer }
+              missing_minutes: { type: array, items: { type: string } }
+              missing_research_snapshots: { type: array, items: { type: string } }
+              missing_daily_close_snapshots: { type: array, items: { type: string } }
+        meta: { type: object }
+    ErrorEnvelope:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }

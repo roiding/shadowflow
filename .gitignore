@@ -1,0 +1,18 @@
+# Runtime data
+backend/data/
+data/
+backups/
+*.db
+*.db-shm
+*.db-wal
+
+# Build output
+backend/server
+frontend/dist/
+frontend/node_modules/
+frontend/*.tsbuildinfo
+frontend/node_modules/.tmp/
+
+# Local environment
+.env
+.DS_Store

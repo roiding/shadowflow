@@ -1,0 +1,26 @@
+services:
+  shadowflow:
+    build:
+      context: .
+    image: ${SHADOWFLOW_IMAGE:-ghcr.io/roiding/shadowflow:latest}
+    container_name: shadowflow
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: Asia/Shanghai
+      SHADOWFLOW_DATABASE_PATH: /data/shadowflow.db
+      SHADOWFLOW_CALENDAR_PATH: /app/config/trading_calendar.json
+      SHADOWFLOW_STATIC_DIR: /app/web
+      SHADOWFLOW_PAGE_SIZE: "100"
+      SHADOWFLOW_REQUEST_TIMEOUT_SECONDS: "5"
+      SHADOWFLOW_SCHEDULER_ENABLED: "true"
+    volumes:
+      - ${SHADOWFLOW_DATA_DIR:-./data}:/data
+      - ${SHADOWFLOW_BACKUP_DIR:-./backups}:/backups
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

@@ -1,0 +1,199 @@
+name: ARM64 container image
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: arm64-image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  verify:
+    name: Verify source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Test backend
+        working-directory: backend
+        run: go test ./...
+
+      - name: Vet backend
+        working-directory: backend
+        run: go vet ./...
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+  image:
+    name: Build linux/arm64 image
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve image name
+        id: image-name
+        shell: bash
+        run: echo "image=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image-name.outputs.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build ARM64 image for smoke test
+        id: smoke-build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          tags: shadowflow-smoke:${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test ARM64 image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="shadowflow-smoke:${GITHUB_SHA}"
+          test "$(docker image inspect "$image" --format '{{.Architecture}}')" = "arm64"
+          container_id="$(docker run --detach --rm --platform linux/arm64 \
+            --publish 127.0.0.1:18080:8080 \
+            --env SHADOWFLOW_SCHEDULER_ENABLED=false \
+            "$image")"
+          cleanup() {
+            docker logs "$container_id" || true
+            docker stop "$container_id" >/dev/null || true
+          }
+          trap cleanup EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:18080/health/ready >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "ARM64 container did not become ready" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent --show-error \
+            --output /tmp/shadowflow-health.json \
+            http://127.0.0.1:18080/health/ready
+          grep --quiet '"status":"ready"' /tmp/shadowflow-health.json
+          curl --fail --silent --show-error \
+            --output /tmp/shadowflow-index.html \
+            http://127.0.0.1:18080/
+          grep --quiet '<title>ShadowFlow 暗流</title>' /tmp/shadowflow-index.html
+
+      - name: Publish ARM64 image
+        if: github.event_name != 'pull_request'
+        id: publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          provenance: mode=max
+          sbom: true
+
+      - name: Write build summary
+        shell: bash
+        run: |
+          {
+            echo "## N1 ARM64 image"
+            echo
+            echo "Platform: \`linux/arm64\`"
+            echo
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              echo "The ARM64 image passed its runtime smoke test and was not published."
+            else
+              echo "Digest: \`${{ steps.publish.outputs.digest }}\`"
+              echo
+              echo "Published tags:"
+              echo '```text'
+              echo "${{ steps.meta.outputs.tags }}"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Create GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create release from tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "ShadowFlow $GITHUB_REF_NAME"
