@@ -37,6 +37,9 @@ func TestFetchAllMapsBoardAndPaginates(t *testing.T) {
 	if first.Code != "BK0448" || first.Name != "industry" || first.DarkMoney != 100 || first.QuoteTime != "103105" {
 		t.Fatalf("unexpected first row: %+v", first)
 	}
+	if first.Rank != 1 || snapshot.Records[1].Rank != 2 {
+		t.Fatalf("unexpected response-order ranks: first=%d second=%d", first.Rank, snapshot.Records[1].Rank)
+	}
 }
 
 func TestFetchAllRejectsIncompleteSnapshot(t *testing.T) {
@@ -67,15 +70,21 @@ func TestFetchAllRejectsDuplicateCodes(t *testing.T) {
 	}
 }
 
-func TestFetchAllRejectsUnexpectedSortOrder(t *testing.T) {
+func TestFetchAllPreservesResponseOrderWithoutAssumingUpstreamSort(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"errid":0,"errmsg":"success","1":20260812,"2":2,"data":[{"3":90,"4":"BK1","6":100,"16":"one","21":2},{"3":90,"4":"BK2","6":110,"16":"two","21":1}]}`))
 	}))
 	defer server.Close()
 	client := NewClient(server.URL, server.Client(), 100)
-	_, err := client.FetchAll(context.Background(), graymarket.RankIndustry, "20260812", time.Now())
-	if err == nil || !strings.Contains(err.Error(), "sort order") {
-		t.Fatalf("expected sort-order error, got %v", err)
+	snapshot, err := client.FetchAll(context.Background(), graymarket.RankIndustry, "20260812", time.Now())
+	if err != nil {
+		t.Fatalf("expected unordered response to be accepted, got %v", err)
+	}
+	if len(snapshot.Records) != 2 || snapshot.Records[0].Code != "BK1" || snapshot.Records[1].Code != "BK2" {
+		t.Fatalf("response order was not preserved: %+v", snapshot.Records)
+	}
+	if snapshot.Records[0].Rank != 1 || snapshot.Records[1].Rank != 2 {
+		t.Fatalf("unexpected response-order ranks: %+v", snapshot.Records)
 	}
 }
 

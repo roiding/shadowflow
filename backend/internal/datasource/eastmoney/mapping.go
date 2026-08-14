@@ -10,7 +10,7 @@ import (
 	"github.com/roiding/shadowflow/internal/graymarket"
 )
 
-func mapRecord(rankType graymarket.RankType, tradeDate string, snapshotAt, fetchedAt time.Time, row map[string]json.RawMessage) (graymarket.RankRecord, error) {
+func mapRecord(rankType graymarket.RankType, tradeDate string, snapshotAt, fetchedAt time.Time, rank int64, row map[string]json.RawMessage) (graymarket.RankRecord, error) {
 	code, err := stringValue(row, "4")
 	if err != nil || code == "" {
 		return graymarket.RankRecord{}, fmt.Errorf("missing code: %w", err)
@@ -21,7 +21,7 @@ func mapRecord(rankType graymarket.RankType, tradeDate string, snapshotAt, fetch
 		TradeDate:        tradeDate,
 		SnapshotAt:       snapshotAt,
 		RankType:         rankType,
-		Rank:             intValue(row, "21"),
+		Rank:             rank,
 		Market:           intValue(row, "3"),
 		Code:             code,
 		Name:             optionalString(row, nameKey),

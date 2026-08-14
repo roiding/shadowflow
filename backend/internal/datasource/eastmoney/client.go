@@ -58,7 +58,8 @@ func (c *Client) FetchAll(ctx context.Context, rankType graymarket.RankType, dat
 		result.RawPages = append(result.RawPages, rawPage)
 
 		for _, row := range payload.Data {
-			record, err := mapRecord(rankType, result.TradeDate, snapshotAt, rawPage.FetchedAt, row)
+			rank := int64(len(result.Records) + 1)
+			record, err := mapRecord(rankType, result.TradeDate, snapshotAt, rawPage.FetchedAt, rank, row)
 			if err != nil {
 				return graymarket.RankSnapshot{}, fmt.Errorf("map %s page %d: %w", rankType, page, err)
 			}
@@ -82,11 +83,6 @@ func (c *Client) FetchAll(ctx context.Context, rankType graymarket.RankType, dat
 	}
 	if result.ExpectedTotal > 0 && len(result.Records) != result.ExpectedTotal {
 		return graymarket.RankSnapshot{}, fmt.Errorf("incomplete %s snapshot: expected %d records, got %d", rankType, result.ExpectedTotal, len(result.Records))
-	}
-	for index := 1; index < len(result.Records); index++ {
-		if result.Records[index].Rank < result.Records[index-1].Rank || result.Records[index].DarkMoney > result.Records[index-1].DarkMoney {
-			return graymarket.RankSnapshot{}, fmt.Errorf("unexpected %s sort order at record %d", rankType, index+1)
-		}
 	}
 	return result, nil
 }
