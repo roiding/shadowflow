@@ -33,3 +33,15 @@ func TestLoadRejectsInvalidSchedulerEnabled(t *testing.T) {
 		t.Fatal("Load() error = nil, want invalid boolean error")
 	}
 }
+
+func TestLoadQuoteBaseURLs(t *testing.T) {
+	t.Setenv("SHADOWFLOW_QUOTE_BASE_URLS", " https://primary.example ,https://delay.example ")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.QuoteBaseURLs) != 2 || cfg.QuoteBaseURLs[0] != "https://primary.example" || cfg.QuoteBaseURLs[1] != "https://delay.example" {
+		t.Fatalf("unexpected quote base URLs: %#v", cfg.QuoteBaseURLs)
+	}
+}

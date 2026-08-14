@@ -53,6 +53,17 @@ WHERE status='running'`, time.Now().UTC().Format(timestampLayout)); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("recover interrupted runs: %w", err)
 	}
+	if _, err := db.Exec(`UPDATE relation_sync_run
+SET status='failed', finished_at=COALESCE(finished_at, ?), error_code='interrupted',
+error_message='process stopped before relation synchronization completed'
+WHERE status='running'`, time.Now().UTC().Format(timestampLayout)); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("recover interrupted relation syncs: %w", err)
+	}
+	if _, err := db.Exec(`DELETE FROM stock_board_relation_stage`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("cleanup interrupted relation stage: %w", err)
+	}
 	if _, err := db.Exec(`DELETE FROM rank_intraday_work WHERE trade_date IN (
 SELECT trade_date FROM research_quality WHERE collected_daily_close=1
 GROUP BY trade_date HAVING count(DISTINCT rank_type)=2

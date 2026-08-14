@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -68,6 +69,8 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 		timeout := 50 * time.Second
 		if kind == "daily-close" || kind == "compact" {
 			timeout = 2 * time.Minute
+		} else if kind == "relations" {
+			timeout = 45 * time.Minute
 		}
 		jobCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
@@ -84,6 +87,17 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 			}
 			snapshotAt := time.Date(current.Year(), current.Month(), current.Day(), 15, 0, 0, 0, s.location)
 			err = s.collector.CollectDailyClose(jobCtx, snapshotAt)
+		case "relations":
+			tradeDate := current.Format("2006-01-02")
+			if s.collector.HasStockBoardRelations(jobCtx, tradeDate) {
+				s.logger.Info("stock-board relations already synchronized; skipping retry", "trade_date", tradeDate, "at", current)
+				return
+			}
+			if !s.collector.HasDailyClose(jobCtx, tradeDate) {
+				err = fmt.Errorf("daily close is not available before relation synchronization")
+				break
+			}
+			err = s.collector.CollectStockBoardRelations(jobCtx, tradeDate)
 		}
 		if err != nil {
 			s.logger.Error("scheduled job failed", "kind", kind, "at", current, "error", err)
@@ -99,6 +113,10 @@ func jobKind(current time.Time) string {
 		return "compact"
 	case current.Hour() == 15 && (current.Minute() == 10 || current.Minute() == 20 || current.Minute() == 30):
 		return "daily-close"
+	case current.Hour() == 15 && current.Minute() == 40,
+		current.Hour() == 16 && current.Minute() == 30,
+		current.Hour() == 17 && current.Minute() == 30:
+		return "relations"
 	default:
 		return ""
 	}

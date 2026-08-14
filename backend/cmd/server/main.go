@@ -36,7 +36,8 @@ func main() {
 		logger.Error("load calendar", "error", err)
 		os.Exit(1)
 	}
-	client := eastmoney.NewClient(cfg.UpstreamBaseURL, &http.Client{Timeout: cfg.RequestTimeout}, cfg.PageSize)
+	client := eastmoney.NewClient(cfg.UpstreamBaseURL, &http.Client{Timeout: cfg.RequestTimeout}, cfg.PageSize).
+		WithQuoteBaseURLs(cfg.QuoteBaseURLs)
 	collectorService := collector.New(client, store, logger)
 	schedulerService, err := scheduler.New(collectorService, calendar, logger)
 	if err != nil {

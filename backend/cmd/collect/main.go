@@ -17,7 +17,7 @@ import (
 
 func main() {
 	var task, date, at string
-	flag.StringVar(&task, "task", "", "task: boards, compact, daily-close, or cleanup")
+	flag.StringVar(&task, "task", "", "task: boards, compact, daily-close, relations, or cleanup")
 	flag.StringVar(&date, "date", "", "trade date in YYYY-MM-DD")
 	flag.StringVar(&at, "at", "15:00", "snapshot time in HH:MM for boards")
 	flag.Parse()
@@ -48,9 +48,16 @@ func main() {
 	}
 	defer store.Close()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	client := eastmoney.NewClient(cfg.UpstreamBaseURL, &http.Client{Timeout: cfg.RequestTimeout}, cfg.PageSize)
+	client := eastmoney.NewClient(cfg.UpstreamBaseURL, &http.Client{Timeout: cfg.RequestTimeout}, cfg.PageSize).
+		WithQuoteBaseURLs(cfg.QuoteBaseURLs)
 	service := collector.New(client, store, logger)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	timeout := 10 * time.Minute
+	// A full industry/concept relationship scan visits roughly a thousand
+	// boards. Keep the manual command aligned with the scheduled-job budget.
+	if task == "relations" {
+		timeout = 45 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	switch task {
@@ -70,6 +77,10 @@ func main() {
 	case "daily-close":
 		closeAt := time.Date(tradeDate.Year(), tradeDate.Month(), tradeDate.Day(), 15, 0, 0, 0, location)
 		if err := service.CollectDailyClose(ctx, closeAt); err != nil {
+			fatal(err)
+		}
+	case "relations":
+		if err := service.CollectStockBoardRelations(ctx, date); err != nil {
 			fatal(err)
 		}
 	case "cleanup":

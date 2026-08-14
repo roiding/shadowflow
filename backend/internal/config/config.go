@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -12,6 +13,7 @@ type Config struct {
 	DatabasePath     string
 	CalendarPath     string
 	UpstreamBaseURL  string
+	QuoteBaseURLs    []string
 	PageSize         int
 	RequestTimeout   time.Duration
 	StaticDir        string
@@ -40,11 +42,29 @@ func Load() (Config, error) {
 		DatabasePath:     env("SHADOWFLOW_DATABASE_PATH", "./data/shadowflow.db"),
 		CalendarPath:     env("SHADOWFLOW_CALENDAR_PATH", "./config/trading_calendar.json"),
 		UpstreamBaseURL:  env("SHADOWFLOW_UPSTREAM_URL", "https://quotederivates.eastmoney.com/datacenter/darktrade"),
+		QuoteBaseURLs:    envList("SHADOWFLOW_QUOTE_BASE_URLS", []string{"https://push2.eastmoney.com", "https://push2delay.eastmoney.com"}),
 		PageSize:         pageSize,
 		RequestTimeout:   time.Duration(timeoutSeconds) * time.Second,
 		StaticDir:        os.Getenv("SHADOWFLOW_STATIC_DIR"),
 		SchedulerEnabled: schedulerEnabled,
 	}, nil
+}
+
+func envList(key string, fallback []string) []string {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	result := make([]string, 0)
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			result = append(result, item)
+		}
+	}
+	if len(result) == 0 {
+		return fallback
+	}
+	return result
 }
 
 func env(key, fallback string) string {

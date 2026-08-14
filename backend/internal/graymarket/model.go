@@ -31,6 +31,34 @@ const (
 	SnapshotDailyClose SnapshotKind = "daily_close"
 )
 
+type BoardType string
+
+const (
+	BoardIndustry BoardType = "industry"
+	BoardConcept  BoardType = "concept"
+)
+
+func ParseBoardType(value string) (BoardType, error) {
+	switch BoardType(value) {
+	case BoardIndustry, BoardConcept:
+		return BoardType(value), nil
+	default:
+		return "", fmt.Errorf("unknown board type %q", value)
+	}
+}
+
+type RelationChangeType string
+
+const (
+	RelationAdded   RelationChangeType = "added"
+	RelationRemoved RelationChangeType = "removed"
+)
+
+const (
+	RelationSourceQuoteClist       = "quote_clist"
+	RelationScopeBoardConstituents = "all_industry_concept"
+)
+
 var (
 	ErrNoData = errors.New("upstream returned no data")
 	ErrDecode = errors.New("upstream response decode failed")
@@ -79,6 +107,34 @@ type RankSnapshot struct {
 	RawPages      []RawPage
 	ExpectedTotal int
 	FetchedAt     time.Time
+}
+
+type Board struct {
+	Code       string    `json:"code"`
+	Name       string    `json:"name"`
+	Type       BoardType `json:"type"`
+	SourceRank int       `json:"source_rank"`
+}
+
+type StockBoardRelation struct {
+	StockCode      string    `json:"stock_code"`
+	StockMarket    int64     `json:"stock_market"`
+	StockName      string    `json:"stock_name"`
+	BoardCode      string    `json:"board_code"`
+	BoardName      string    `json:"board_name"`
+	BoardType      BoardType `json:"board_type"`
+	SourceOrder    int       `json:"source_order"`
+	RelationSource string    `json:"relation_source"`
+	RelationScope  string    `json:"relation_scope"`
+	EffectiveDate  string    `json:"effective_date,omitempty"`
+	DetectedAt     time.Time `json:"detected_at"`
+	RawData        string    `json:"raw_data,omitempty"`
+}
+
+type StockBoardRelationChange struct {
+	StockBoardRelation
+	ChangeType RelationChangeType `json:"change_type"`
+	RunID      string             `json:"run_id"`
 }
 
 func FormatQuoteTime(value int64) string {

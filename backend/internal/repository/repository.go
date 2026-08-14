@@ -78,6 +78,29 @@ type OperationalMetrics struct {
 	ResearchMissingSnapshot []MetricValue
 }
 
+type RelationSyncRun struct {
+	RunID         string     `json:"run_id"`
+	TradeDate     string     `json:"trade_date"`
+	Status        RunStatus  `json:"status"`
+	BoardCount    int        `json:"board_count"`
+	RelationCount int        `json:"relation_count"`
+	AddedCount    int        `json:"added_count"`
+	RemovedCount  int        `json:"removed_count"`
+	BaselineBuilt bool       `json:"baseline_built"`
+	StartedAt     time.Time  `json:"started_at"`
+	FinishedAt    *time.Time `json:"finished_at,omitempty"`
+	DurationMS    int64      `json:"duration_ms"`
+	ErrorCode     string     `json:"error_code"`
+	ErrorMessage  string     `json:"error_message"`
+}
+
+type RelationApplyResult struct {
+	RelationCount int
+	AddedCount    int
+	RemovedCount  int
+	BaselineBuilt bool
+}
+
 type Store interface {
 	Close() error
 	SaveIntraday(context.Context, string, graymarket.RankSnapshot, bool) error
@@ -96,4 +119,12 @@ type Store interface {
 	FinishRun(context.Context, CollectionRun) error
 	RecentRuns(context.Context, string, int) ([]CollectionRun, error)
 	OperationalMetrics(context.Context) (OperationalMetrics, error)
+	StartRelationSync(context.Context, RelationSyncRun) error
+	StageRelations(context.Context, string, []graymarket.StockBoardRelation) error
+	ApplyRelationScan(context.Context, string, string, time.Time) (RelationApplyResult, error)
+	FailRelationSync(context.Context, RelationSyncRun) error
+	HasSuccessfulRelationSync(context.Context, string) (bool, error)
+	StockBoardRelations(context.Context, string, string) ([]graymarket.StockBoardRelation, error)
+	BoardStockRelations(context.Context, graymarket.BoardType, string, string) ([]graymarket.StockBoardRelation, error)
+	RelationChanges(context.Context, string, graymarket.BoardType) ([]graymarket.StockBoardRelationChange, error)
 }

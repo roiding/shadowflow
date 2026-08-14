@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/roiding/shadowflow/internal/graymarket"
+	"github.com/roiding/shadowflow/internal/repository"
 	"github.com/roiding/shadowflow/internal/repository/sqlite"
 	"github.com/roiding/shadowflow/internal/tradingcalendar"
 )
@@ -34,6 +35,52 @@ func testServer(t *testing.T, staticDir string) (*Server, *sqlite.Store) {
 		t.Fatal(err)
 	}
 	return server, store
+}
+
+func TestRelationAPIsReconstructAsOfDate(t *testing.T) {
+	server, store := testServer(t, "")
+	defer store.Close()
+	ctx := context.Background()
+	startedAt := time.Now().UTC()
+	run := repository.RelationSyncRun{RunID: "relations", TradeDate: "2026-08-13", Status: repository.RunRunning, StartedAt: startedAt}
+	if err := store.StartRelationSync(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	relations := []graymarket.StockBoardRelation{
+		{StockCode: "000001", StockName: "平安银行", BoardCode: "BK001", BoardName: "银行", BoardType: graymarket.BoardIndustry,
+			SourceOrder: 1, RelationSource: graymarket.RelationSourceQuoteClist, RelationScope: graymarket.RelationScopeBoardConstituents, DetectedAt: startedAt, RawData: `{}`},
+		{StockCode: "000001", StockName: "平安银行", BoardCode: "BK101", BoardName: "融资融券", BoardType: graymarket.BoardConcept,
+			SourceOrder: 2, RelationSource: graymarket.RelationSourceQuoteClist, RelationScope: graymarket.RelationScopeBoardConstituents, DetectedAt: startedAt, RawData: `{}`},
+	}
+	if err := store.StageRelations(ctx, run.RunID, relations); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyRelationScan(ctx, run.RunID, run.TradeDate, startedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	for target, expected := range map[string]string{
+		"/api/v1/stocks/000001/boards?as_of=2026-08-13":         `"board_code":"BK101"`,
+		"/api/v1/boards/industry/BK001/stocks?as_of=2026-08-13": `"stock_code":"000001"`,
+		"/api/v1/relations/changes?trade_date=2026-08-13":       `"data":[]`,
+	} {
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), expected) {
+			t.Fatalf("%s: status=%d body=%s", target, response.Code, response.Body.String())
+		}
+	}
+	for _, target := range []string{
+		"/api/v1/stocks/151000/boards?as_of=bad-date",
+		"/api/v1/stocks/ABC001/boards?as_of=2026-08-13",
+		"/api/v1/boards/region/BK001/stocks?as_of=2026-08-13",
+	} {
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d body=%s", target, response.Code, response.Body.String())
+		}
+	}
 }
 
 func TestDailyClosePaginationAndValidation(t *testing.T) {

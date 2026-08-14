@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: ShadowFlow API
-  version: 0.1.0
-  description: 行业、概念分钟榜单，47 个盘中 5 分钟研究点，以及行业、概念、个股三类 15:00 日终数据的只读接口。
+  version: 0.2.0
+  description: 行业、概念分钟榜单、盘后研究数据，以及可按截面日还原的个股行业/概念归属接口。
 servers:
   - url: http://localhost:8080
 paths:
@@ -96,6 +96,50 @@ paths:
           schema: { type: string, const: 5m, default: 5m }
       responses:
         "200": { $ref: "#/components/responses/RankList" }
+  /api/v1/boards/{type}/{code}/stocks:
+    get:
+      summary: 按截面日查询板块成分股
+      parameters:
+        - $ref: "#/components/parameters/BoardTypePath"
+        - $ref: "#/components/parameters/Code"
+        - $ref: "#/components/parameters/AsOf"
+      responses:
+        "200": { $ref: "#/components/responses/RelationList" }
+        "400": { $ref: "#/components/responses/Error" }
+  /api/v1/stocks/{code}/boards:
+    get:
+      summary: 按截面日查询股票所属行业和概念
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[0-9]{6}$", example: "300308" }
+        - $ref: "#/components/parameters/AsOf"
+      responses:
+        "200": { $ref: "#/components/responses/RelationList" }
+        "400": { $ref: "#/components/responses/Error" }
+  /api/v1/relations/changes:
+    get:
+      summary: 查询指定交易日检测到的归属新增和删除事件
+      parameters:
+        - $ref: "#/components/parameters/TradeDate"
+        - name: type
+          in: query
+          required: false
+          schema: { type: string, enum: [industry, concept] }
+      responses:
+        "200":
+          description: 当日关系变化；首次全量基线不重复展开为 added 事件
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/StockBoardRelationChange" }
+                  meta: { type: object }
+        "400": { $ref: "#/components/responses/Error" }
   /api/v1/research/export:
     get:
       summary: 导出单板块 5 分钟研究 CSV
@@ -213,6 +257,12 @@ components:
       in: query
       required: true
       schema: { type: string, format: date }
+    AsOf:
+      name: as_of
+      in: query
+      required: false
+      description: 截面日期；省略时使用服务当前的 Asia/Shanghai 日期
+      schema: { type: string, format: date }
     From:
       name: from
       in: query
@@ -246,6 +296,17 @@ components:
                 type: array
                 items: { $ref: "#/components/schemas/RankRecord" }
               meta: { type: object }
+    RelationList:
+      description: 按“最近基线 + 截面日前累计变更”还原的关系列表
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data:
+                type: array
+                items: { $ref: "#/components/schemas/StockBoardRelation" }
+              meta: { type: object }
   schemas:
     RankRecord:
       type: object
@@ -272,6 +333,30 @@ components:
         leader_name: { type: string }
         leader_code: { type: string }
         fetched_at: { type: string, format: date-time }
+    StockBoardRelation:
+      type: object
+      required: [stock_code, stock_name, board_code, board_name, board_type, relation_source, relation_scope, effective_date]
+      properties:
+        stock_code: { type: string, pattern: "^[0-9]{6}$" }
+        stock_market: { type: integer, format: int64 }
+        stock_name: { type: string }
+        board_code: { type: string }
+        board_name: { type: string }
+        board_type: { type: string, enum: [industry, concept] }
+        source_order: { type: integer }
+        relation_source: { type: string, const: quote_clist }
+        relation_scope: { type: string, const: all_industry_concept }
+        effective_date: { type: string, format: date }
+        detected_at: { type: string, format: date-time }
+        raw_data: { type: string, description: 上游成分股原始行 JSON }
+    StockBoardRelationChange:
+      allOf:
+        - $ref: "#/components/schemas/StockBoardRelation"
+        - type: object
+          required: [change_type, run_id]
+          properties:
+            change_type: { type: string, enum: [added, removed] }
+            run_id: { type: string }
     CollectionRun:
       type: object
       properties:

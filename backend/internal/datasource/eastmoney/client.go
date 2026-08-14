@@ -21,13 +21,32 @@ import (
 )
 
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
-	pageSize   int
+	baseURL       string
+	quoteBaseURLs []string
+	httpClient    *http.Client
+	pageSize      int
 }
 
 func NewClient(baseURL string, httpClient *http.Client, pageSize int) *Client {
-	return &Client{baseURL: baseURL, httpClient: httpClient, pageSize: pageSize}
+	return &Client{
+		baseURL:       baseURL,
+		quoteBaseURLs: []string{"https://push2.eastmoney.com", "https://push2delay.eastmoney.com"},
+		httpClient:    httpClient,
+		pageSize:      pageSize,
+	}
+}
+
+func (c *Client) WithQuoteBaseURLs(baseURLs []string) *Client {
+	cleaned := make([]string, 0, len(baseURLs))
+	for _, baseURL := range baseURLs {
+		if value := strings.TrimRight(strings.TrimSpace(baseURL), "/"); value != "" {
+			cleaned = append(cleaned, value)
+		}
+	}
+	if len(cleaned) > 0 {
+		c.quoteBaseURLs = cleaned
+	}
+	return c
 }
 
 type apiResponse struct {

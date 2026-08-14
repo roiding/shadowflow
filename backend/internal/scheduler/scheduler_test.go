@@ -37,7 +37,8 @@ func TestPostMarketJobBoundaries(t *testing.T) {
 	location := time.FixedZone("Asia/Shanghai", 8*60*60)
 	tests := map[string]string{
 		"15:04": "", "15:05": "compact", "15:06": "", "15:07": "compact", "15:08": "", "15:09": "compact", "15:10": "daily-close",
-		"15:20": "daily-close", "15:30": "daily-close", "15:31": "",
+		"15:20": "daily-close", "15:30": "daily-close", "15:31": "", "15:40": "relations",
+		"16:30": "relations", "17:30": "relations", "17:31": "",
 	}
 	for value, expected := range tests {
 		parsed, _ := time.ParseInLocation("15:04", value, location)

@@ -128,4 +128,104 @@ CREATE TABLE IF NOT EXISTS research_quality (
     compacted_at TEXT NOT NULL,
     PRIMARY KEY (trade_date, rank_type)
 );
+
+CREATE TABLE IF NOT EXISTS stock_board_relation_baseline (
+    baseline_date TEXT NOT NULL,
+    stock_code TEXT NOT NULL,
+    stock_market INTEGER NOT NULL,
+    stock_name TEXT NOT NULL,
+    board_code TEXT NOT NULL,
+    board_name TEXT NOT NULL,
+    board_type TEXT NOT NULL CHECK (board_type IN ('industry', 'concept')),
+    source_order INTEGER NOT NULL,
+    relation_source TEXT NOT NULL,
+    relation_scope TEXT NOT NULL,
+    detected_at TEXT NOT NULL,
+    raw_data TEXT NOT NULL,
+    PRIMARY KEY (baseline_date, stock_code, board_code, relation_source, relation_scope)
+);
+
+CREATE INDEX IF NOT EXISTS idx_relation_baseline_stock
+    ON stock_board_relation_baseline (stock_code, baseline_date, board_type, board_code);
+CREATE INDEX IF NOT EXISTS idx_relation_baseline_board
+    ON stock_board_relation_baseline (board_type, board_code, baseline_date, stock_code);
+
+CREATE TABLE IF NOT EXISTS stock_board_relation_change (
+    effective_date TEXT NOT NULL,
+    change_type TEXT NOT NULL CHECK (change_type IN ('added', 'removed')),
+    stock_code TEXT NOT NULL,
+    stock_market INTEGER NOT NULL,
+    stock_name TEXT NOT NULL,
+    board_code TEXT NOT NULL,
+    board_name TEXT NOT NULL,
+    board_type TEXT NOT NULL CHECK (board_type IN ('industry', 'concept')),
+    source_order INTEGER NOT NULL,
+    relation_source TEXT NOT NULL,
+    relation_scope TEXT NOT NULL,
+    detected_at TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    raw_data TEXT NOT NULL,
+    PRIMARY KEY (effective_date, change_type, stock_code, board_code, relation_source, relation_scope)
+);
+
+CREATE INDEX IF NOT EXISTS idx_relation_change_stock
+    ON stock_board_relation_change (stock_code, effective_date, detected_at);
+CREATE INDEX IF NOT EXISTS idx_relation_change_board
+    ON stock_board_relation_change (board_type, board_code, effective_date, detected_at);
+
+CREATE TABLE IF NOT EXISTS stock_board_relation_current (
+    stock_code TEXT NOT NULL,
+    stock_market INTEGER NOT NULL,
+    stock_name TEXT NOT NULL,
+    board_code TEXT NOT NULL,
+    board_name TEXT NOT NULL,
+    board_type TEXT NOT NULL CHECK (board_type IN ('industry', 'concept')),
+    source_order INTEGER NOT NULL,
+    relation_source TEXT NOT NULL,
+    relation_scope TEXT NOT NULL,
+    since_date TEXT NOT NULL,
+    detected_at TEXT NOT NULL,
+    raw_data TEXT NOT NULL,
+    PRIMARY KEY (stock_code, board_code, relation_source, relation_scope)
+);
+
+CREATE INDEX IF NOT EXISTS idx_relation_current_stock
+    ON stock_board_relation_current (stock_code, board_type, source_order, board_code);
+CREATE INDEX IF NOT EXISTS idx_relation_current_board
+    ON stock_board_relation_current (board_type, board_code, stock_code);
+
+CREATE TABLE IF NOT EXISTS stock_board_relation_stage (
+    run_id TEXT NOT NULL,
+    stock_code TEXT NOT NULL,
+    stock_market INTEGER NOT NULL,
+    stock_name TEXT NOT NULL,
+    board_code TEXT NOT NULL,
+    board_name TEXT NOT NULL,
+    board_type TEXT NOT NULL CHECK (board_type IN ('industry', 'concept')),
+    source_order INTEGER NOT NULL,
+    relation_source TEXT NOT NULL,
+    relation_scope TEXT NOT NULL,
+    detected_at TEXT NOT NULL,
+    raw_data TEXT NOT NULL,
+    PRIMARY KEY (run_id, stock_code, board_code, relation_source, relation_scope)
+);
+
+CREATE TABLE IF NOT EXISTS relation_sync_run (
+    run_id TEXT PRIMARY KEY,
+    trade_date TEXT NOT NULL,
+    status TEXT NOT NULL,
+    board_count INTEGER NOT NULL,
+    relation_count INTEGER NOT NULL,
+    added_count INTEGER NOT NULL,
+    removed_count INTEGER NOT NULL,
+    baseline_built INTEGER NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    duration_ms INTEGER NOT NULL,
+    error_code TEXT NOT NULL,
+    error_message TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_relation_sync_run_date
+    ON relation_sync_run (trade_date, started_at DESC);
 `

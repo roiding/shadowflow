@@ -1,6 +1,6 @@
 # ShadowFlow 暗流
 
-面向行业、概念资金趋势研究的单机 Web 系统。Go 服务在交易日 `09:31-11:30`、`13:01-15:00` 每分钟采集完整板块榜；盘后将 `09:35-11:30`、`13:05-14:55` 的 47 个五分钟点沉淀为研究数据，将行业、概念 `15:00` 另存为日终快照，并在 `15:10` 抓取完整个股收盘榜。三类榜单统一归入当天 `daily_close` 数据集，可联合查询和导出。React 前端默认每 60 秒读取本地 Go API。
+面向行业、概念资金趋势研究的单机 Web 系统。Go 服务在交易日 `09:31-11:30`、`13:01-15:00` 每分钟采集完整板块榜；盘后将 `09:35-11:30`、`13:05-14:55` 的 47 个五分钟点沉淀为研究数据，将行业、概念 `15:00` 另存为日终快照，并在 `15:10` 抓取完整个股收盘榜。三类榜单统一归入当天 `daily_close` 数据集，可联合查询和导出。盘后还会维护个股所属行业、概念：首次建立全量基线，后续交易日仅永久记录新增和删除事件，并可还原任意截面日的归属。React 前端默认每 60 秒读取本地 Go API。
 
 ## 本地开发
 
@@ -41,6 +41,9 @@ curl 'http://localhost:8080/api/v1/ranks/daily-close?type=industry&trade_date=20
 curl 'http://localhost:8080/api/v1/ranks/daily-close?type=concept&trade_date=2026-08-13'
 curl 'http://localhost:8080/api/v1/ranks/daily-close?type=stock&trade_date=2026-08-13'
 curl -o daily-close.csv 'http://localhost:8080/api/v1/research/daily-close/export?trade_date=2026-08-13'
+curl 'http://localhost:8080/api/v1/stocks/300308/boards?as_of=2026-08-13'
+curl 'http://localhost:8080/api/v1/boards/concept/BK1128/stocks?as_of=2026-08-13'
+curl 'http://localhost:8080/api/v1/relations/changes?trade_date=2026-08-13'
 ```
 
 ## 斐讯 N1 部署
@@ -70,6 +73,7 @@ GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go 测
 | `SHADOWFLOW_STATIC_DIR` | `/app/web` | React 构建产物 |
 | `SHADOWFLOW_PAGE_SIZE` | `100` | 上游分页大小 |
 | `SHADOWFLOW_REQUEST_TIMEOUT_SECONDS` | `5` | 单次上游请求超时 |
+| `SHADOWFLOW_QUOTE_BASE_URLS` | `https://push2.eastmoney.com,https://push2delay.eastmoney.com` | 行情接口候选域名；主域空响应、网络错误或临时服务错误时切换 delay 域 |
 | `SHADOWFLOW_SCHEDULER_ENABLED` | `true` | 是否运行盘中和盘后采集调度；健康检查或只读 API 模式可设为 `false` |
 
 `backend/config/trading_calendar.json` 已内置 2026 年 A 股法定休市日期，部署跨年或交易所临时调整前必须更新。未列入 `holidays` 或 `workdays` 的日期会按周一至周五判断；服务启动时会拒绝非法日期或同时列入两组的冲突配置。
@@ -99,9 +103,12 @@ cd backend
 go run ./cmd/collect -task boards -date 2026-08-13 -at 14:30
 go run ./cmd/collect -task compact -date 2026-08-13
 go run ./cmd/collect -task daily-close -date 2026-08-13
+go run ./cmd/collect -task relations -date 2026-08-13
 ```
 
 `compact` 会在同一个 SQLite 事务中写入 47 个研究点、行业/概念 15:00 日终快照、质量摘要并清理分钟工作表。调度器在 `15:05` 执行，失败时于 `15:07`、`15:09` 补试。若缺失任一板块的 15:00 点，任务明确失败且保留分钟工作表供重试，不会静默补填。单独使用 `-task cleanup` 前应先确认研究和日终沉淀均成功。
+
+关系维护按东方财富行业目录 `t:2` 和广义概念目录 `t:3` 逐板块反查全部成分股，`15:40` 自动执行，失败或当天尚未成功时在 `16:30`、`17:30` 补试。扫描数据逐板块写入临时表，不在内存中保存全市场关系；只有完整扫描成功后，才会在一个事务中写入基线或当日 `added`/`removed` 事件并更新物化当前态。中途失败只清理临时数据，不会改变已有关系。首次部署或错过调度时可手工执行 `-task relations`。
 
 ## 验证
 

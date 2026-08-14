@@ -1,0 +1,71 @@
+package eastmoney
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/roiding/shadowflow/internal/graymarket"
+)
+
+func TestDecodeQuoteRowsAcceptsObjectAndPreservesNumericOrder(t *testing.T) {
+	rows, err := decodeQuoteRows([]byte(`{"10":{"f12":"third"},"2":{"f12":"second"},"0":{"f12":"first"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 || optionalString(rows[0], "f12") != "first" || optionalString(rows[1], "f12") != "second" || optionalString(rows[2], "f12") != "third" {
+		t.Fatalf("object diff order was not normalized: %+v", rows)
+	}
+	rows, err = decodeQuoteRows([]byte(`[{"f12":"array-first"},{"f12":"array-second"}]`))
+	if err != nil || len(rows) != 2 || optionalString(rows[1], "f12") != "array-second" {
+		t.Fatalf("array diff failed: rows=%+v err=%v", rows, err)
+	}
+}
+
+func TestFetchBoardCatalogAndConstituents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if query.Get("fs") == "m:90+t:2+f:!50" {
+			_, _ = w.Write([]byte(`{"rc":0,"data":{"total":2,"diff":{"0":{"f12":"BK001","f14":"银行"},"1":{"f12":"BK002","f14":"证券"}}}}`))
+			return
+		}
+		if query.Get("fs") == "b:BK001" {
+			_, _ = w.Write([]byte(`{"rc":0,"data":{"total":2,"diff":{"0":{"f12":"000001","f13":0,"f14":"平安银行"},"1":{"f12":"601398","f13":1,"f14":"工商银行"}}}}`))
+			return
+		}
+		t.Fatalf("unexpected quote request: %s", r.URL.String())
+	}))
+	defer server.Close()
+	client := NewClient("unused", server.Client(), 100).WithQuoteBaseURLs([]string{server.URL})
+	boards, err := client.FetchBoardCatalog(context.Background(), graymarket.BoardIndustry)
+	if err != nil || len(boards) != 2 || boards[0].Code != "BK001" || boards[1].SourceRank != 2 {
+		t.Fatalf("unexpected board catalog: boards=%+v err=%v", boards, err)
+	}
+	relations, err := client.FetchBoardConstituents(context.Background(), boards[0])
+	if err != nil || len(relations) != 2 {
+		t.Fatalf("unexpected constituents: relations=%+v err=%v", relations, err)
+	}
+	first := relations[0]
+	if first.StockCode != "000001" || first.StockMarket != 0 || first.BoardCode != "BK001" || first.BoardType != graymarket.BoardIndustry || first.RelationScope != graymarket.RelationScopeBoardConstituents {
+		t.Fatalf("unexpected relation mapping: %+v", first)
+	}
+}
+
+func TestQuoteRequestFallsBackAfterEmptyPrimaryResponse(t *testing.T) {
+	primaryCalls, fallbackCalls := 0, 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls++
+	}))
+	defer primary.Close()
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackCalls++
+		_, _ = w.Write([]byte(`{"rc":0,"data":{"total":1,"diff":{"0":{"f12":"BK001","f14":"银行"}}}}`))
+	}))
+	defer fallback.Close()
+	client := NewClient("unused", fallback.Client(), 100).WithQuoteBaseURLs([]string{primary.URL, fallback.URL})
+	boards, err := client.FetchBoardCatalog(context.Background(), graymarket.BoardIndustry)
+	if err != nil || len(boards) != 1 || primaryCalls != 1 || fallbackCalls != 1 {
+		t.Fatalf("fallback failed: boards=%+v primary=%d fallback=%d err=%v", boards, primaryCalls, fallbackCalls, err)
+	}
+}

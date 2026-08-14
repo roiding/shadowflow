@@ -17,6 +17,11 @@ type Source interface {
 	FetchAll(context.Context, graymarket.RankType, string, time.Time) (graymarket.RankSnapshot, error)
 }
 
+type RelationSource interface {
+	FetchBoardCatalog(context.Context, graymarket.BoardType) ([]graymarket.Board, error)
+	FetchBoardConstituents(context.Context, graymarket.Board) ([]graymarket.StockBoardRelation, error)
+}
+
 type store interface {
 	SaveIntraday(context.Context, string, graymarket.RankSnapshot, bool) error
 	SaveDailyClose(context.Context, string, graymarket.RankSnapshot) error
@@ -26,16 +31,29 @@ type store interface {
 	FinishRun(context.Context, repository.CollectionRun) error
 }
 
+type relationStore interface {
+	StartRelationSync(context.Context, repository.RelationSyncRun) error
+	StageRelations(context.Context, string, []graymarket.StockBoardRelation) error
+	ApplyRelationScan(context.Context, string, string, time.Time) (repository.RelationApplyResult, error)
+	FailRelationSync(context.Context, repository.RelationSyncRun) error
+	HasSuccessfulRelationSync(context.Context, string) (bool, error)
+}
+
 type Service struct {
-	source   Source
-	store    store
-	logger   *slog.Logger
-	retries  int
-	retryGap time.Duration
+	source         Source
+	store          store
+	relationSource RelationSource
+	relationStore  relationStore
+	logger         *slog.Logger
+	retries        int
+	retryGap       time.Duration
 }
 
 func New(source Source, store store, logger *slog.Logger) *Service {
-	return &Service{source: source, store: store, logger: logger, retries: 2, retryGap: 400 * time.Millisecond}
+	relationSource, _ := source.(RelationSource)
+	relationPersistence, _ := store.(relationStore)
+	return &Service{source: source, store: store, relationSource: relationSource, relationStore: relationPersistence,
+		logger: logger, retries: 2, retryGap: 400 * time.Millisecond}
 }
 
 func (s *Service) CollectBoards(ctx context.Context, snapshotAt time.Time) error {

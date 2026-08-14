@@ -64,6 +64,9 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 		r.Get("/trading-days", server.tradingDays)
 		r.Get("/boards/{type}/{code}/intraday", server.intraday)
 		r.Get("/boards/{type}/{code}/trend", server.trend)
+		r.Get("/boards/{type}/{code}/stocks", server.boardStocks)
+		r.Get("/stocks/{code}/boards", server.stockBoards)
+		r.Get("/relations/changes", server.relationChanges)
 		r.Get("/research/export", server.exportResearch)
 		r.Get("/research/daily-close/export", server.exportDailyClose)
 		r.Get("/research/quality", server.quality)
@@ -75,6 +78,72 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 	}
 	server.router = router
 	return server, nil
+}
+
+func (s *Server) stockBoards(w http.ResponseWriter, r *http.Request) {
+	code := chi.URLParam(r, "code")
+	if !stockCodeValid(code) {
+		writeError(w, http.StatusBadRequest, "invalid_stock_code", "stock code must contain exactly 6 digits")
+		return
+	}
+	asOf, ok := optionalAsOf(w, r, s.location)
+	if !ok {
+		return
+	}
+	relations, err := s.store.StockBoardRelations(r.Context(), code, asOf)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: relations, Meta: map[string]any{
+		"as_of": asOf, "stock_code": code, "relation_source": graymarket.RelationSourceQuoteClist,
+		"relation_scope": graymarket.RelationScopeBoardConstituents,
+	}})
+}
+
+func (s *Server) boardStocks(w http.ResponseWriter, r *http.Request) {
+	boardType, ok := relationBoardTypeParam(w, chi.URLParam(r, "type"))
+	if !ok {
+		return
+	}
+	boardCode := chi.URLParam(r, "code")
+	if !strings.HasPrefix(boardCode, "BK") || len(boardCode) < 4 {
+		writeError(w, http.StatusBadRequest, "invalid_board_code", "board code must use the BK prefix")
+		return
+	}
+	asOf, ok := optionalAsOf(w, r, s.location)
+	if !ok {
+		return
+	}
+	relations, err := s.store.BoardStockRelations(r.Context(), boardType, boardCode, asOf)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: relations, Meta: map[string]any{
+		"as_of": asOf, "board_type": boardType, "board_code": boardCode,
+		"relation_source": graymarket.RelationSourceQuoteClist, "relation_scope": graymarket.RelationScopeBoardConstituents,
+	}})
+}
+
+func (s *Server) relationChanges(w http.ResponseWriter, r *http.Request) {
+	tradeDate, ok := dateParam(w, r.URL.Query().Get("trade_date"))
+	if !ok {
+		return
+	}
+	var boardType graymarket.BoardType
+	if value := r.URL.Query().Get("type"); value != "" {
+		boardType, ok = relationBoardTypeParam(w, value)
+		if !ok {
+			return
+		}
+	}
+	changes, err := s.store.RelationChanges(r.Context(), tradeDate, boardType)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: changes, Meta: map[string]any{"trade_date": tradeDate, "board_type": boardType}})
 }
 
 func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
@@ -477,6 +546,35 @@ func boardTypeParam(w http.ResponseWriter, value string) (graymarket.RankType, b
 		return "", false
 	}
 	return rankType, true
+}
+
+func relationBoardTypeParam(w http.ResponseWriter, value string) (graymarket.BoardType, bool) {
+	boardType, err := graymarket.ParseBoardType(value)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_type", "type must be industry or concept")
+		return "", false
+	}
+	return boardType, true
+}
+
+func optionalAsOf(w http.ResponseWriter, r *http.Request, location *time.Location) (string, bool) {
+	value := r.URL.Query().Get("as_of")
+	if value == "" {
+		return time.Now().In(location).Format("2006-01-02"), true
+	}
+	return dateParam(w, value)
+}
+
+func stockCodeValid(value string) bool {
+	if len(value) != 6 {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func dateParam(w http.ResponseWriter, value string) (string, bool) {
