@@ -42,6 +42,33 @@ func TestFetchAllMapsBoardAndPaginates(t *testing.T) {
 	}
 }
 
+func TestFetchAllMapsStockCodeSeparatelyFromQuoteTime(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if query.Get("market") != "" || query.Get("datetype") != "" {
+			t.Fatalf("stock request must not select a board market: %s", r.URL.RawQuery)
+		}
+		if query.Get("version") != "101" || query.Get("sortflag") != "6" || query.Get("desc") != "1" {
+			t.Fatalf("unexpected stock request parameters: %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"errid":0,"errmsg":"success","1":20260813,"2":1,"data":[{"3":0,"4":"000938","5":151000,"6":100,"16":"紫光股份","21":1}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, server.Client(), 100)
+	snapshot, err := client.FetchAll(context.Background(), graymarket.RankStock, "20260813", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Records) != 1 {
+		t.Fatalf("expected one stock record, got %d", len(snapshot.Records))
+	}
+	record := snapshot.Records[0]
+	if record.Code != "000938" || record.QuoteTime != "151000" || record.Name != "紫光股份" {
+		t.Fatalf("stock code and quote time were not mapped independently: %+v", record)
+	}
+}
+
 func TestFetchAllRejectsIncompleteSnapshot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"errid":0,"errmsg":"success","1":20260812,"2":2,"data":[{"3":90,"4":"BK1","6":100,"16":"one","21":1}]}`))
