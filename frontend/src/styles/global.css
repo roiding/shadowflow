@@ -29,6 +29,8 @@ button { border: 0; }
 .brand-lockup span { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
 .topbar-actions { gap: 12px; color: var(--muted); font-size: 12px; }
 .market-status, .live-chip { gap: 6px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; white-space: nowrap; }
+.live-chip.stale { color: #9a5a18; border-color: #ead0ab; background: #fff8ed; }
+.live-chip.stale .live-dot { background: #dc8a2f; box-shadow: 0 0 0 3px rgba(220,138,47,.12); }
 .market-status.open { color: var(--green); border-color: #bce6d7; background: #f2fbf7; }
 .market-status.lunch_break { color: var(--orange); border-color: #f4d4b9; background: #fff9f3; }
 .market-status.pre_open, .market-status.closed { color: var(--muted); }
@@ -108,6 +110,7 @@ kbd { padding: 1px 5px; border: 1px solid var(--line); border-radius: 3px; color
 .stat-strip small { color: var(--muted); font-size: 10px; font-weight: 400; }
 .inline-notice { gap: 7px; margin: 0 24px 12px; padding: 9px 10px; border-radius: 5px; font-size: 11px; }
 .inline-notice.error { color: #a54242; background: #fff3f3; border: 1px solid #f1cccc; }
+.inline-notice.warning { color: #8a571f; background: #fff8ed; border: 1px solid #efd5ad; }
 .history-page { padding-bottom: 22px; }
 .history-page .metric-toolbar, .history-page .chart-frame, .history-page .history-summary { margin-left: 24px; margin-right: 24px; }
 .history-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 0 24px 15px; padding: 11px; background: #f8fafc; border: 1px solid #edf0f3; border-radius: 6px; }

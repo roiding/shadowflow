@@ -17,15 +17,24 @@ type Source interface {
 	FetchAll(context.Context, graymarket.RankType, string, time.Time) (graymarket.RankSnapshot, error)
 }
 
+type store interface {
+	SaveIntraday(context.Context, string, graymarket.RankSnapshot, bool) error
+	SaveDailyClose(context.Context, string, graymarket.RankSnapshot) error
+	CompactResearch(context.Context, string) ([]repository.QualitySummary, error)
+	HasDailyClose(context.Context, string) (bool, error)
+	StartRun(context.Context, repository.CollectionRun) error
+	FinishRun(context.Context, repository.CollectionRun) error
+}
+
 type Service struct {
 	source   Source
-	store    repository.Store
+	store    store
 	logger   *slog.Logger
 	retries  int
 	retryGap time.Duration
 }
 
-func New(source Source, store repository.Store, logger *slog.Logger) *Service {
+func New(source Source, store store, logger *slog.Logger) *Service {
 	return &Service{source: source, store: store, logger: logger, retries: 2, retryGap: 400 * time.Millisecond}
 }
 
@@ -73,6 +82,16 @@ func (s *Service) collect(ctx context.Context, rankType graymarket.RankType, kin
 		return fmt.Errorf("start collection run: %w", err)
 	}
 
+	finish := func(resultErr error) error {
+		finishedAt := time.Now().UTC()
+		run.FinishedAt = &finishedAt
+		run.DurationMS = finishedAt.Sub(startedAt).Milliseconds()
+		if err := s.store.FinishRun(context.WithoutCancel(ctx), run); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("finish collection run: %w", err))
+		}
+		return resultErr
+	}
+
 	var snapshot graymarket.RankSnapshot
 	var fetchErr error
 	for attempt := 1; attempt <= s.retries+1; attempt++ {
@@ -90,19 +109,15 @@ func (s *Service) collect(ctx context.Context, rankType graymarket.RankType, kin
 		}
 	}
 
-	finishedAt := time.Now().UTC()
-	run.FinishedAt = &finishedAt
-	run.DurationMS = finishedAt.Sub(startedAt).Milliseconds()
 	if fetchErr != nil {
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, errorCode(fetchErr), fetchErr.Error()
-		_ = s.store.FinishRun(context.WithoutCancel(ctx), run)
-		return fetchErr
+		return finish(fetchErr)
 	}
+	run.ActualTradeDate, run.ExpectedTotal, run.FetchedTotal, run.PageCount = snapshot.TradeDate, snapshot.ExpectedTotal, len(snapshot.Records), len(snapshot.RawPages)
 	if snapshot.TradeDate != formatDate(requestedDate) {
 		mismatch := fmt.Errorf("upstream trade date %s does not match requested date %s", snapshot.TradeDate, formatDate(requestedDate))
-		run.Status, run.ErrorCode, run.ErrorMessage, run.ActualTradeDate = repository.RunFailed, "date_mismatch", mismatch.Error(), snapshot.TradeDate
-		_ = s.store.FinishRun(context.WithoutCancel(ctx), run)
-		return mismatch
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "date_mismatch", mismatch.Error()
+		return finish(mismatch)
 	}
 
 	var saveErr error
@@ -116,11 +131,10 @@ func (s *Service) collect(ctx context.Context, rankType graymarket.RankType, kin
 	} else {
 		run.Status = repository.RunSuccess
 	}
-	run.ActualTradeDate, run.ExpectedTotal, run.FetchedTotal, run.PageCount = snapshot.TradeDate, snapshot.ExpectedTotal, len(snapshot.Records), len(snapshot.RawPages)
-	_ = s.store.FinishRun(context.WithoutCancel(ctx), run)
+	resultErr := finish(saveErr)
 	s.logger.Info("collection finished", "run_id", runID, "kind", kind, "rank_type", rankType,
-		"records", len(snapshot.Records), "pages", len(snapshot.RawPages), "duration_ms", run.DurationMS, "error", saveErr)
-	return saveErr
+		"records", len(snapshot.Records), "pages", len(snapshot.RawPages), "duration_ms", run.DurationMS, "error", resultErr)
+	return resultErr
 }
 
 func isLongTermBoundary(value time.Time) bool {
