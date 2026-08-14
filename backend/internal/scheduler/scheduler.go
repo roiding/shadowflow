@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -93,10 +92,6 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 				s.logger.Info("stock-board relations already synchronized; skipping retry", "trade_date", tradeDate, "at", current)
 				return
 			}
-			if !s.collector.HasDailyClose(jobCtx, tradeDate) {
-				err = fmt.Errorf("daily close is not available before relation synchronization")
-				break
-			}
 			err = s.collector.CollectStockBoardRelations(jobCtx, tradeDate)
 		}
 		if err != nil {
@@ -113,9 +108,8 @@ func jobKind(current time.Time) string {
 		return "compact"
 	case current.Hour() == 15 && (current.Minute() == 10 || current.Minute() == 20 || current.Minute() == 30):
 		return "daily-close"
-	case current.Hour() == 15 && current.Minute() == 40,
-		current.Hour() == 16 && current.Minute() == 30,
-		current.Hour() == 17 && current.Minute() == 30:
+	case current.Hour() == 8 && (current.Minute() == 0 || current.Minute() == 50),
+		current.Hour() == 9 && current.Minute() == 15:
 		return "relations"
 	default:
 		return ""
