@@ -19,12 +19,15 @@ COPY backend/ ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/shadowflow ./cmd/server
+    go build -trimpath -ldflags="-s -w" -o /out/shadowflow ./cmd/server && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/collect ./cmd/collect
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates sqlite tzdata
 WORKDIR /app
 COPY --from=backend-build /out/shadowflow /app/shadowflow
+COPY --from=backend-build /out/collect /app/collect
 COPY --from=frontend-build /src/frontend/dist /app/web
 COPY backend/config/trading_calendar.json /app/config/trading_calendar.json
 COPY scripts /app/scripts
