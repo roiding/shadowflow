@@ -16,3 +16,4 @@ frontend/node_modules/.tmp/
 # Local environment
 .env
 .DS_Store
+服务器私密记忆.md
