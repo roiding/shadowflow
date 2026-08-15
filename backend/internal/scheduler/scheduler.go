@@ -66,8 +66,10 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 			s.mu.Unlock()
 		}()
 		timeout := 50 * time.Second
-		if kind == "daily-close" || kind == "compact" {
+		if kind == "compact" {
 			timeout = 2 * time.Minute
+		} else if kind == "daily-close" {
+			timeout = 8 * time.Minute
 		} else if kind == "relations" {
 			timeout = 45 * time.Minute
 		}

@@ -62,7 +62,7 @@ paths:
           schema: { type: string, maxLength: 50 }
         - name: sort
           in: query
-          schema: { type: string, enum: [rank, name, code, dark_money, main_money_inflow, change_pct], default: rank }
+          schema: { type: string, enum: [rank, name, code, dark_money, main_money_inflow, change_pct, dark_activity, open_price, high_price, low_price, close_price, previous_close, volume, turnover, turnover_rate, amplitude], default: rank }
         - name: direction
           in: query
           schema: { type: string, enum: [asc, desc], default: asc }
@@ -109,7 +109,7 @@ paths:
   /api/v1/boards/{type}/{code}/quotes:
     get:
       summary: 按截面日查询板块成分股及最新行情快照
-      description: 成分关系按 as_of 还原；行情由东方财富批量读取，可能因上游限流或休市只返回关系而没有行情。
+      description: 成分关系按 as_of 还原；同日个股暗盘榜提供暗盘排名、暗盘资金、主力净流入和原始活跃度；行情由东方财富批量读取。活跃度口径为 abs(暗盘资金) / 成交额。
       parameters:
         - $ref: "#/components/parameters/BoardTypePath"
         - $ref: "#/components/parameters/Code"
@@ -343,7 +343,18 @@ components:
         name: { type: string }
         quote_time: { type: string }
         latest_price_raw: { type: integer, format: int64 }
+        open_price: { type: number }
+        high_price: { type: number }
+        low_price: { type: number }
+        close_price: { type: number }
+        previous_close: { type: number, description: 前收盘价，用于涨跌停判断和复权日识别 }
+        change_value: { type: number }
         change_pct: { type: number, description: 原始小数，展示时乘 100 }
+        volume: { type: integer, format: int64 }
+        turnover: { type: integer, format: int64, description: 成交额，单位元 }
+        turnover_rate: { type: number, description: 原始小数，展示时乘 100 }
+        amplitude: { type: number, description: 原始小数，展示时乘 100 }
+        quote_available: { type: boolean }
         dark_money: { type: integer, format: int64 }
         regular_money: { type: integer, format: int64 }
         main_money_inflow: { type: integer, format: int64 }
@@ -385,13 +396,24 @@ components:
         - type: object
           properties:
             latest_price: { type: number }
+            open_price: { type: number }
+            high_price: { type: number }
+            low_price: { type: number }
+            previous_close: { type: number }
             change_pct: { type: number, description: 原始小数，展示时乘 100 }
             change_value: { type: number }
             volume: { type: integer, format: int64 }
             turnover: { type: integer, format: int64 }
+            turnover_rate: { type: number, description: 原始小数，展示时乘 100 }
+            amplitude: { type: number, description: 原始小数，展示时乘 100 }
             quote_time: { type: string }
             fetched_at: { type: string, format: date-time }
             quote_available: { type: boolean }
+            dark_rank: { type: integer, format: int64, description: 同日个股暗盘榜排名 }
+            dark_money: { type: integer, format: int64 }
+            main_money_inflow: { type: integer, format: int64 }
+            dark_activity: { type: number, description: 个股暗盘榜原始活跃度，口径为 abs(暗盘资金) / 成交额 }
+            dark_data_available: { type: boolean }
     CollectionRun:
       type: object
       properties:

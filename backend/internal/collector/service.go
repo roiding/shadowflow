@@ -22,6 +22,10 @@ type RelationSource interface {
 	FetchBoardConstituents(context.Context, graymarket.Board) ([]graymarket.StockBoardRelation, error)
 }
 
+type StockDailyQuoteSource interface {
+	FetchStockQuotes(context.Context, []graymarket.StockBoardRelation) ([]graymarket.StockQuote, error)
+}
+
 type store interface {
 	SaveIntraday(context.Context, string, graymarket.RankSnapshot, bool) error
 	SaveDailyClose(context.Context, string, graymarket.RankSnapshot) error
@@ -137,6 +141,12 @@ func (s *Service) collect(ctx context.Context, rankType graymarket.RankType, kin
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "date_mismatch", mismatch.Error()
 		return finish(mismatch)
 	}
+	if kind == graymarket.SnapshotDailyClose && rankType == graymarket.RankStock {
+		if err := s.enrichStockDailyClose(ctx, &snapshot); err != nil {
+			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
+			return finish(err)
+		}
+	}
 
 	var saveErr error
 	if kind == graymarket.SnapshotMinuteWork {
@@ -153,6 +163,70 @@ func (s *Service) collect(ctx context.Context, rankType graymarket.RankType, kin
 	s.logger.Info("collection finished", "run_id", runID, "kind", kind, "rank_type", rankType,
 		"records", len(snapshot.Records), "pages", len(snapshot.RawPages), "duration_ms", run.DurationMS, "error", resultErr)
 	return resultErr
+}
+
+func (s *Service) enrichStockDailyClose(ctx context.Context, snapshot *graymarket.RankSnapshot) error {
+	source, ok := s.source.(StockDailyQuoteSource)
+	if !ok {
+		return errors.New("stock daily quote source is unavailable")
+	}
+	relations := make([]graymarket.StockBoardRelation, 0, len(snapshot.Records))
+	for _, record := range snapshot.Records {
+		relations = append(relations, graymarket.StockBoardRelation{
+			StockCode: record.Code, StockMarket: record.Market, StockName: record.Name,
+		})
+	}
+	quotes, err := source.FetchStockQuotes(ctx, relations)
+	if err != nil {
+		return fmt.Errorf("fetch stock daily quotes: %w", err)
+	}
+	byCode := make(map[string]graymarket.StockQuote, len(quotes))
+	usable := 0
+	wrongDate := 0
+	for _, quote := range quotes {
+		byCode[quote.StockCode] = quote
+		if quote.Available || quote.PreviousClose > 0 {
+			usable++
+		}
+		if quote.Available && quoteDate(quote.QuoteTime, snapshot.SnapshotAt.Location()) != snapshot.TradeDate {
+			wrongDate++
+		}
+	}
+	if usable != len(snapshot.Records) {
+		return fmt.Errorf("incomplete stock daily quotes: expected %d usable rows, got %d", len(snapshot.Records), usable)
+	}
+	if wrongDate > 0 {
+		return fmt.Errorf("stock daily quotes contain %d rows outside trade date %s", wrongDate, snapshot.TradeDate)
+	}
+	for index := range snapshot.Records {
+		record := &snapshot.Records[index]
+		quote := byCode[record.Code]
+		record.OpenPrice = quote.OpenPrice
+		record.HighPrice = quote.HighPrice
+		record.LowPrice = quote.LowPrice
+		record.ClosePrice = quote.LatestPrice
+		record.PreviousClose = quote.PreviousClose
+		record.ChangeValue = quote.ChangeValue
+		record.Volume = quote.Volume
+		record.Turnover = quote.Turnover
+		record.TurnoverRate = quote.TurnoverRate
+		record.Amplitude = quote.Amplitude
+		record.QuoteAvailable = quote.Available
+		if quote.Available {
+			record.ChangePct = quote.ChangePct
+		}
+	}
+	return nil
+}
+
+func quoteDate(value string, location *time.Location) string {
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed.In(location).Format("2006-01-02")
+	}
+	if parsed, err := time.ParseInLocation("2006-01-02 15:04:05", value, location); err == nil {
+		return parsed.Format("2006-01-02")
+	}
+	return ""
 }
 
 func isLongTermBoundary(value time.Time) bool {

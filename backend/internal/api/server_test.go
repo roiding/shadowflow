@@ -37,6 +37,14 @@ func testServer(t *testing.T, staticDir string) (*Server, *sqlite.Store) {
 	return server, store
 }
 
+type staticQuoteSource struct {
+	quotes []graymarket.StockQuote
+}
+
+func (source staticQuoteSource) FetchStockQuotes(context.Context, []graymarket.StockBoardRelation) ([]graymarket.StockQuote, error) {
+	return source.quotes, nil
+}
+
 func TestRelationAPIsReconstructAsOfDate(t *testing.T) {
 	server, store := testServer(t, "")
 	defer store.Close()
@@ -58,17 +66,38 @@ func TestRelationAPIsReconstructAsOfDate(t *testing.T) {
 	if _, err := store.ApplyRelationScan(ctx, run.RunID, run.TradeDate, startedAt); err != nil {
 		t.Fatal(err)
 	}
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	closeAt := time.Date(2026, 8, 13, 15, 0, 0, 0, location)
+	if err := store.SaveDailyClose(ctx, "stock-close", graymarket.RankSnapshot{
+		RequestedDate: "20260813", TradeDate: run.TradeDate, RankType: graymarket.RankStock, SnapshotAt: closeAt,
+		Records: []graymarket.RankRecord{{TradeDate: run.TradeDate, SnapshotAt: closeAt, RankType: graymarket.RankStock,
+			Rank: 7, Code: "000001", Name: "平安银行", OpenPrice: 10.1, HighPrice: 10.8, LowPrice: 9.9,
+			ClosePrice: 10.5, PreviousClose: 10, Turnover: 1000, TurnoverRate: 0.02, QuoteAvailable: true,
+			DarkMoney: -250, MainMoneyInflow: 125, DarkActivity: 0.25, FetchedAt: closeAt}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server.quotes = staticQuoteSource{quotes: []graymarket.StockQuote{{
+		StockCode: "000001", StockName: "平安银行", LatestPrice: 10.5, Turnover: 1000, Available: true,
+	}}}
 
 	for target, expected := range map[string]string{
 		"/api/v1/stocks/000001/boards?as_of=2026-08-13":         `"board_code":"BK101"`,
 		"/api/v1/boards/industry/BK001/stocks?as_of=2026-08-13": `"stock_code":"000001"`,
-		"/api/v1/boards/industry/BK001/quotes?as_of=2026-08-13": `"quote_available":false`,
+		"/api/v1/boards/industry/BK001/quotes?as_of=2026-08-13": `"dark_activity":0.25`,
 		"/api/v1/relations/changes?trade_date=2026-08-13":       `"data":[]`,
 	} {
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), expected) {
 			t.Fatalf("%s: status=%d body=%s", target, response.Code, response.Body.String())
+		}
+	}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/boards/industry/BK001/quotes?as_of=2026-08-13", nil))
+	for _, expected := range []string{`"dark_rank":7`, `"dark_money":-250`, `"main_money_inflow":125`, `"dark_data_available":true`, `"open_price":10.1`, `"previous_close":10`, `"turnover_rate":0.02`} {
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), expected) {
+			t.Fatalf("board quote enrichment missing %s: status=%d body=%s", expected, response.Code, response.Body.String())
 		}
 	}
 	for _, target := range []string{

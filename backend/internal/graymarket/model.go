@@ -74,7 +74,18 @@ type RankRecord struct {
 	Name             string    `json:"name"`
 	QuoteTime        string    `json:"quote_time"`
 	LatestPriceRaw   int64     `json:"latest_price_raw"`
+	OpenPrice        float64   `json:"open_price"`
+	HighPrice        float64   `json:"high_price"`
+	LowPrice         float64   `json:"low_price"`
+	ClosePrice       float64   `json:"close_price"`
+	PreviousClose    float64   `json:"previous_close"`
+	ChangeValue      float64   `json:"change_value"`
 	ChangePct        float64   `json:"change_pct"`
+	Volume           int64     `json:"volume"`
+	Turnover         int64     `json:"turnover"`
+	TurnoverRate     float64   `json:"turnover_rate"`
+	Amplitude        float64   `json:"amplitude"`
+	QuoteAvailable   bool      `json:"quote_available"`
 	DarkMoney        int64     `json:"dark_money"`
 	RegularMoney     int64     `json:"regular_money"`
 	MainMoneyInflow  int64     `json:"main_money_inflow"`
@@ -137,20 +148,26 @@ type StockBoardRelationChange struct {
 	RunID      string             `json:"run_id"`
 }
 
-// StockQuote is an ephemeral upstream quote. It is intentionally not stored
-// with the daily research snapshots because it is only used for live context.
+// StockQuote is an upstream market quote used both for live constituent context
+// and to enrich the stock daily-close snapshot with end-of-day market fields.
 type StockQuote struct {
-	StockCode   string    `json:"stock_code"`
-	StockMarket int64     `json:"stock_market"`
-	StockName   string    `json:"stock_name"`
-	LatestPrice float64   `json:"latest_price"`
-	ChangePct   float64   `json:"change_pct"`
-	ChangeValue float64   `json:"change_value"`
-	Volume      int64     `json:"volume"`
-	Turnover    int64     `json:"turnover"`
-	QuoteTime   string    `json:"quote_time"`
-	FetchedAt   time.Time `json:"fetched_at"`
-	Available   bool      `json:"available"`
+	StockCode     string    `json:"stock_code"`
+	StockMarket   int64     `json:"stock_market"`
+	StockName     string    `json:"stock_name"`
+	LatestPrice   float64   `json:"latest_price"`
+	OpenPrice     float64   `json:"open_price"`
+	HighPrice     float64   `json:"high_price"`
+	LowPrice      float64   `json:"low_price"`
+	PreviousClose float64   `json:"previous_close"`
+	ChangePct     float64   `json:"change_pct"`
+	ChangeValue   float64   `json:"change_value"`
+	Volume        int64     `json:"volume"`
+	Turnover      int64     `json:"turnover"`
+	TurnoverRate  float64   `json:"turnover_rate"`
+	Amplitude     float64   `json:"amplitude"`
+	QuoteTime     string    `json:"quote_time"`
+	FetchedAt     time.Time `json:"fetched_at"`
+	Available     bool      `json:"available"`
 }
 
 func FormatQuoteTime(value int64) string {

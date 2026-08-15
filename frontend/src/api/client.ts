@@ -35,7 +35,7 @@ export const api = {
   intraday: (type: Exclude<RankType, 'stock'>, code: string, date: string) =>
     request<RankRecord[]>(`/api/v1/boards/${type}/${encodeURIComponent(code)}/intraday?trade_date=${date}`),
   boardQuotes: (type: Exclude<RankType, 'stock'>, code: string, asOf: string) =>
-    request<BoardStockQuote[], { as_of: string; quote_source: string; quote_available: boolean; quoted_count?: number; quote_error?: string }>(`/api/v1/boards/${type}/${encodeURIComponent(code)}/quotes?as_of=${asOf}`),
+    request<BoardStockQuote[], { as_of: string; quote_source: string; quote_available: boolean; quoted_count?: number; quote_error?: string; dark_data_available: boolean; dark_data_count: number }>(`/api/v1/boards/${type}/${encodeURIComponent(code)}/quotes?as_of=${asOf}`),
   trend: (type: Exclude<RankType, 'stock'>, code: string, from: string, to: string) =>
     request<RankRecord[]>(`/api/v1/boards/${type}/${encodeURIComponent(code)}/trend?from=${from}&to=${to}&interval=5m`),
   dailyClose: (type: RankType, date: string, query: string, sort: string, direction: 'asc' | 'desc', page: number, pageSize: number) => {

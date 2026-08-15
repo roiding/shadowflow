@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -10,6 +11,44 @@ import (
 	"github.com/roiding/shadowflow/internal/graymarket"
 	"github.com/roiding/shadowflow/internal/repository"
 )
+
+func TestMigrateDailyQuoteColumnsAddsFieldsToLegacyTables(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, table := range []string{"rank_intraday_work", "rank_snapshot"} {
+		if _, err := db.Exec(`CREATE TABLE ` + table + ` (legacy_id INTEGER NOT NULL)`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateDailyQuoteColumns(db); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"rank_intraday_work", "rank_snapshot"} {
+		columns := map[string]bool{}
+		rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var cid, notNull, primaryKey int
+			var name, columnType string
+			var defaultValue any
+			if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+				t.Fatal(err)
+			}
+			columns[name] = true
+		}
+		rows.Close()
+		for _, expected := range []string{"open_price", "high_price", "low_price", "close_price", "previous_close", "change_value", "volume", "turnover", "turnover_rate", "amplitude", "quote_available"} {
+			if !columns[expected] {
+				t.Fatalf("%s migration did not add %s: %v", table, expected, columns)
+			}
+		}
+	}
+}
 
 func TestIntradayCompactionAndCleanup(t *testing.T) {
 	store, err := Open(":memory:")
@@ -292,7 +331,10 @@ func TestDailyClosePaginationSearchAndSort(t *testing.T) {
 	location := time.FixedZone("Asia/Shanghai", 8*60*60)
 	snapshotAt := time.Date(2026, 8, 12, 15, 0, 0, 0, location)
 	snapshot := graymarket.RankSnapshot{RequestedDate: "20260812", TradeDate: "2026-08-12", RankType: graymarket.RankStock, SnapshotAt: snapshotAt, Records: []graymarket.RankRecord{
-		{TradeDate: "2026-08-12", SnapshotAt: snapshotAt, RankType: graymarket.RankStock, Rank: 1, Code: "000001", Name: "平安银行", DarkMoney: 300, FetchedAt: snapshotAt},
+		{TradeDate: "2026-08-12", SnapshotAt: snapshotAt, RankType: graymarket.RankStock, Rank: 1, Code: "000001", Name: "平安银行",
+			OpenPrice: 10.1, HighPrice: 10.8, LowPrice: 9.9, ClosePrice: 10.5, PreviousClose: 10, ChangeValue: 0.5,
+			ChangePct: 0.05, Volume: 1234, Turnover: 5678900, TurnoverRate: 0.0123, Amplitude: 0.09, QuoteAvailable: true,
+			DarkMoney: 300, DarkActivity: 0.000052827, FetchedAt: snapshotAt},
 		{TradeDate: "2026-08-12", SnapshotAt: snapshotAt, RankType: graymarket.RankStock, Rank: 2, Code: "600000", Name: "浦发银行", DarkMoney: 100, FetchedAt: snapshotAt},
 		{TradeDate: "2026-08-12", SnapshotAt: snapshotAt, RankType: graymarket.RankStock, Rank: 3, Code: "000002", Name: "万科A", DarkMoney: 200, FetchedAt: snapshotAt},
 	}}
@@ -322,6 +364,17 @@ func TestDailyClosePaginationSearchAndSort(t *testing.T) {
 	}
 	if total != 0 || len(page) != 0 {
 		t.Fatalf("LIKE wildcard was not escaped: total=%d records=%+v", total, page)
+	}
+	selected, err := store.DailyCloseStocks(ctx, "2026-08-12", []string{"000002", "000001", "000001", "999999"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != 2 || selected[0].Code != "000001" || selected[1].Code != "000002" {
+		t.Fatalf("unexpected selected daily close stocks: %+v", selected)
+	}
+	first := selected[0]
+	if first.OpenPrice != 10.1 || first.HighPrice != 10.8 || first.LowPrice != 9.9 || first.ClosePrice != 10.5 || first.PreviousClose != 10 || first.Turnover != 5678900 || first.TurnoverRate != 0.0123 || !first.QuoteAvailable {
+		t.Fatalf("daily OHLC fields were not persisted: %+v", first)
 	}
 	all, err := store.DailyCloseRecords(ctx, "2026-08-12")
 	if err != nil || len(all) != 5 {

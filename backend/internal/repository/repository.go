@@ -112,6 +112,7 @@ type Store interface {
 	IntradaySeries(context.Context, graymarket.RankType, string, string) ([]graymarket.RankRecord, error)
 	ResearchSeries(context.Context, graymarket.RankType, string, time.Time, time.Time) ([]graymarket.RankRecord, error)
 	DailyClosePage(context.Context, graymarket.RankType, string, string, string, bool, int, int) ([]graymarket.RankRecord, int, error)
+	DailyCloseStocks(context.Context, string, []string) ([]graymarket.RankRecord, error)
 	DailyCloseRecords(context.Context, string) ([]graymarket.RankRecord, error)
 	HasDailyClose(context.Context, string) (bool, error)
 	Quality(context.Context, string) ([]QualitySummary, error)

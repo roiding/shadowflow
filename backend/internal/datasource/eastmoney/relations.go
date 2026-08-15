@@ -58,7 +58,7 @@ func (c *Client) FetchStockQuotes(ctx context.Context, relations []graymarket.St
 		params := url.Values{
 			"fltt":   {"2"},
 			"invt":   {"2"},
-			"fields": {"f2,f3,f4,f5,f6,f12,f14,f124"},
+			"fields": {"f2,f3,f4,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f124"},
 			"secids": {strings.Join(secids, ",")},
 		}
 		_, rows, err := c.fetchQuotePage(ctx, "/api/qt/ulist.np/get", params)
@@ -73,17 +73,23 @@ func (c *Client) FetchStockQuotes(ctx context.Context, relations []graymarket.St
 			}
 			latestPrice, available := optionalFloat(row, "f2")
 			quotes[code] = graymarket.StockQuote{
-				StockCode:   code,
-				StockMarket: intValue(row, "f13"),
-				StockName:   optionalString(row, "f14"),
-				LatestPrice: latestPrice,
-				ChangePct:   floatValue(row, "f3") / 100,
-				ChangeValue: floatValue(row, "f4"),
-				Volume:      intValue(row, "f5"),
-				Turnover:    intValue(row, "f6"),
-				QuoteTime:   formatQuoteUpdateTime(optionalString(row, "f124")),
-				FetchedAt:   fetchedAt,
-				Available:   available,
+				StockCode:     code,
+				StockMarket:   intValue(row, "f13"),
+				StockName:     optionalString(row, "f14"),
+				LatestPrice:   latestPrice,
+				OpenPrice:     floatValue(row, "f17"),
+				HighPrice:     floatValue(row, "f15"),
+				LowPrice:      floatValue(row, "f16"),
+				PreviousClose: floatValue(row, "f18"),
+				ChangePct:     floatValue(row, "f3") / 100,
+				ChangeValue:   floatValue(row, "f4"),
+				Volume:        intValue(row, "f5"),
+				Turnover:      intValue(row, "f6"),
+				TurnoverRate:  floatValue(row, "f8") / 100,
+				Amplitude:     floatValue(row, "f7") / 100,
+				QuoteTime:     formatQuoteUpdateTime(optionalString(row, "f124")),
+				FetchedAt:     fetchedAt,
+				Available:     available,
 			}
 		}
 	}

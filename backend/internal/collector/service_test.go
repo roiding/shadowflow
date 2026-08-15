@@ -20,9 +20,10 @@ type sourceResult struct {
 }
 
 type fakeSource struct {
-	mu      sync.Mutex
-	results []sourceResult
-	calls   int
+	mu       sync.Mutex
+	results  []sourceResult
+	calls    int
+	quoteErr error
 }
 
 func (s *fakeSource) FetchAll(context.Context, graymarket.RankType, string, time.Time) (graymarket.RankSnapshot, error) {
@@ -33,12 +34,27 @@ func (s *fakeSource) FetchAll(context.Context, graymarket.RankType, string, time
 	return result.snapshot, result.err
 }
 
+func (s *fakeSource) FetchStockQuotes(_ context.Context, relations []graymarket.StockBoardRelation) ([]graymarket.StockQuote, error) {
+	if s.quoteErr != nil {
+		return nil, s.quoteErr
+	}
+	quotes := make([]graymarket.StockQuote, 0, len(relations))
+	for _, relation := range relations {
+		quotes = append(quotes, graymarket.StockQuote{StockCode: relation.StockCode, StockMarket: relation.StockMarket,
+			StockName: relation.StockName, LatestPrice: 10, OpenPrice: 9.5, HighPrice: 10.5, LowPrice: 9.25,
+			PreviousClose: 9, ChangePct: 0.1111, ChangeValue: 1, Volume: 100, Turnover: 1000,
+			TurnoverRate: 0.02, Amplitude: 0.1, QuoteTime: "2026-08-14T07:00:00Z", Available: true})
+	}
+	return quotes, nil
+}
+
 type fakeStore struct {
 	mu              sync.Mutex
 	started         []repository.CollectionRun
 	finished        []repository.CollectionRun
 	savedIntraday   int
 	savedDailyClose int
+	lastDailyClose  graymarket.RankSnapshot
 	startErr        error
 	finishErr       error
 	saveErr         error
@@ -55,10 +71,11 @@ func (s *fakeStore) SaveIntraday(_ context.Context, _ string, _ graymarket.RankS
 	return s.saveErr
 }
 
-func (s *fakeStore) SaveDailyClose(_ context.Context, _ string, _ graymarket.RankSnapshot) error {
+func (s *fakeStore) SaveDailyClose(_ context.Context, _ string, snapshot graymarket.RankSnapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.savedDailyClose++
+	s.lastDailyClose = snapshot
 	return s.saveErr
 }
 
@@ -98,12 +115,14 @@ func successfulSnapshot(at time.Time) graymarket.RankSnapshot {
 		SnapshotAt:    at,
 		ExpectedTotal: 1,
 		Records: []graymarket.RankRecord{{
-			TradeDate:  tradeDate,
-			SnapshotAt: at,
-			RankType:   graymarket.RankIndustry,
-			Rank:       1,
-			Code:       "BK001",
-			Name:       "board",
+			TradeDate:    tradeDate,
+			SnapshotAt:   at,
+			RankType:     graymarket.RankIndustry,
+			Rank:         1,
+			Code:         "BK001",
+			Name:         "board",
+			DarkMoney:    123,
+			DarkActivity: 0.123,
 		}},
 		RawPages: []graymarket.RawPage{{Page: 1}},
 	}
@@ -189,7 +208,32 @@ func TestCollectPropagatesFinishRunFailure(t *testing.T) {
 	if store.savedDailyClose != 1 {
 		t.Fatalf("snapshot should be saved before finish failure, got %d saves", store.savedDailyClose)
 	}
+	if len(store.lastDailyClose.Records) != 1 {
+		t.Fatalf("daily close snapshot was not retained by test store: %+v", store.lastDailyClose)
+	}
+	record := store.lastDailyClose.Records[0]
+	if record.OpenPrice != 9.5 || record.HighPrice != 10.5 || record.LowPrice != 9.25 || record.ClosePrice != 10 || record.PreviousClose != 9 || record.Turnover != 1000 || record.TurnoverRate != 0.02 || !record.QuoteAvailable {
+		t.Fatalf("daily OHLC quote fields were not enriched: %+v", record)
+	}
+	if record.DarkActivity != 0.123 {
+		t.Fatalf("original dark activity must be preserved, got %f", record.DarkActivity)
+	}
 	if len(store.finished) != 1 || store.finished[0].Status != repository.RunSuccess {
 		t.Fatalf("unexpected finished run: %+v", store.finished)
+	}
+}
+
+func TestCollectDailyCloseFailsWhenQuoteEnrichmentFails(t *testing.T) {
+	at := time.Date(2026, 8, 14, 15, 0, 0, 0, time.UTC)
+	quoteErr := errors.New("quote unavailable")
+	source := &fakeSource{results: []sourceResult{{snapshot: successfulSnapshot(at)}}, quoteErr: quoteErr}
+	store := &fakeStore{}
+
+	err := newTestService(source, store).collect(context.Background(), graymarket.RankStock, graymarket.SnapshotDailyClose, "20260814", at)
+	if !errors.Is(err, quoteErr) || store.savedDailyClose != 0 {
+		t.Fatalf("incomplete OHLC snapshot must not be saved: err=%v saves=%d", err, store.savedDailyClose)
+	}
+	if len(store.finished) != 1 || store.finished[0].ErrorCode != "quote_enrichment" {
+		t.Fatalf("unexpected failed run: %+v", store.finished)
 	}
 }

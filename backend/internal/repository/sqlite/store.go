@@ -42,6 +42,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate database: %w", err)
 	}
+	if err := migrateDailyQuoteColumns(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate daily quote columns: %w", err)
+	}
 	if err := migrateResearchCloseModel(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate 15:00 close snapshots: %w", err)
@@ -75,6 +79,50 @@ GROUP BY trade_date HAVING count(DISTINCT rank_type)=2
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+func migrateDailyQuoteColumns(db *sql.DB) error {
+	migrations := []struct{ name, definition string }{
+		{"open_price", "REAL NOT NULL DEFAULT 0"},
+		{"high_price", "REAL NOT NULL DEFAULT 0"},
+		{"low_price", "REAL NOT NULL DEFAULT 0"},
+		{"close_price", "REAL NOT NULL DEFAULT 0"},
+		{"previous_close", "REAL NOT NULL DEFAULT 0"},
+		{"change_value", "REAL NOT NULL DEFAULT 0"},
+		{"volume", "INTEGER NOT NULL DEFAULT 0"},
+		{"turnover", "INTEGER NOT NULL DEFAULT 0"},
+		{"turnover_rate", "REAL NOT NULL DEFAULT 0"},
+		{"amplitude", "REAL NOT NULL DEFAULT 0"},
+		{"quote_available", "INTEGER NOT NULL DEFAULT 0"},
+	}
+	for _, table := range []string{"rank_intraday_work", "rank_snapshot"} {
+		columns := map[string]bool{}
+		rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var cid, notNull, primaryKey int
+			var name, columnType string
+			var defaultValue any
+			if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+				rows.Close()
+				return err
+			}
+			columns[name] = true
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, migration := range migrations {
+			if !columns[migration.name] {
+				if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + migration.name + ` ` + migration.definition); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
 
 func migrateResearchCloseModel(db *sql.DB) error {
 	columns := map[string]bool{}
@@ -240,17 +288,21 @@ func insertRecord(ctx context.Context, tx *sql.Tx, table, runID, requestedDate, 
 	}
 	commonArgs = append(commonArgs,
 		string(record.RankType), record.Rank, record.Market, record.Code, record.Name, record.QuoteTime,
-		record.LatestPriceRaw, record.ChangePct, record.DarkMoney, record.RegularMoney, record.MainMoneyInflow,
+		record.LatestPriceRaw, record.OpenPrice, record.HighPrice, record.LowPrice, record.ClosePrice, record.PreviousClose,
+		record.ChangeValue, record.ChangePct, record.Volume, record.Turnover, record.TurnoverRate, record.Amplitude, boolInt(record.QuoteAvailable),
+		record.DarkMoney, record.RegularMoney, record.MainMoneyInflow,
 		record.DarkActivity, record.DarkInflowRatio, record.UpCount, record.FlatCount, record.DownCount,
 		record.LeaderName, record.LeaderCode, record.SourceVersion, record.SourceSortFlag, boolInt(record.SourceDescending),
 		record.FetchedAt.Format(timestampLayout),
 	)
 	columns := `run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,quote_time,
-latest_price_raw,change_pct,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+	latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,change_pct,
+	volume,turnover,turnover_rate,amplitude,quote_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at`
 	if table == "rank_snapshot" {
 		columns = `run_id,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,quote_time,
-latest_price_raw,change_pct,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+	latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,change_pct,
+	volume,turnover,turnover_rate,amplitude,quote_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at`
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(commonArgs)), ",")

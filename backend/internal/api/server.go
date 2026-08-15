@@ -137,22 +137,33 @@ func (s *Server) boardStocks(w http.ResponseWriter, r *http.Request) {
 }
 
 type boardStockQuote struct {
-	StockCode      string               `json:"stock_code"`
-	StockMarket    int64                `json:"stock_market"`
-	StockName      string               `json:"stock_name"`
-	BoardCode      string               `json:"board_code"`
-	BoardName      string               `json:"board_name"`
-	BoardType      graymarket.BoardType `json:"board_type"`
-	SourceOrder    int                  `json:"source_order"`
-	EffectiveDate  string               `json:"effective_date,omitempty"`
-	LatestPrice    float64              `json:"latest_price"`
-	ChangePct      float64              `json:"change_pct"`
-	ChangeValue    float64              `json:"change_value"`
-	Volume         int64                `json:"volume"`
-	Turnover       int64                `json:"turnover"`
-	QuoteTime      string               `json:"quote_time"`
-	FetchedAt      time.Time            `json:"fetched_at,omitempty"`
-	QuoteAvailable bool                 `json:"quote_available"`
+	StockCode         string               `json:"stock_code"`
+	StockMarket       int64                `json:"stock_market"`
+	StockName         string               `json:"stock_name"`
+	BoardCode         string               `json:"board_code"`
+	BoardName         string               `json:"board_name"`
+	BoardType         graymarket.BoardType `json:"board_type"`
+	SourceOrder       int                  `json:"source_order"`
+	EffectiveDate     string               `json:"effective_date,omitempty"`
+	LatestPrice       float64              `json:"latest_price"`
+	OpenPrice         float64              `json:"open_price"`
+	HighPrice         float64              `json:"high_price"`
+	LowPrice          float64              `json:"low_price"`
+	PreviousClose     float64              `json:"previous_close"`
+	ChangePct         float64              `json:"change_pct"`
+	ChangeValue       float64              `json:"change_value"`
+	Volume            int64                `json:"volume"`
+	Turnover          int64                `json:"turnover"`
+	TurnoverRate      float64              `json:"turnover_rate"`
+	Amplitude         float64              `json:"amplitude"`
+	QuoteTime         string               `json:"quote_time"`
+	FetchedAt         time.Time            `json:"fetched_at,omitempty"`
+	QuoteAvailable    bool                 `json:"quote_available"`
+	DarkRank          int64                `json:"dark_rank"`
+	DarkMoney         int64                `json:"dark_money"`
+	MainMoneyInflow   int64                `json:"main_money_inflow"`
+	DarkActivity      float64              `json:"dark_activity"`
+	DarkDataAvailable bool                 `json:"dark_data_available"`
 }
 
 func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
@@ -174,11 +185,25 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
+	stockCodes := make([]string, 0, len(relations))
+	for _, relation := range relations {
+		stockCodes = append(stockCodes, relation.StockCode)
+	}
+	darkRecords, err := s.store.DailyCloseStocks(r.Context(), asOf, stockCodes)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	darkByCode := make(map[string]graymarket.RankRecord, len(darkRecords))
+	for _, record := range darkRecords {
+		darkByCode[record.Code] = record
+	}
 
 	quotes := make(map[string]graymarket.StockQuote, len(relations))
 	meta := map[string]any{
 		"as_of": asOf, "board_type": boardType, "board_code": boardCode,
 		"quote_source": "unavailable", "quote_available": false,
+		"dark_data_available": len(darkRecords) > 0, "dark_data_count": len(darkRecords),
 	}
 	if s.quotes != nil && len(relations) > 0 {
 		latest, quoteErr := s.quotes.FetchStockQuotes(r.Context(), relations)
@@ -200,13 +225,27 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 	result := make([]boardStockQuote, 0, len(relations))
 	for _, relation := range relations {
 		quote := quotes[relation.StockCode]
+		dark, darkAvailable := darkByCode[relation.StockCode]
+		turnover := quote.Turnover
+		if turnover == 0 {
+			turnover = dark.Turnover
+		}
+		openPrice, highPrice, lowPrice, previousClose := quote.OpenPrice, quote.HighPrice, quote.LowPrice, quote.PreviousClose
+		turnoverRate, amplitude := quote.TurnoverRate, quote.Amplitude
+		if openPrice == 0 {
+			openPrice, highPrice, lowPrice, previousClose = dark.OpenPrice, dark.HighPrice, dark.LowPrice, dark.PreviousClose
+			turnoverRate, amplitude = dark.TurnoverRate, dark.Amplitude
+		}
 		result = append(result, boardStockQuote{
 			StockCode: relation.StockCode, StockMarket: relation.StockMarket, StockName: relation.StockName,
 			BoardCode: relation.BoardCode, BoardName: relation.BoardName, BoardType: relation.BoardType,
 			SourceOrder: relation.SourceOrder, EffectiveDate: relation.EffectiveDate,
-			LatestPrice: quote.LatestPrice, ChangePct: quote.ChangePct, ChangeValue: quote.ChangeValue,
-			Volume: quote.Volume, Turnover: quote.Turnover, QuoteTime: quote.QuoteTime, FetchedAt: quote.FetchedAt,
+			LatestPrice: quote.LatestPrice, OpenPrice: openPrice, HighPrice: highPrice, LowPrice: lowPrice, PreviousClose: previousClose,
+			ChangePct: quote.ChangePct, ChangeValue: quote.ChangeValue, Volume: quote.Volume, Turnover: turnover,
+			TurnoverRate: turnoverRate, Amplitude: amplitude, QuoteTime: quote.QuoteTime, FetchedAt: quote.FetchedAt,
 			QuoteAvailable: quote.Available,
+			DarkRank:       dark.Rank, DarkMoney: dark.DarkMoney, MainMoneyInflow: dark.MainMoneyInflow,
+			DarkActivity: dark.DarkActivity, DarkDataAvailable: darkAvailable,
 		})
 	}
 	writeJSON(w, http.StatusOK, envelope{Data: result, Meta: meta})
@@ -449,7 +488,12 @@ func (s *Server) dailyClose(w http.ResponseWriter, r *http.Request) {
 	if sort == "" {
 		sort = "rank"
 	}
-	allowedSort := map[string]bool{"rank": true, "name": true, "code": true, "dark_money": true, "main_money_inflow": true, "change_pct": true}
+	allowedSort := map[string]bool{
+		"rank": true, "name": true, "code": true, "dark_money": true, "main_money_inflow": true,
+		"change_pct": true, "dark_activity": true, "open_price": true, "high_price": true,
+		"low_price": true, "close_price": true, "previous_close": true, "volume": true,
+		"turnover": true, "turnover_rate": true, "amplitude": true,
+	}
 	if !allowedSort[sort] {
 		writeError(w, http.StatusBadRequest, "invalid_sort", "sort is not supported")
 		return
@@ -624,10 +668,17 @@ func (s *Server) exportDailyClose(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="shadowflow-daily-close-%s.csv"`, tradeDate))
 	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
 	writer := csv.NewWriter(w)
-	_ = writer.Write([]string{"trade_date", "snapshot_kind", "snapshot_at", "rank_type", "rank", "code", "name", "latest_price_raw", "change_pct", "dark_money", "regular_money", "main_money_inflow", "dark_activity", "dark_inflow_ratio", "up_count", "flat_count", "down_count"})
+	_ = writer.Write([]string{"trade_date", "snapshot_kind", "snapshot_at", "rank_type", "rank", "code", "name",
+		"open_price", "high_price", "low_price", "close_price", "previous_close", "change_value", "change_pct",
+		"volume", "turnover", "turnover_rate", "amplitude", "quote_available", "latest_price_raw",
+		"dark_money", "regular_money", "main_money_inflow", "dark_activity", "dark_inflow_ratio", "up_count", "flat_count", "down_count"})
 	for _, record := range records {
 		_ = writer.Write([]string{record.TradeDate, string(graymarket.SnapshotDailyClose), record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, record.Name,
-			strconv.FormatInt(record.LatestPriceRaw, 10), strconv.FormatFloat(record.ChangePct, 'f', 8, 64), strconv.FormatInt(record.DarkMoney, 10),
+			strconv.FormatFloat(record.OpenPrice, 'f', 4, 64), strconv.FormatFloat(record.HighPrice, 'f', 4, 64), strconv.FormatFloat(record.LowPrice, 'f', 4, 64),
+			strconv.FormatFloat(record.ClosePrice, 'f', 4, 64), strconv.FormatFloat(record.PreviousClose, 'f', 4, 64), strconv.FormatFloat(record.ChangeValue, 'f', 4, 64),
+			strconv.FormatFloat(record.ChangePct, 'f', 8, 64), strconv.FormatInt(record.Volume, 10), strconv.FormatInt(record.Turnover, 10),
+			strconv.FormatFloat(record.TurnoverRate, 'f', 8, 64), strconv.FormatFloat(record.Amplitude, 'f', 8, 64), strconv.FormatBool(record.QuoteAvailable),
+			strconv.FormatInt(record.LatestPriceRaw, 10), strconv.FormatInt(record.DarkMoney, 10),
 			strconv.FormatInt(record.RegularMoney, 10), strconv.FormatInt(record.MainMoneyInflow, 10), strconv.FormatFloat(record.DarkActivity, 'f', 8, 64),
 			strconv.FormatFloat(record.DarkInflowRatio, 'f', 8, 64), strconv.FormatInt(record.UpCount, 10), strconv.FormatInt(record.FlatCount, 10), strconv.FormatInt(record.DownCount, 10)})
 	}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,7 +14,8 @@ import (
 )
 
 const recordColumns = `snapshot_at,trade_date,rank_type,rank,market,code,name,quote_time,
-latest_price_raw,change_pct,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+	latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,change_pct,
+	volume,turnover,turnover_rate,amplitude,quote_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at`
 
 func (s *Store) LatestRank(ctx context.Context, rankType graymarket.RankType) ([]graymarket.RankRecord, error) {
@@ -99,7 +101,9 @@ ORDER BY snapshot_at`, string(rankType), code, from.Format(timestampLayout), to.
 func (s *Store) DailyClosePage(ctx context.Context, rankType graymarket.RankType, tradeDate, search, sort string, descending bool, limit, offset int) ([]graymarket.RankRecord, int, error) {
 	sortColumns := map[string]string{
 		"rank": "rank", "name": "name", "code": "code", "dark_money": "dark_money",
-		"main_money_inflow": "main_money_inflow", "change_pct": "change_pct",
+		"main_money_inflow": "main_money_inflow", "change_pct": "change_pct", "dark_activity": "dark_activity",
+		"open_price": "open_price", "high_price": "high_price", "low_price": "low_price", "close_price": "close_price",
+		"previous_close": "previous_close", "volume": "volume", "turnover": "turnover", "turnover_rate": "turnover_rate", "amplitude": "amplitude",
 	}
 	column, ok := sortColumns[sort]
 	if !ok {
@@ -131,6 +135,48 @@ func (s *Store) DailyClosePage(ctx context.Context, rankType graymarket.RankType
 	return records, total, err
 }
 
+func (s *Store) DailyCloseStocks(ctx context.Context, tradeDate string, stockCodes []string) ([]graymarket.RankRecord, error) {
+	if len(stockCodes) == 0 {
+		return []graymarket.RankRecord{}, nil
+	}
+	unique := make([]string, 0, len(stockCodes))
+	seen := make(map[string]struct{}, len(stockCodes))
+	for _, code := range stockCodes {
+		if code == "" {
+			continue
+		}
+		if _, exists := seen[code]; exists {
+			continue
+		}
+		seen[code] = struct{}{}
+		unique = append(unique, code)
+	}
+	result := make([]graymarket.RankRecord, 0, len(unique))
+	const batchSize = 500
+	for start := 0; start < len(unique); start += batchSize {
+		end := min(start+batchSize, len(unique))
+		batch := unique[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, tradeDate)
+		for _, code := range batch {
+			args = append(args, code)
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
+WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock' AND code IN (`+placeholders+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		records, err := scanRecords(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, records...)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Rank < result[j].Rank })
+	return result, nil
+}
+
 func (s *Store) DailyCloseRecords(ctx context.Context, tradeDate string) ([]graymarket.RankRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
 WHERE trade_date=? AND snapshot_kind='daily_close'
@@ -157,10 +203,12 @@ func scanRecord(row scanner) (graymarket.RankRecord, error) {
 	var record graymarket.RankRecord
 	var snapshotAt, fetchedAt string
 	var rankType string
-	var descending int
+	var descending, quoteAvailable int
 	err := row.Scan(
 		&snapshotAt, &record.TradeDate, &rankType, &record.Rank, &record.Market, &record.Code, &record.Name, &record.QuoteTime,
-		&record.LatestPriceRaw, &record.ChangePct, &record.DarkMoney, &record.RegularMoney, &record.MainMoneyInflow,
+		&record.LatestPriceRaw, &record.OpenPrice, &record.HighPrice, &record.LowPrice, &record.ClosePrice, &record.PreviousClose,
+		&record.ChangeValue, &record.ChangePct, &record.Volume, &record.Turnover, &record.TurnoverRate, &record.Amplitude, &quoteAvailable,
+		&record.DarkMoney, &record.RegularMoney, &record.MainMoneyInflow,
 		&record.DarkActivity, &record.DarkInflowRatio, &record.UpCount, &record.FlatCount, &record.DownCount,
 		&record.LeaderName, &record.LeaderCode, &record.SourceVersion, &record.SourceSortFlag, &descending, &fetchedAt,
 	)
@@ -169,6 +217,7 @@ func scanRecord(row scanner) (graymarket.RankRecord, error) {
 	}
 	record.RankType = graymarket.RankType(rankType)
 	record.SourceDescending = descending != 0
+	record.QuoteAvailable = quoteAvailable != 0
 	record.SnapshotAt, err = time.Parse(timestampLayout, snapshotAt)
 	if err != nil {
 		return record, fmt.Errorf("parse snapshot_at: %w", err)

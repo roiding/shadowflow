@@ -10,13 +10,24 @@ export type BoardStockQuote = {
   source_order: number
   effective_date: string
   latest_price: number
+  open_price: number
+  high_price: number
+  low_price: number
+  previous_close: number
   change_pct: number
   change_value: number
   volume: number
   turnover: number
+  turnover_rate: number
+  amplitude: number
   quote_time: string
   fetched_at?: string
   quote_available: boolean
+  dark_rank: number
+  dark_money: number
+  main_money_inflow: number
+  dark_activity: number
+  dark_data_available: boolean
 }
 
 export interface RankRecord {
@@ -29,7 +40,18 @@ export interface RankRecord {
   name: string
   quote_time: string
   latest_price_raw: number
+  open_price: number
+  high_price: number
+  low_price: number
+  close_price: number
+  previous_close: number
+  change_value: number
   change_pct: number
+  volume: number
+  turnover: number
+  turnover_rate: number
+  amplitude: number
+  quote_available: boolean
   dark_money: number
   regular_money: number
   main_money_inflow: number
