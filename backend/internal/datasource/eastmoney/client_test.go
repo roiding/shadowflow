@@ -147,3 +147,41 @@ func TestFetchAllReturnsNoData(t *testing.T) {
 		t.Fatalf("expected ErrNoData, got %v", err)
 	}
 }
+
+func TestFetchStockQuotesMapsLatestRowsAndPreservesMissingConstituents(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/api/qt/ulist.np/get" {
+			t.Fatalf("unexpected quote path: %s", r.URL.Path)
+		}
+		if !strings.Contains(r.URL.Query().Get("secids"), "1.600001") || !strings.Contains(r.URL.Query().Get("secids"), "0.000002") {
+			t.Fatalf("constituent markets/codes were not encoded: %s", r.URL.Query().Get("secids"))
+		}
+		_, _ = w.Write([]byte(`{"rc":0,"message":"","data":{"total":2,"diff":[{"f2":12.34,"f3":1.25,"f4":0.15,"f5":1234,"f6":5678900,"f12":"600001","f13":1,"f14":"测试股份","f124":"2026-08-14 10:31:00"},{"f2":"-","f3":"-","f4":"-","f5":"-","f6":"-","f12":"000003","f13":0,"f14":"停牌股份"}]}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, server.Client(), 100).WithQuoteBaseURLs([]string{server.URL})
+	relations := []graymarket.StockBoardRelation{
+		{StockCode: "600001", StockMarket: 1, StockName: "测试股份"},
+		{StockCode: "000002", StockMarket: 0, StockName: "未返回股份"},
+		{StockCode: "000003", StockMarket: 0, StockName: "停牌股份"},
+	}
+	quotes, err := client.FetchStockQuotes(context.Background(), relations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 || len(quotes) != 3 {
+		t.Fatalf("unexpected quote result: requests=%d quotes=%d", requests, len(quotes))
+	}
+	if !quotes[0].Available || quotes[0].LatestPrice != 12.34 || quotes[0].ChangePct != 0.0125 || quotes[0].Turnover != 5678900 || quotes[0].QuoteTime != "2026-08-14 10:31:00" {
+		t.Fatalf("unexpected mapped quote: %+v", quotes[0])
+	}
+	if quotes[1].Available || quotes[1].StockCode != "000002" || quotes[1].StockName != "未返回股份" {
+		t.Fatalf("missing constituent was not preserved: %+v", quotes[1])
+	}
+	if quotes[2].Available || quotes[2].LatestPrice != 0 {
+		t.Fatalf("suspended quote should be unavailable: %+v", quotes[2])
+	}
+}

@@ -44,7 +44,7 @@ func main() {
 		logger.Error("create scheduler", "error", err)
 		os.Exit(1)
 	}
-	apiServer, err := api.New(store, calendar, logger, api.Options{StaticDir: cfg.StaticDir})
+	apiServer, err := api.New(store, calendar, logger, api.Options{StaticDir: cfg.StaticDir, QuoteSource: client})
 	if err != nil {
 		logger.Error("create API", "error", err)
 		os.Exit(1)

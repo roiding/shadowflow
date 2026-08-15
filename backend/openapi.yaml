@@ -106,6 +106,17 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/RelationList" }
         "400": { $ref: "#/components/responses/Error" }
+  /api/v1/boards/{type}/{code}/quotes:
+    get:
+      summary: 按截面日查询板块成分股及最新行情快照
+      description: 成分关系按 as_of 还原；行情由东方财富批量读取，可能因上游限流或休市只返回关系而没有行情。
+      parameters:
+        - $ref: "#/components/parameters/BoardTypePath"
+        - $ref: "#/components/parameters/Code"
+        - $ref: "#/components/parameters/AsOf"
+      responses:
+        "200": { $ref: "#/components/responses/BoardQuoteList" }
+        "400": { $ref: "#/components/responses/Error" }
   /api/v1/stocks/{code}/boards:
     get:
       summary: 按截面日查询股票所属行业和概念
@@ -307,6 +318,17 @@ components:
                 type: array
                 items: { $ref: "#/components/schemas/StockBoardRelation" }
               meta: { type: object }
+    BoardQuoteList:
+      description: 成分关系与最新行情快照；行情不可用时仍返回成分关系
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data:
+                type: array
+                items: { $ref: "#/components/schemas/BoardStockQuote" }
+              meta: { type: object }
   schemas:
     RankRecord:
       type: object
@@ -357,6 +379,19 @@ components:
           properties:
             change_type: { type: string, enum: [added, removed] }
             run_id: { type: string }
+    BoardStockQuote:
+      allOf:
+        - $ref: "#/components/schemas/StockBoardRelation"
+        - type: object
+          properties:
+            latest_price: { type: number }
+            change_pct: { type: number, description: 原始小数，展示时乘 100 }
+            change_value: { type: number }
+            volume: { type: integer, format: int64 }
+            turnover: { type: integer, format: int64 }
+            quote_time: { type: string }
+            fetched_at: { type: string, format: date-time }
+            quote_available: { type: boolean }
     CollectionRun:
       type: object
       properties:
@@ -383,6 +418,7 @@ components:
         timezone: { type: string, const: Asia/Shanghai }
         market_status: { type: string, enum: [pre_open, open, lunch_break, closed] }
         trading_day: { type: boolean }
+        latest_trading_day: { type: string, format: date }
         uptime_seconds: { type: integer, format: int64 }
     QualityEnvelope:
       type: object

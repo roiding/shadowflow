@@ -1,5 +1,24 @@
 export type RankType = 'industry' | 'concept' | 'stock'
 
+export type BoardStockQuote = {
+  stock_code: string
+  stock_market: number
+  stock_name: string
+  board_code: string
+  board_name: string
+  board_type: 'industry' | 'concept'
+  source_order: number
+  effective_date: string
+  latest_price: number
+  change_pct: number
+  change_value: number
+  volume: number
+  turnover: number
+  quote_time: string
+  fetched_at?: string
+  quote_available: boolean
+}
+
 export interface RankRecord {
   trade_date: string
   snapshot_at: string
@@ -46,6 +65,7 @@ export interface SystemStatus {
   timezone: string
   market_status: 'pre_open' | 'open' | 'lunch_break' | 'closed'
   trading_day: boolean
+  latest_trading_day: string
   uptime_seconds: number
 }
 

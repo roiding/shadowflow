@@ -62,6 +62,7 @@ func TestRelationAPIsReconstructAsOfDate(t *testing.T) {
 	for target, expected := range map[string]string{
 		"/api/v1/stocks/000001/boards?as_of=2026-08-13":         `"board_code":"BK101"`,
 		"/api/v1/boards/industry/BK001/stocks?as_of=2026-08-13": `"stock_code":"000001"`,
+		"/api/v1/boards/industry/BK001/quotes?as_of=2026-08-13": `"quote_available":false`,
 		"/api/v1/relations/changes?trade_date=2026-08-13":       `"data":[]`,
 	} {
 		response := httptest.NewRecorder()
@@ -186,6 +187,20 @@ func TestTradingDaysRejectsLargeRanges(t *testing.T) {
 	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/trading-days?from=2025-01-01&to=2026-08-13", nil))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", response.Code)
+	}
+}
+
+func TestLatestTradingDayUsesPreviousWeekdayOnWeekend(t *testing.T) {
+	server, store := testServer(t, "")
+	defer store.Close()
+	weekend := time.Date(2026, 8, 15, 9, 0, 0, 0, server.location)
+	if actual := server.latestTradingDay(weekend); actual != "2026-08-14" {
+		t.Fatalf("expected previous Friday, got %s", actual)
+	}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/system/status", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"latest_trading_day":`) {
+		t.Fatalf("status response did not expose latest trading day: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

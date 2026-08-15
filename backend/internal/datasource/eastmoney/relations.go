@@ -26,6 +26,108 @@ type quoteResponse struct {
 	} `json:"data"`
 }
 
+const stockQuoteBatchSize = 100
+
+// FetchStockQuotes reads the latest quote snapshot for the supplied
+// constituents. The returned slice follows the input order and includes an
+// unavailable row when the quote service did not return a stock.
+func (c *Client) FetchStockQuotes(ctx context.Context, relations []graymarket.StockBoardRelation) ([]graymarket.StockQuote, error) {
+	quotes := make(map[string]graymarket.StockQuote, len(relations))
+	for start := 0; start < len(relations); start += stockQuoteBatchSize {
+		end := start + stockQuoteBatchSize
+		if end > len(relations) {
+			end = len(relations)
+		}
+		batch := relations[start:end]
+		secids := make([]string, 0, len(batch))
+		seen := make(map[string]struct{}, len(batch))
+		for _, relation := range batch {
+			if relation.StockCode == "" {
+				continue
+			}
+			key := relation.StockCode
+			if _, duplicate := seen[key]; duplicate {
+				continue
+			}
+			seen[key] = struct{}{}
+			secids = append(secids, fmt.Sprintf("%d.%s", relation.StockMarket, relation.StockCode))
+		}
+		if len(secids) == 0 {
+			continue
+		}
+		params := url.Values{
+			"fltt":   {"2"},
+			"invt":   {"2"},
+			"fields": {"f2,f3,f4,f5,f6,f12,f14,f124"},
+			"secids": {strings.Join(secids, ",")},
+		}
+		_, rows, err := c.fetchQuotePage(ctx, "/api/qt/ulist.np/get", params)
+		if err != nil {
+			return nil, fmt.Errorf("fetch constituent quotes: %w", err)
+		}
+		fetchedAt := time.Now().UTC()
+		for _, row := range rows {
+			code := optionalString(row, "f12")
+			if code == "" {
+				continue
+			}
+			latestPrice, available := optionalFloat(row, "f2")
+			quotes[code] = graymarket.StockQuote{
+				StockCode:   code,
+				StockMarket: intValue(row, "f13"),
+				StockName:   optionalString(row, "f14"),
+				LatestPrice: latestPrice,
+				ChangePct:   floatValue(row, "f3") / 100,
+				ChangeValue: floatValue(row, "f4"),
+				Volume:      intValue(row, "f5"),
+				Turnover:    intValue(row, "f6"),
+				QuoteTime:   formatQuoteUpdateTime(optionalString(row, "f124")),
+				FetchedAt:   fetchedAt,
+				Available:   available,
+			}
+		}
+	}
+
+	result := make([]graymarket.StockQuote, 0, len(relations))
+	for _, relation := range relations {
+		quote, ok := quotes[relation.StockCode]
+		if !ok {
+			quote = graymarket.StockQuote{StockCode: relation.StockCode, StockMarket: relation.StockMarket, StockName: relation.StockName}
+		}
+		if quote.StockMarket == 0 {
+			quote.StockMarket = relation.StockMarket
+		}
+		if quote.StockName == "" {
+			quote.StockName = relation.StockName
+		}
+		result = append(result, quote)
+	}
+	return result, nil
+}
+
+func optionalFloat(row map[string]json.RawMessage, key string) (float64, bool) {
+	text, err := stringValue(row, key)
+	if err != nil || text == "" {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(text, 64)
+	if err != nil || value <= 0 {
+		return 0, false
+	}
+	return value, true
+}
+
+func formatQuoteUpdateTime(value string) string {
+	seconds, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || seconds <= 0 {
+		return value
+	}
+	if seconds >= 1_000_000_000_000 {
+		return time.UnixMilli(seconds).UTC().Format(time.RFC3339)
+	}
+	return time.Unix(seconds, 0).UTC().Format(time.RFC3339)
+}
+
 func (c *Client) FetchBoardCatalog(ctx context.Context, boardType graymarket.BoardType) ([]graymarket.Board, error) {
 	typeCode := ""
 	switch boardType {

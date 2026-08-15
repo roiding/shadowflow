@@ -24,6 +24,7 @@ import (
 
 type Server struct {
 	store    repository.Store
+	quotes   StockQuoteSource
 	calendar *tradingcalendar.Calendar
 	logger   *slog.Logger
 	location *time.Location
@@ -32,7 +33,12 @@ type Server struct {
 }
 
 type Options struct {
-	StaticDir string
+	StaticDir   string
+	QuoteSource StockQuoteSource
+}
+
+type StockQuoteSource interface {
+	FetchStockQuotes(context.Context, []graymarket.StockBoardRelation) ([]graymarket.StockQuote, error)
 }
 
 type envelope struct {
@@ -52,6 +58,9 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 		return nil, err
 	}
 	server := &Server{store: store, calendar: calendar, logger: logger, location: location, started: time.Now().UTC()}
+	if len(options) > 0 {
+		server.quotes = options[0].QuoteSource
+	}
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID, middleware.RealIP, middleware.Recoverer, middleware.Compress(5))
 	router.Get("/health/live", server.live)
@@ -65,6 +74,7 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 		r.Get("/boards/{type}/{code}/intraday", server.intraday)
 		r.Get("/boards/{type}/{code}/trend", server.trend)
 		r.Get("/boards/{type}/{code}/stocks", server.boardStocks)
+		r.Get("/boards/{type}/{code}/quotes", server.boardQuotes)
 		r.Get("/stocks/{code}/boards", server.stockBoards)
 		r.Get("/relations/changes", server.relationChanges)
 		r.Get("/research/export", server.exportResearch)
@@ -124,6 +134,82 @@ func (s *Server) boardStocks(w http.ResponseWriter, r *http.Request) {
 		"as_of": asOf, "board_type": boardType, "board_code": boardCode,
 		"relation_source": graymarket.RelationSourceQuoteClist, "relation_scope": graymarket.RelationScopeBoardConstituents,
 	}})
+}
+
+type boardStockQuote struct {
+	StockCode      string               `json:"stock_code"`
+	StockMarket    int64                `json:"stock_market"`
+	StockName      string               `json:"stock_name"`
+	BoardCode      string               `json:"board_code"`
+	BoardName      string               `json:"board_name"`
+	BoardType      graymarket.BoardType `json:"board_type"`
+	SourceOrder    int                  `json:"source_order"`
+	EffectiveDate  string               `json:"effective_date,omitempty"`
+	LatestPrice    float64              `json:"latest_price"`
+	ChangePct      float64              `json:"change_pct"`
+	ChangeValue    float64              `json:"change_value"`
+	Volume         int64                `json:"volume"`
+	Turnover       int64                `json:"turnover"`
+	QuoteTime      string               `json:"quote_time"`
+	FetchedAt      time.Time            `json:"fetched_at,omitempty"`
+	QuoteAvailable bool                 `json:"quote_available"`
+}
+
+func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
+	boardType, ok := relationBoardTypeParam(w, chi.URLParam(r, "type"))
+	if !ok {
+		return
+	}
+	boardCode := chi.URLParam(r, "code")
+	if !strings.HasPrefix(boardCode, "BK") || len(boardCode) < 4 {
+		writeError(w, http.StatusBadRequest, "invalid_board_code", "board code must use the BK prefix")
+		return
+	}
+	asOf, ok := optionalAsOf(w, r, s.location)
+	if !ok {
+		return
+	}
+	relations, err := s.store.BoardStockRelations(r.Context(), boardType, boardCode, asOf)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+
+	quotes := make(map[string]graymarket.StockQuote, len(relations))
+	meta := map[string]any{
+		"as_of": asOf, "board_type": boardType, "board_code": boardCode,
+		"quote_source": "unavailable", "quote_available": false,
+	}
+	if s.quotes != nil && len(relations) > 0 {
+		latest, quoteErr := s.quotes.FetchStockQuotes(r.Context(), relations)
+		if quoteErr != nil {
+			meta["quote_error"] = quoteErr.Error()
+		} else {
+			availableCount := 0
+			for _, quote := range latest {
+				quotes[quote.StockCode] = quote
+				if quote.Available {
+					availableCount++
+				}
+			}
+			meta["quote_source"] = "eastmoney"
+			meta["quote_available"] = availableCount > 0
+			meta["quoted_count"] = availableCount
+		}
+	}
+	result := make([]boardStockQuote, 0, len(relations))
+	for _, relation := range relations {
+		quote := quotes[relation.StockCode]
+		result = append(result, boardStockQuote{
+			StockCode: relation.StockCode, StockMarket: relation.StockMarket, StockName: relation.StockName,
+			BoardCode: relation.BoardCode, BoardName: relation.BoardName, BoardType: relation.BoardType,
+			SourceOrder: relation.SourceOrder, EffectiveDate: relation.EffectiveDate,
+			LatestPrice: quote.LatestPrice, ChangePct: quote.ChangePct, ChangeValue: quote.ChangeValue,
+			Volume: quote.Volume, Turnover: quote.Turnover, QuoteTime: quote.QuoteTime, FetchedAt: quote.FetchedAt,
+			QuoteAvailable: quote.Available,
+		})
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: result, Meta: meta})
 }
 
 func (s *Server) relationChanges(w http.ResponseWriter, r *http.Request) {
@@ -471,8 +557,17 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 	now := time.Now().In(s.location)
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
 		"server_time": now, "timezone": "Asia/Shanghai", "market_status": s.marketStatus(now),
-		"trading_day": s.calendar.IsTradingDay(now), "uptime_seconds": int64(time.Since(s.started).Seconds()),
+		"trading_day": s.calendar.IsTradingDay(now), "latest_trading_day": s.latestTradingDay(now),
+		"uptime_seconds": int64(time.Since(s.started).Seconds()),
 	}})
+}
+
+func (s *Server) latestTradingDay(value time.Time) string {
+	day := time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, s.location)
+	for !s.calendar.IsTradingDay(day) {
+		day = day.AddDate(0, 0, -1)
+	}
+	return day.Format("2006-01-02")
 }
 
 func (s *Server) marketStatus(value time.Time) string {

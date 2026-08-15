@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Activity, AlertTriangle, BarChart3, CalendarDays, Check, ChevronDown, Download, Gauge, LineChart, RefreshCw, Search, Server, Table2, Wifi, WifiOff } from 'lucide-react'
+import { Activity, AlertTriangle, BarChart3, CalendarDays, Check, ChevronDown, Download, Gauge, Info, LineChart, RefreshCw, Search, Server, Table2, Wifi, WifiOff } from 'lucide-react'
 import { api } from './api/client'
-import type { CollectionRun, RankRecord, RankType, SystemStatus } from './api/types'
+import type { BoardStockQuote, CollectionRun, RankRecord, RankType, SystemStatus } from './api/types'
 
 type BoardType = Exclude<RankType, 'stock'>
 type View = 'monitor' | 'history' | 'stocks' | 'quality'
@@ -56,13 +56,13 @@ function App() {
   const [secondaryMetric, setSecondaryMetric] = useState<Metric | 'none'>('main_money_inflow')
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshSeconds, setRefreshSeconds] = useState(60)
-  const [qualityDate, setQualityDate] = useState(localDate())
+  const [qualityDate, setQualityDate] = useState('')
   const [historyFrom, setHistoryFrom] = useState(localDate(new Date(Date.now() - 30 * 86400000)))
   const [historyTo, setHistoryTo] = useState(localDate())
   const [historyDate, setHistoryDate] = useState(localDate(new Date(Date.now() - 86400000)))
   const [historyAt, setHistoryAt] = useState('15:00')
   const [historyCode, setHistoryCode] = useState('')
-  const [stockDate, setStockDate] = useState(localDate())
+  const [stockDate, setStockDate] = useState('')
   const [stockQuery, setStockQuery] = useState('')
   const [stockSort, setStockSort] = useState<{ key: keyof RankRecord; direction: 'asc' | 'desc' }>({ key: 'rank', direction: 'asc' })
   const [stockPage, setStockPage] = useState(1)
@@ -70,22 +70,30 @@ function App() {
 
   const refreshInterval = autoRefresh ? refreshSeconds * 1000 : false
   const statusQuery = useQuery({ queryKey: ['system-status'], queryFn: async () => (await api.status()).data as SystemStatus, refetchInterval: refreshInterval })
+  const latestTradingDay = statusQuery.data?.latest_trading_day ?? ''
   const rankQuery = useQuery({ queryKey: ['latest', boardType], queryFn: async () => { const started = performance.now(); const result = await api.latest(boardType); return { records: result.data ?? [], requestMs: Math.round(performance.now() - started) } }, refetchInterval: refreshInterval })
   const records = useMemo(() => rankQuery.data?.records ?? [], [rankQuery.data?.records])
   const selected = records.find((item) => item.code === selectedCode) ?? records[0]
   const selectedId = selected?.code ?? ''
-  const monitorDate = selected?.trade_date ?? records[0]?.trade_date ?? localDate()
-  const staleSnapshot = Boolean(records.length && monitorDate !== localDate())
+  const monitorDate = selected?.trade_date ?? records[0]?.trade_date ?? latestTradingDay
+  const staleSnapshot = Boolean(records.length && latestTradingDay && monitorDate !== latestTradingDay)
+  const nonTradingToday = statusQuery.data?.trading_day === false
   const intradayQuery = useQuery({
     queryKey: ['intraday', boardType, selectedId, monitorDate],
     queryFn: async () => (await api.intraday(boardType, selectedId, monitorDate)).data ?? [],
-    enabled: Boolean(selectedId) && view === 'monitor',
+    enabled: Boolean(selectedId && monitorDate) && view === 'monitor',
+    refetchInterval: refreshInterval,
+  })
+  const boardQuotesQuery = useQuery({
+    queryKey: ['board-quotes', boardType, selectedId, monitorDate],
+    queryFn: async () => api.boardQuotes(boardType, selectedId, monitorDate),
+    enabled: Boolean(selectedId && monitorDate) && view === 'monitor',
     refetchInterval: refreshInterval,
   })
   const trendQuery = useQuery({
     queryKey: ['trend', boardType, historyCode, historyFrom, historyTo],
     queryFn: async () => (await api.trend(boardType, historyCode, historyFrom, historyTo)).data ?? [],
-    enabled: Boolean(historyCode) && view === 'history',
+    enabled: Boolean(historyCode && historyFrom && historyTo) && view === 'history',
   })
   const historyRanksQuery = useQuery({
     queryKey: ['history-ranks', boardType, historyDate, historyAt],
@@ -95,11 +103,17 @@ function App() {
   const stocksQuery = useQuery({
     queryKey: ['daily-close', stockDate, debouncedStockQuery, stockSort.key, stockSort.direction, stockPage],
     queryFn: async () => api.dailyClose('stock', stockDate, debouncedStockQuery, stockSort.key, stockSort.direction, stockPage, 100),
-    enabled: view === 'stocks',
+    enabled: view === 'stocks' && Boolean(stockDate),
     placeholderData: (previous) => previous,
   })
-  const qualityQuery = useQuery({ queryKey: ['quality', qualityDate], queryFn: async () => (await api.quality(qualityDate)).data ?? [], enabled: view === 'quality' })
-  const runsQuery = useQuery({ queryKey: ['runs', qualityDate], queryFn: async () => (await api.runs(qualityDate)).data ?? [], enabled: view === 'quality' })
+  const qualityQuery = useQuery({ queryKey: ['quality', qualityDate], queryFn: async () => (await api.quality(qualityDate)).data ?? [], enabled: view === 'quality' && Boolean(qualityDate) })
+  const runsQuery = useQuery({ queryKey: ['runs', qualityDate], queryFn: async () => (await api.runs(qualityDate)).data ?? [], enabled: view === 'quality' && Boolean(qualityDate) })
+
+  useEffect(() => {
+    if (!latestTradingDay) return
+    setStockDate((current) => current || latestTradingDay)
+    setQualityDate((current) => current || latestTradingDay)
+  }, [latestTradingDay])
 
   useEffect(() => {
     if (records.length && !records.some((item) => item.code === selectedCode)) setSelectedCode(records[0].code)
@@ -126,7 +140,7 @@ function App() {
   }, [records, query, sort])
 
   const onSort = (key: keyof RankRecord) => setSort((current) => ({ key, direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc' }))
-  const refreshAll = () => { void rankQuery.refetch(); void statusQuery.refetch(); if (selectedId) void intradayQuery.refetch() }
+  const refreshAll = () => { void rankQuery.refetch(); void statusQuery.refetch(); if (selectedId) { void intradayQuery.refetch(); void boardQuotesQuery.refetch() } }
   const historicalSelected = (historyRanksQuery.data ?? []).find((item) => item.code === historyCode) ?? historyRanksQuery.data?.[0]
   const stockRecords = stocksQuery.data?.data ?? []
   const stockMeta = stocksQuery.data?.meta
@@ -137,7 +151,7 @@ function App() {
       <div className="brand-lockup"><div className="brand-mark"><Activity size={18} /></div><div><strong>ShadowFlow 暗流</strong><span>板块资金监控台</span></div></div>
       <div className="topbar-actions">
         <MarketStatus status={statusQuery.data} />
-        <div className={`live-chip ${staleSnapshot ? 'stale' : ''}`}><span className={`live-dot ${rankQuery.isFetching ? 'is-fetching' : ''}`} />{records.length ? `最新 ${staleSnapshot ? `${monitorDate} ` : ''}${formatTime(records[0].snapshot_at)}` : '等待数据'}</div>
+        <div className={`live-chip ${staleSnapshot ? 'stale' : ''}`}><span className={`live-dot ${rankQuery.isFetching ? 'is-fetching' : ''}`} />{records.length ? `${nonTradingToday ? '最近交易日' : staleSnapshot ? '最近可用' : '最新'} ${(nonTradingToday || staleSnapshot) ? `${monitorDate} ` : ''}${formatTime(records[0].snapshot_at)}` : '等待数据'}</div>
         <label className="refresh-control"><RefreshCw size={14} /><select value={refreshSeconds} onChange={(event) => setRefreshSeconds(Number(event.target.value))}><option value={30}>30 秒</option><option value={60}>60 秒</option><option value={300}>5 分钟</option></select></label>
         <button className={`icon-button ${autoRefresh ? 'active' : ''}`} title="切换自动刷新" onClick={() => setAutoRefresh((value) => !value)}>{autoRefresh ? <Wifi size={17} /> : <WifiOff size={17} />}</button>
         <button className="icon-button" title="立即刷新" onClick={refreshAll} disabled={rankQuery.isFetching}><RefreshCw size={17} className={rankQuery.isFetching ? 'spin' : ''} /></button>
@@ -151,7 +165,7 @@ function App() {
         <button className={view === 'stocks' ? 'selected' : ''} onClick={() => setView('stocks')}><Table2 size={16} />收盘个股</button>
         <button className={view === 'quality' ? 'selected' : ''} onClick={() => setView('quality')}><Server size={16} />采集质量</button>
       </div>
-      {view === 'monitor' && <MonitorView boardType={boardType} setBoardType={setBoardType} records={visibleRecords} allRecords={records} selected={selected} selectedCode={selectedId} setSelectedCode={setSelectedCode} query={query} setQuery={setQuery} onSort={onSort} sort={sort} metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} series={intradayQuery.data ?? []} loading={intradayQuery.isLoading} rankError={rankQuery.error} seriesError={intradayQuery.error} requestMs={rankQuery.data?.requestMs} status={statusQuery.data} tradeDate={monitorDate} staleSnapshot={staleSnapshot} mobilePane={mobilePane} setMobilePane={setMobilePane} />}
+      {view === 'monitor' && <MonitorView boardType={boardType} setBoardType={setBoardType} records={visibleRecords} allRecords={records} selected={selected} selectedCode={selectedId} setSelectedCode={setSelectedCode} query={query} setQuery={setQuery} onSort={onSort} sort={sort} metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} series={intradayQuery.data ?? []} loading={intradayQuery.isLoading} rankError={rankQuery.error} seriesError={intradayQuery.error} requestMs={rankQuery.data?.requestMs} status={statusQuery.data} tradeDate={monitorDate} staleSnapshot={staleSnapshot} mobilePane={mobilePane} setMobilePane={setMobilePane} stocks={boardQuotesQuery.data?.data ?? []} stocksLoading={boardQuotesQuery.isLoading || boardQuotesQuery.isFetching} stocksError={boardQuotesQuery.error} quoteMeta={boardQuotesQuery.data?.meta} />}
       {view === 'history' && <HistoryView boardType={boardType} setBoardType={setBoardType} selected={historicalSelected} historyRanks={historyRanksQuery.data ?? []} historyCode={historyCode} setHistoryCode={setHistoryCode} historyDate={historyDate} setHistoryDate={setHistoryDate} historyAt={historyAt} setHistoryAt={setHistoryAt} metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} series={trendQuery.data ?? []} loading={trendQuery.isLoading || historyRanksQuery.isLoading} error={trendQuery.error ?? historyRanksQuery.error} from={historyFrom} to={historyTo} setFrom={setHistoryFrom} setTo={setHistoryTo} />}
       {view === 'stocks' && <StockView date={stockDate} setDate={(value) => { setStockDate(value); setStockPage(1) }} records={stockRecords} total={stockMeta?.total ?? 0} query={stockQuery} setQuery={setStockQuery} sort={stockSort} onSort={onStockSort} page={stockPage} pages={stockMeta?.pages ?? 0} setPage={setStockPage} loading={stocksQuery.isLoading || stocksQuery.isFetching} error={stocksQuery.error} />}
       {view === 'quality' && <QualityView date={qualityDate} setDate={setQualityDate} quality={(qualityQuery.data ?? []).filter((item): item is NonNullable<typeof item> & { rank_type: BoardType } => item.rank_type !== 'stock')} runs={runsQuery.data ?? []} loading={qualityQuery.isLoading || runsQuery.isLoading} error={qualityQuery.error ?? runsQuery.error} />}
@@ -165,16 +179,18 @@ function MarketStatus({ status }: { status?: SystemStatus }) {
 }
 
 type MonitorProps = {
-  boardType: BoardType; setBoardType: (value: BoardType) => void; records: RankRecord[]; allRecords: RankRecord[]; selected?: RankRecord; selectedCode: string; setSelectedCode: (value: string) => void; query: string; setQuery: (value: string) => void; onSort: (key: keyof RankRecord) => void; sort: { key: keyof RankRecord; direction: 'asc' | 'desc' }; metric: Metric; setMetric: (value: Metric) => void; secondaryMetric: Metric | 'none'; setSecondaryMetric: (value: Metric | 'none') => void; series: RankRecord[]; loading: boolean; rankError: Error | null; seriesError: Error | null; requestMs?: number; status?: SystemStatus; tradeDate: string; staleSnapshot: boolean; mobilePane: 'ranks' | 'trend'; setMobilePane: (value: 'ranks' | 'trend') => void
+	  boardType: BoardType; setBoardType: (value: BoardType) => void; records: RankRecord[]; allRecords: RankRecord[]; selected?: RankRecord; selectedCode: string; setSelectedCode: (value: string) => void; query: string; setQuery: (value: string) => void; onSort: (key: keyof RankRecord) => void; sort: { key: keyof RankRecord; direction: 'asc' | 'desc' }; metric: Metric; setMetric: (value: Metric) => void; secondaryMetric: Metric | 'none'; setSecondaryMetric: (value: Metric | 'none') => void; series: RankRecord[]; loading: boolean; rankError: Error | null; seriesError: Error | null; requestMs?: number; status?: SystemStatus; tradeDate: string; staleSnapshot: boolean; mobilePane: 'ranks' | 'trend'; setMobilePane: (value: 'ranks' | 'trend') => void; stocks: BoardStockQuote[]; stocksLoading: boolean; stocksError: Error | null; quoteMeta?: { as_of: string; quote_source: string; quote_available: boolean; quoted_count?: number; quote_error?: string }
 }
 
 function MonitorView(props: MonitorProps) {
-  const { boardType, setBoardType, records, allRecords, selected, selectedCode, setSelectedCode, query, setQuery, onSort, sort, metric, setMetric, secondaryMetric, setSecondaryMetric, series, loading, rankError, seriesError, requestMs, status, tradeDate, staleSnapshot, mobilePane, setMobilePane } = props
+	  const { boardType, setBoardType, records, allRecords, selected, selectedCode, setSelectedCode, query, setQuery, onSort, sort, metric, setMetric, secondaryMetric, setSecondaryMetric, series, loading, rankError, seriesError, requestMs, status, tradeDate, staleSnapshot, mobilePane, setMobilePane, stocks, stocksLoading, stocksError, quoteMeta } = props
+  const nonTradingDay = status?.trading_day === false
   return <section className="workspace-grid">
     <div className="mobile-pane-tabs"><button className={mobilePane === 'ranks' ? 'active' : ''} onClick={() => setMobilePane('ranks')}><Table2 size={14} />榜单</button><button className={mobilePane === 'trend' ? 'active' : ''} onClick={() => setMobilePane('trend')}><LineChart size={14} />趋势</button></div>
     <section className={`rank-panel panel-section ${mobilePane === 'trend' ? 'mobile-hidden' : ''}`}>
       <div className="section-heading"><div><p className="eyebrow">实时榜单</p><h1>{BOARD_LABELS[boardType]}暗盘榜</h1></div><span className="record-count">{records.length}/{allRecords.length || '--'} 条</span></div>
-      {staleSnapshot && <InlineNotice kind="warning" text={`当前展示 ${tradeDate} 的最近可用快照，并非今日数据。`} />}
+      {nonTradingDay && tradeDate && <InlineNotice kind={staleSnapshot ? 'warning' : 'info'} text={staleSnapshot ? `今天不是交易日，最近交易日为 ${status.latest_trading_day}；当前仅有 ${tradeDate} 的快照。` : `今天不是交易日，当前展示 ${tradeDate} 的最近交易日数据。`} />}
+      {!nonTradingDay && staleSnapshot && <InlineNotice kind="warning" text={`当前展示 ${tradeDate} 的最近可用快照，并非今日数据。`} />}
       <div className="segmented"><button className={boardType === 'industry' ? 'active' : ''} onClick={() => setBoardType('industry')}>行业</button><button className={boardType === 'concept' ? 'active' : ''} onClick={() => setBoardType('concept')}>概念</button></div>
       <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称或代码" /><kbd>/</kbd></label>
       {rankError && <InlineNotice kind="error" text="榜单读取失败，请检查后端服务。" />}
@@ -185,9 +201,31 @@ function MonitorView(props: MonitorProps) {
 	  <div className="section-heading trend-heading"><div><p className="eyebrow">分钟序列</p><h2>{selected?.name ?? '选择一个板块'}</h2><span className="subline">{selected ? `${selected.code} · ${BOARD_LABELS[boardType]} · ${tradeDate} 采集至 ${formatTime(series.at(-1)?.snapshot_at ?? selected.snapshot_at)}${series.at(-1)?.snapshot_at.slice(11, 16) === '15:00' ? '（日终快照）' : ''}` : '点击左侧榜单查看当日连续序列'}</span></div><a className="export-link" href={selected ? api.exportURL(boardType, selected.code, tradeDate, tradeDate) : undefined} title="导出研究数据"><Download size={15} />导出</a></div>
       <MetricToolbar metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} />
       {seriesError && <InlineNotice kind="error" text="分钟序列读取失败，请稍后重试。" />}
-      <Chart series={series} metric={metric} secondaryMetric={secondaryMetric} loading={loading} emptyLabel={seriesError ? '分钟序列读取失败' : '选择板块后加载分钟数据'} />
-      <TrendStats selected={selected} series={series} status={status} />
-    </section>
+	      <Chart series={series} metric={metric} secondaryMetric={secondaryMetric} loading={loading} emptyLabel={seriesError ? '分钟序列读取失败' : '选择板块后加载分钟数据'} />
+	      <TrendStats selected={selected} series={series} status={status} />
+	      <ConstituentPanel board={selected} boardType={boardType} tradeDate={tradeDate} stocks={stocks} loading={stocksLoading} error={stocksError} quoteMeta={quoteMeta} />
+	    </section>
+  </section>
+}
+
+function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error, quoteMeta }: { board?: RankRecord; boardType: BoardType; tradeDate: string; stocks: BoardStockQuote[]; loading: boolean; error: Error | null; quoteMeta?: MonitorProps['quoteMeta'] }) {
+  const [query, setQuery] = useState('')
+  const visibleStocks = useMemo(() => {
+    const normalized = query.trim().toLowerCase()
+    return stocks.filter((stock) => !normalized || stock.stock_name.toLowerCase().includes(normalized) || stock.stock_code.includes(normalized))
+  }, [stocks, query])
+  const quoteTime = stocks.find((stock) => stock.quote_available && stock.quote_time)?.quote_time
+  const quoteReady = Boolean(quoteMeta?.quote_available && stocks.some((stock) => stock.quote_available))
+  return <section className="constituent-panel">
+    <div className="constituent-heading"><div><p className="eyebrow">级联成分股</p><h3>{board?.name ?? '选择一个板块'} · 个股</h3><span className="subline">{board ? `${board.code} · ${BOARD_LABELS[boardType]} · ${tradeDate} 归属` : '选择板块后加载成分股'}</span></div><span className={`quote-badge ${quoteReady ? 'available' : ''}`}>{quoteReady ? `行情 ${quoteTime ? formatTime(quoteTime) : '已更新'}` : '仅成分关系'}</span></div>
+    {quoteMeta?.quote_error && <InlineNotice kind="warning" text="实时行情暂不可用，当前仍保留成分股关系。" />}
+    {error && <InlineNotice kind="error" text="成分股读取失败，请稍后重试。" />}
+    <label className="constituent-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索成分股名称或代码" /></label>
+    <div className={`constituent-table-wrap ${loading ? 'is-loading' : ''}`}>
+      {loading && !stocks.length ? <div className="loading-block">正在读取成分股行情…</div> : <table className="constituent-table"><thead><tr><th>股票</th><th>代码</th><th>最新价</th><th>涨跌</th><th>成交额</th></tr></thead><tbody>{visibleStocks.map((stock) => <tr key={stock.stock_code}><td><strong>{stock.stock_name || '未命名'}</strong></td><td className="stock-code">{stock.stock_code}</td><td>{stock.quote_available ? formatNumber(stock.latest_price, 2) : '--'}</td><td className={stock.quote_available ? signedClass(stock.change_pct) : 'muted'}>{stock.quote_available ? `${stock.change_pct > 0 ? '+' : ''}${formatNumber(stock.change_pct * 100, 2)}%` : '--'}</td><td>{stock.quote_available ? formatMoney(stock.turnover) : '--'}</td></tr>)}</tbody></table>}
+      {!loading && !visibleStocks.length && <EmptyState icon={<Table2 size={19} />} title="暂无成分股" detail={board ? '当前截面日没有可展示的归属关系。' : '选择板块后查看成分股。'} />}
+    </div>
+    <div className="constituent-footer"><span>{visibleStocks.length}{query ? ` / ${stocks.length}` : ''} 只</span><span>{quoteReady ? '行情来自东方财富最新快照' : '行情服务未返回数据'}</span></div>
   </section>
 }
 
@@ -264,7 +302,7 @@ function QualityView({ date, setDate, quality, runs, loading, error }: { date: s
   return <section className="quality-page"><div className="section-heading"><div><p className="eyebrow">运行记录</p><h1>采集质量</h1><span className="subline">检查 240 个分钟点、47 个研究点、独立 15:00 日终点及个股收盘任务。</span></div><label className="date-picker"><CalendarDays size={15} /><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label></div>{error ? <InlineNotice kind="error" text="采集质量读取失败，请检查后端服务后重试。" /> : loading ? <div className="loading-block">正在读取质量摘要…</div> : <><div className="quality-grid">{(['industry', 'concept'] as BoardType[]).map((type) => { const item = quality.find((row) => row.rank_type === type); const minutePct = item ? Math.round(item.collected_minutes / Math.max(1, item.expected_minutes) * 100) : 0; const researchPct = item ? Math.round(item.collected_research_snapshots / Math.max(1, item.expected_research_snapshots) * 100) : 0; const closeOK = item?.collected_daily_close_snapshots === item?.expected_daily_close_snapshots && Boolean(item?.expected_daily_close_snapshots); const allOK = minutePct === 100 && researchPct === 100 && closeOK; return <article className="quality-card" key={type}><div className="quality-card-head"><span className="type-tag">{BOARD_LABELS[type]}</span><span className={allOK ? 'ok-label' : 'warn-label'}>{allOK ? <Check size={14} /> : <AlertTriangle size={14} />}{minutePct}%</span></div><div className="quality-metric"><span>分钟采集</span><strong>{item?.collected_minutes ?? 0}<small> / {item?.expected_minutes ?? 240}</small></strong><div className="progress"><i style={{ width: `${Math.min(minutePct, 100)}%` }} /></div></div><div className="quality-metric"><span>研究沉淀</span><strong>{item?.collected_research_snapshots ?? 0}<small> / {item?.expected_research_snapshots ?? 47}</small></strong><div className="progress orange"><i style={{ width: `${Math.min(researchPct, 100)}%` }} /></div></div><div className="quality-metric"><span>15:00 日终</span><strong>{item?.collected_daily_close_snapshots ?? 0}<small> / {item?.expected_daily_close_snapshots ?? 1}</small></strong><div className="progress"><i style={{ width: closeOK ? '100%' : '0%' }} /></div></div><div className="missing-list">{item?.missing_daily_close_snapshots?.length ? '缺失 15:00 日终快照，分钟工作数据已保留' : item?.missing_minutes?.length ? `缺失分钟 ${item.missing_minutes.slice(0, 5).join('、')}${item.missing_minutes.length > 5 ? '…' : ''}` : '分钟、研究及日终时间点完整'}</div></article> })}</div><section className="runs-section"><div className="subsection-heading"><h2>最近运行</h2><span>{runs.length} 条</span></div><div className="run-table-wrap"><table className="run-table"><thead><tr><th>时间</th><th>类型</th><th>榜单</th><th>状态</th><th>记录数</th><th>耗时</th><th>错误</th></tr></thead><tbody>{runs.map((run) => <tr key={run.run_id}><td>{formatTime(run.started_at)}</td><td>{run.snapshot_kind === 'daily_close' ? '日终' : run.snapshot_kind === 'minute_work' ? '分钟' : run.snapshot_kind}</td><td>{run.rank_type === 'stock' ? '个股' : BOARD_LABELS[run.rank_type as BoardType]}</td><td><span className={`run-status ${run.status}`}><span />{run.status === 'success' ? '成功' : run.status === 'failed' ? '失败' : run.status}</span></td><td>{formatNumber(run.fetched_total)}</td><td>{formatNumber(run.duration_ms)} ms</td><td className="muted">{run.error_message || '--'}</td></tr>)}</tbody></table>{!runs.length && <EmptyState icon={<Server size={22} />} title="暂无运行记录" detail="选择一个已采集的交易日查看任务状态。" />}</div></section></>}</section>
 }
 
-function InlineNotice({ kind, text }: { kind: 'error' | 'info' | 'warning'; text: string }) { return <div className={`inline-notice ${kind}`}><AlertTriangle size={15} />{text}</div> }
+function InlineNotice({ kind, text }: { kind: 'error' | 'info' | 'warning'; text: string }) { return <div className={`inline-notice ${kind}`}>{kind === 'info' ? <Info size={15} /> : <AlertTriangle size={15} />}{text}</div> }
 function EmptyState({ icon, title, detail }: { icon: React.ReactNode; title: string; detail: string }) { return <div className="empty-state">{icon}<strong>{title}</strong><span>{detail}</span></div> }
 
 export default App

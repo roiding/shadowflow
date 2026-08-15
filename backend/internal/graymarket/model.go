@@ -137,6 +137,22 @@ type StockBoardRelationChange struct {
 	RunID      string             `json:"run_id"`
 }
 
+// StockQuote is an ephemeral upstream quote. It is intentionally not stored
+// with the daily research snapshots because it is only used for live context.
+type StockQuote struct {
+	StockCode   string    `json:"stock_code"`
+	StockMarket int64     `json:"stock_market"`
+	StockName   string    `json:"stock_name"`
+	LatestPrice float64   `json:"latest_price"`
+	ChangePct   float64   `json:"change_pct"`
+	ChangeValue float64   `json:"change_value"`
+	Volume      int64     `json:"volume"`
+	Turnover    int64     `json:"turnover"`
+	QuoteTime   string    `json:"quote_time"`
+	FetchedAt   time.Time `json:"fetched_at"`
+	Available   bool      `json:"available"`
+}
+
 func FormatQuoteTime(value int64) string {
 	if value <= 0 {
 		return ""
