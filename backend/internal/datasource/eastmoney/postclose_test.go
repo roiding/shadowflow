@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -93,7 +94,8 @@ func TestFetchStockKlines5mReturnsCompletedStocksWithBatchError(t *testing.T) {
 			{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Market: 0, Code: "000001"},
 			{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Market: 1, Code: "600001"},
 		}}
-	client := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL)
+	client := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL).
+		WithStockTrendBaseURLs([]string{server.URL + "/api/qt/stock/trends2/get"})
 	client.stockKlineRetryGap = 0
 	points, err := client.FetchStockKlines5m(context.Background(), snapshot)
 	if err == nil || !strings.Contains(err.Error(), "000001") || !strings.Contains(err.Error(), "completed 1/2 stocks") {
@@ -102,8 +104,45 @@ func TestFetchStockKlines5mReturnsCompletedStocksWithBatchError(t *testing.T) {
 	if len(points) != 48 || points[0].Code != "600001" {
 		t.Fatalf("completed stock was discarded: points=%d first=%+v", len(points), points[0])
 	}
-	if failedRequests.Load() != 4 {
-		t.Fatalf("failed stock should use four attempts, got %d", failedRequests.Load())
+	if failedRequests.Load() < 4 {
+		t.Fatalf("failed stock should retry the fallback endpoint, got %d requests", failedRequests.Load())
+	}
+}
+
+func TestFetchStockKlines5mAggregatesOneMinuteFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/trends2/") {
+			rows := make([]string, 0, 241)
+			for minute := 9*60 + 30; minute <= 11*60+30; minute++ {
+				rows = append(rows, fmt.Sprintf("2026-08-14 %02d:%02d,10.00,10.00,10.00,10.00,1,10.00,10.000", minute/60, minute%60))
+			}
+			for minute := 13*60 + 1; minute <= 15*60; minute++ {
+				rows = append(rows, fmt.Sprintf("2026-08-14 %02d:%02d,10.00,10.00,10.00,10.00,1,10.00,10.000", minute/60, minute%60))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"rc": 0, "data": map[string]any{"trends": rows}})
+			return
+		}
+		_, _ = w.Write([]byte("{"))
+	}))
+	defer server.Close()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+	snapshot := graymarket.RankSnapshot{TradeDate: "2026-08-14", RankType: graymarket.RankStock, SnapshotAt: closeAt,
+		Records: []graymarket.RankRecord{{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock,
+			Market: 1, Code: "600001", OpenPrice: 10, HighPrice: 10, LowPrice: 10, ClosePrice: 10, PreviousClose: 10,
+			Volume: 241, Turnover: 2410, TurnoverRate: 0.0241, QuoteAvailable: true}}}
+	client := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL).
+		WithStockTrendBaseURLs([]string{server.URL + "/api/qt/stock/trends2/get"})
+	client.stockKlineRetryGap = 0
+	points, err := client.FetchStockKlines5m(context.Background(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 48 || points[0].SnapshotAt.Format("15:04") != "09:35" || points[47].SnapshotAt.Format("15:04") != "15:00" {
+		t.Fatalf("unexpected fallback bars: count=%d first=%s last=%s", len(points), points[0].SnapshotAt, points[len(points)-1].SnapshotAt)
+	}
+	if points[0].Volume != 6 || points[1].Volume != 5 || points[0].Turnover != 60 || math.Abs(points[0].TurnoverRate-0.0006) > 0.0000001 {
+		t.Fatalf("unexpected first aggregated bars: first=%+v second=%+v", points[0], points[1])
 	}
 }
 
