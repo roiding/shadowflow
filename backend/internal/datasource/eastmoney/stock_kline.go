@@ -222,6 +222,7 @@ type aggregatedTrendBar struct {
 	firstAt    time.Time
 	lastAt     time.Time
 	minuteRows int
+	tradedRows int
 }
 
 func (c *Client) fetchStockKlineFromTrends(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
@@ -305,23 +306,12 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 		minuteRows++
 		openPrice, closePrice, highPrice, lowPrice := decimal(fields[1]), decimal(fields[2]), decimal(fields[3]), decimal(fields[4])
 		bar := &bars[index]
-		if bar.minuteRows == 0 || at.Before(bar.firstAt) {
-			bar.firstAt, bar.point.OpenPrice = at, openPrice
-		}
-		if bar.minuteRows == 0 || at.After(bar.lastAt) {
-			bar.lastAt, bar.point.ClosePrice = at, closePrice
-		}
-		if bar.minuteRows == 0 || highPrice > bar.point.HighPrice {
-			bar.point.HighPrice = highPrice
-		}
-		if bar.minuteRows == 0 || lowPrice < bar.point.LowPrice {
-			bar.point.LowPrice = lowPrice
-		}
 		nextCumulativeVolume := integer(fields[10])
 		if nextCumulativeVolume < cumulativeVolume {
 			return nil, fmt.Errorf("trend cumulative volume decreased at %s", fields[0])
 		}
-		bar.point.Volume += nextCumulativeVolume - cumulativeVolume
+		minuteVolume := nextCumulativeVolume - cumulativeVolume
+		bar.point.Volume += minuteVolume
 		cumulativeVolume = nextCumulativeVolume
 		nextCumulativeTurnover := integer(fields[11])
 		if nextCumulativeTurnover < cumulativeTurnover {
@@ -329,6 +319,25 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 		}
 		bar.point.Turnover += nextCumulativeTurnover - cumulativeTurnover
 		cumulativeTurnover = nextCumulativeTurnover
+		if bar.minuteRows == 0 {
+			bar.firstAt, bar.lastAt = at, at
+			bar.point.OpenPrice, bar.point.ClosePrice = openPrice, closePrice
+			bar.point.HighPrice, bar.point.LowPrice = highPrice, lowPrice
+		}
+		if minuteVolume > 0 {
+			if bar.tradedRows == 0 {
+				bar.firstAt, bar.lastAt = at, at
+				bar.point.OpenPrice, bar.point.ClosePrice = openPrice, closePrice
+				bar.point.HighPrice, bar.point.LowPrice = highPrice, lowPrice
+			} else {
+				if at.After(bar.lastAt) {
+					bar.lastAt, bar.point.ClosePrice = at, closePrice
+				}
+				bar.point.HighPrice = max(bar.point.HighPrice, highPrice)
+				bar.point.LowPrice = min(bar.point.LowPrice, lowPrice)
+			}
+			bar.tradedRows++
+		}
 		bar.minuteRows++
 	}
 	if minuteRows != 241 {
