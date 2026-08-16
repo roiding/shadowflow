@@ -69,3 +69,28 @@ func TestQuoteRequestFallsBackAfterEmptyPrimaryResponse(t *testing.T) {
 		t.Fatalf("fallback failed: boards=%+v primary=%d fallback=%d err=%v", boards, primaryCalls, fallbackCalls, err)
 	}
 }
+
+func TestFetchBoardQuotesMapsIndustryAndConceptFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if query.Get("fs") != "m:90+t:2+f:!50" && query.Get("fs") != "m:90+t:3+f:!50" {
+			t.Fatalf("unexpected board quote filter: %s", query.Get("fs"))
+		}
+		if query.Get("fields") == "" || query.Get("fields") == "f12,f14,f3" {
+			t.Fatalf("board quote fields were not requested: %s", query.Get("fields"))
+		}
+		_, _ = w.Write([]byte(`{"rc":0,"data":{"total":1,"diff":{"0":{"f2":10.5,"f3":2.5,"f4":0.25,"f5":1234,"f6":5678900,"f7":3.5,"f8":2.25,"f12":"BK001","f13":90,"f14":"测试板块","f15":10.8,"f16":9.9,"f17":10.0,"f18":10.2,"f124":1786693171}}}}`))
+	}))
+	defer server.Close()
+	client := NewClient("unused", server.Client(), 100).WithQuoteBaseURLs([]string{server.URL})
+	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept} {
+		quotes, err := client.FetchBoardQuotes(context.Background(), rankType)
+		if err != nil || len(quotes) != 1 {
+			t.Fatalf("unexpected %s board quotes: %+v err=%v", rankType, quotes, err)
+		}
+		quote := quotes[0]
+		if quote.BoardCode != "BK001" || quote.BoardMarket != 90 || quote.Turnover != 5678900 || quote.TurnoverRate != 0.0225 || !quote.Available {
+			t.Fatalf("unexpected mapped %s board quote: %+v", rankType, quote)
+		}
+	}
+}

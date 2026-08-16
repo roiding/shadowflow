@@ -26,6 +26,10 @@ type StockDailyQuoteSource interface {
 	FetchStockQuotes(context.Context, []graymarket.StockBoardRelation) ([]graymarket.StockQuote, error)
 }
 
+type BoardDailyQuoteSource interface {
+	FetchBoardQuotes(context.Context, graymarket.RankType) ([]graymarket.BoardQuote, error)
+}
+
 type BoardMoneySource interface {
 	FetchMoney5m(context.Context, graymarket.RankSnapshot, bool) ([]graymarket.MoneyPoint, error)
 }
@@ -356,6 +360,12 @@ func (s *Service) collectBoardArchive(ctx context.Context, rankType graymarket.R
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "date_mismatch", err.Error()
 		return finish(err)
 	}
+	if rankType == graymarket.RankIndustry || rankType == graymarket.RankConcept {
+		if err := s.enrichBoardDailyClose(ctx, &snapshot); err != nil {
+			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
+			return finish(err)
+		}
+	}
 	points, err := moneySource.FetchMoney5m(ctx, snapshot, true)
 	run.ExpectedTotal = len(snapshot.Records) * 48
 	run.FetchedTotal = len(points)
@@ -423,9 +433,13 @@ func (s *Service) collectStockArchive(ctx context.Context, requestedDate string,
 }
 
 func (s *Service) enrichStockDailyClose(ctx context.Context, snapshot *graymarket.RankSnapshot) error {
+	return s.enrichStockDailyQuotes(ctx, snapshot)
+}
+
+func (s *Service) enrichStockDailyQuotes(ctx context.Context, snapshot *graymarket.RankSnapshot) error {
 	source, ok := s.source.(StockDailyQuoteSource)
 	if !ok {
-		return errors.New("stock daily quote source is unavailable")
+		return errors.New("daily quote source is unavailable")
 	}
 	relations := make([]graymarket.StockBoardRelation, 0, len(snapshot.Records))
 	for _, record := range snapshot.Records {
@@ -435,7 +449,7 @@ func (s *Service) enrichStockDailyClose(ctx context.Context, snapshot *graymarke
 	}
 	quotes, err := source.FetchStockQuotes(ctx, relations)
 	if err != nil {
-		return fmt.Errorf("fetch stock daily quotes: %w", err)
+		return fmt.Errorf("fetch %s daily quotes: %w", snapshot.RankType, err)
 	}
 	byCode := make(map[string]graymarket.StockQuote, len(quotes))
 	usable := 0
@@ -450,10 +464,10 @@ func (s *Service) enrichStockDailyClose(ctx context.Context, snapshot *graymarke
 		}
 	}
 	if usable != len(snapshot.Records) {
-		return fmt.Errorf("incomplete stock daily quotes: expected %d usable rows, got %d", len(snapshot.Records), usable)
+		return fmt.Errorf("incomplete %s daily quotes: expected %d usable rows, got %d", snapshot.RankType, len(snapshot.Records), usable)
 	}
 	if wrongDate > 0 {
-		return fmt.Errorf("stock daily quotes contain %d rows outside trade date %s", wrongDate, snapshot.TradeDate)
+		return fmt.Errorf("%s daily quotes contain %d rows outside trade date %s", snapshot.RankType, wrongDate, snapshot.TradeDate)
 	}
 	for index := range snapshot.Records {
 		record := &snapshot.Records[index]
@@ -472,6 +486,45 @@ func (s *Service) enrichStockDailyClose(ctx context.Context, snapshot *graymarke
 		if quote.Available {
 			record.ChangePct = quote.ChangePct
 		}
+	}
+	return nil
+}
+
+func (s *Service) enrichBoardDailyClose(ctx context.Context, snapshot *graymarket.RankSnapshot) error {
+	source, ok := s.source.(BoardDailyQuoteSource)
+	if !ok {
+		return errors.New("board daily quote source is unavailable")
+	}
+	quotes, err := source.FetchBoardQuotes(ctx, snapshot.RankType)
+	if err != nil {
+		return fmt.Errorf("fetch %s board daily quotes: %w", snapshot.RankType, err)
+	}
+	byCode := make(map[string]graymarket.BoardQuote, len(quotes))
+	for _, quote := range quotes {
+		byCode[quote.BoardCode] = quote
+	}
+	for index := range snapshot.Records {
+		record := &snapshot.Records[index]
+		quote, exists := byCode[record.Code]
+		if !exists || !quote.Available {
+			return fmt.Errorf("missing %s board daily quote for %s", snapshot.RankType, record.Code)
+		}
+		if quoteDate(quote.QuoteTime, snapshot.SnapshotAt.Location()) != snapshot.TradeDate {
+			return fmt.Errorf("%s board daily quote for %s is outside trade date %s", snapshot.RankType, record.Code, snapshot.TradeDate)
+		}
+		record.OpenPrice = quote.OpenPrice
+		record.HighPrice = quote.HighPrice
+		record.LowPrice = quote.LowPrice
+		record.ClosePrice = quote.LatestPrice
+		record.PreviousClose = quote.PreviousClose
+		record.ChangeValue = quote.ChangeValue
+		record.ChangePct = quote.ChangePct
+		record.Volume = quote.Volume
+		record.Turnover = quote.Turnover
+		record.TurnoverRate = quote.TurnoverRate
+		record.Amplitude = quote.Amplitude
+		record.QuoteTime = quote.QuoteTime
+		record.QuoteAvailable = true
 	}
 	return nil
 }

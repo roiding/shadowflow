@@ -28,6 +28,62 @@ type quoteResponse struct {
 
 const stockQuoteBatchSize = 100
 
+// FetchBoardQuotes reads the authoritative quote list for industry or
+// concept boards. It deliberately uses clist/get rather than ulist.np/get:
+// BK board codes are not stock codes.
+func (c *Client) FetchBoardQuotes(ctx context.Context, rankType graymarket.RankType) ([]graymarket.BoardQuote, error) {
+	typeCode := ""
+	switch rankType {
+	case graymarket.RankIndustry:
+		typeCode = "2"
+	case graymarket.RankConcept:
+		typeCode = "3"
+	default:
+		return nil, fmt.Errorf("unsupported board rank type %q", rankType)
+	}
+	result := make([]graymarket.BoardQuote, 0, 512)
+	expectedTotal := 0
+	for page := 1; ; page++ {
+		params := url.Values{
+			"pn": {strconv.Itoa(page)}, "pz": {strconv.Itoa(c.pageSize)}, "po": {"1"}, "np": {"1"},
+			"fltt": {"2"}, "invt": {"2"}, "fid": {"f3"},
+			"fields": {"f2,f3,f4,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f124"},
+			"fs":     {"m:90+t:" + typeCode + "+f:!50"},
+		}
+		payload, rows, err := c.fetchQuotePage(ctx, "/api/qt/clist/get", params)
+		if err != nil {
+			return nil, fmt.Errorf("fetch %s board quotes page %d: %w", rankType, page, err)
+		}
+		if page == 1 {
+			expectedTotal = payload.Data.Total
+		}
+		fetchedAt := time.Now().UTC()
+		for _, row := range rows {
+			code := optionalString(row, "f12")
+			if code == "" {
+				return nil, fmt.Errorf("%s board quote contains an empty code", rankType)
+			}
+			latestPrice, available := optionalFloat(row, "f2")
+			result = append(result, graymarket.BoardQuote{
+				BoardCode: code, BoardMarket: intValue(row, "f13"), BoardName: optionalString(row, "f14"),
+				LatestPrice: latestPrice, OpenPrice: floatValue(row, "f17"), HighPrice: floatValue(row, "f15"),
+				LowPrice: floatValue(row, "f16"), PreviousClose: floatValue(row, "f18"),
+				ChangePct: floatValue(row, "f3") / 100, ChangeValue: floatValue(row, "f4"),
+				Volume: intValue(row, "f5"), Turnover: intValue(row, "f6"), TurnoverRate: floatValue(row, "f8") / 100,
+				Amplitude: floatValue(row, "f7") / 100, QuoteTime: formatQuoteUpdateTime(optionalString(row, "f124")),
+				FetchedAt: fetchedAt, Available: available,
+			})
+		}
+		if len(rows) == 0 || len(result) >= expectedTotal {
+			break
+		}
+	}
+	if expectedTotal > 0 && len(result) != expectedTotal {
+		return nil, fmt.Errorf("incomplete %s board quotes: expected %d rows, got %d", rankType, expectedTotal, len(result))
+	}
+	return result, nil
+}
+
 // FetchStockQuotes reads the latest quote snapshot for the supplied
 // constituents. The returned slice follows the input order and includes an
 // unavailable row when the quote service did not return a stock.

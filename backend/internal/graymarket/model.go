@@ -231,6 +231,29 @@ type StockQuote struct {
 	Available     bool      `json:"available"`
 }
 
+// BoardQuote is the end-of-day quote returned by Eastmoney's board list
+// endpoint. Board codes use the BKxxxx form and therefore cannot be queried
+// through the constituent-stock quote endpoint.
+type BoardQuote struct {
+	BoardCode     string    `json:"board_code"`
+	BoardMarket   int64     `json:"board_market"`
+	BoardName     string    `json:"board_name"`
+	LatestPrice   float64   `json:"latest_price"`
+	OpenPrice     float64   `json:"open_price"`
+	HighPrice     float64   `json:"high_price"`
+	LowPrice      float64   `json:"low_price"`
+	PreviousClose float64   `json:"previous_close"`
+	ChangePct     float64   `json:"change_pct"`
+	ChangeValue   float64   `json:"change_value"`
+	Volume        int64     `json:"volume"`
+	Turnover      int64     `json:"turnover"`
+	TurnoverRate  float64   `json:"turnover_rate"`
+	Amplitude     float64   `json:"amplitude"`
+	QuoteTime     string    `json:"quote_time"`
+	FetchedAt     time.Time `json:"fetched_at"`
+	Available     bool      `json:"available"`
+}
+
 func FormatQuoteTime(value int64) string {
 	if value <= 0 {
 		return ""

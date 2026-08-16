@@ -103,6 +103,14 @@ func (s *fakeSource) FetchStockQuotes(_ context.Context, relations []graymarket.
 	return quotes, nil
 }
 
+func (s *fakeSource) FetchBoardQuotes(_ context.Context, rankType graymarket.RankType) ([]graymarket.BoardQuote, error) {
+	code := "BK001"
+	return []graymarket.BoardQuote{{BoardCode: code, BoardMarket: 90, BoardName: string(rankType), LatestPrice: 10,
+		OpenPrice: 9.5, HighPrice: 10.5, LowPrice: 9.25, PreviousClose: 9, ChangePct: 0.1111,
+		ChangeValue: 1, Volume: 100, Turnover: 1000, TurnoverRate: 0.02, Amplitude: 0.1,
+		QuoteTime: "2026-08-14T07:00:00Z", Available: true}}, nil
+}
+
 type fakeStore struct {
 	mu              sync.Mutex
 	started         []repository.CollectionRun
@@ -112,6 +120,7 @@ type fakeStore struct {
 	savedArchives   int
 	savedKlineRows  int
 	lastDailyClose  graymarket.RankSnapshot
+	lastBoardClose  graymarket.RankSnapshot
 	startErr        error
 	finishErr       error
 	saveErr         error
@@ -138,10 +147,11 @@ func (s *fakeStore) SaveDailyClose(_ context.Context, _ string, snapshot graymar
 	return s.saveErr
 }
 
-func (s *fakeStore) SaveBoardArchive(_ context.Context, _ string, _ graymarket.RankSnapshot, _ []graymarket.MoneyPoint) error {
+func (s *fakeStore) SaveBoardArchive(_ context.Context, _ string, snapshot graymarket.RankSnapshot, _ []graymarket.MoneyPoint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.savedArchives++
+	s.lastBoardClose = snapshot
 	return s.saveErr
 }
 
@@ -357,6 +367,34 @@ func TestCollectDailyCloseFailsWhenQuoteEnrichmentFails(t *testing.T) {
 	}
 	if len(store.finished) != 1 || store.finished[0].ErrorCode != "quote_enrichment" {
 		t.Fatalf("unexpected failed run: %+v", store.finished)
+	}
+}
+
+func TestCollectBoardArchivesPersistTurnoverAndTurnoverRate(t *testing.T) {
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept} {
+		t.Run(string(rankType), func(t *testing.T) {
+			closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+			runAt := time.Date(2026, 8, 14, 16, 0, 0, 0, location)
+			snapshot := successfulSnapshot(closeAt)
+			snapshot.RankType = rankType
+			snapshot.Records[0].RankType = rankType
+			snapshot.Records[0].Market = 90
+			snapshot.Records[0].Code = "BK001"
+			source := &fakeSource{results: []sourceResult{{snapshot: snapshot}}}
+			store := &fakeStore{}
+
+			if err := newTestService(source, store).collectBoardArchive(context.Background(), rankType, "20260814", closeAt, runAt); err != nil {
+				t.Fatal(err)
+			}
+			if store.savedArchives != 1 || len(store.lastBoardClose.Records) != 1 {
+				t.Fatalf("board archive was not saved: %+v", store.lastBoardClose)
+			}
+			record := store.lastBoardClose.Records[0]
+			if record.Turnover != 1000 || record.TurnoverRate != 0.02 || !record.QuoteAvailable || record.ClosePrice != 10 {
+				t.Fatalf("board close quote was not enriched: %+v", record)
+			}
+		})
 	}
 }
 
