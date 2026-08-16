@@ -121,13 +121,13 @@ func TestFetchStockKlines5mAggregatesOneMinuteFallback(t *testing.T) {
 					continue
 				}
 				cumulativeVolume++
-				cumulativeTurnover += 10
-				rows = append(rows, fmt.Sprintf("2026-08-14 %02d:%02d,10.00,10.00,10.00,10.00,1,10.00,10.000,1,0.00,%d,%d.00", minute/60, minute%60, cumulativeVolume, cumulativeTurnover))
+				cumulativeTurnover += 250000
+				rows = append(rows, fmt.Sprintf("2026-08-14 %02d:%02d,10.00,10.00,10.00,10.00,1,250000.00,10.000,1,0.00,%d,%d.00", minute/60, minute%60, cumulativeVolume, cumulativeTurnover))
 			}
 			for minute := 13*60 + 1; minute <= 15*60; minute++ {
 				cumulativeVolume++
-				cumulativeTurnover += 10
-				rows = append(rows, fmt.Sprintf("2026-08-14 %02d:%02d,10.00,10.00,10.00,10.00,1,10.00,10.000,1,0.00,%d,%d.00", minute/60, minute%60, cumulativeVolume, cumulativeTurnover))
+				cumulativeTurnover += 250000
+				rows = append(rows, fmt.Sprintf("2026-08-14 %02d:%02d,10.00,10.00,10.00,10.00,1,250000.00,10.000,1,0.00,%d,%d.00", minute/60, minute%60, cumulativeVolume, cumulativeTurnover))
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"rc": 0, "data": map[string]any{"trends": rows}})
 			return
@@ -140,7 +140,7 @@ func TestFetchStockKlines5mAggregatesOneMinuteFallback(t *testing.T) {
 	snapshot := graymarket.RankSnapshot{TradeDate: "2026-08-14", RankType: graymarket.RankStock, SnapshotAt: closeAt,
 		Records: []graymarket.RankRecord{{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock,
 			Market: 1, Code: "600001", OpenPrice: 10, HighPrice: 10, LowPrice: 10, ClosePrice: 10, PreviousClose: 9,
-			Volume: 240, Turnover: 2400, TurnoverRate: 0.024, QuoteAvailable: true}}}
+			Volume: 240, Turnover: 60000120, TurnoverRate: 0.024, QuoteAvailable: true}}}
 	client := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL).
 		WithStockTrendBaseURLs([]string{server.URL + "/api/qt/stock/trends2/get"})
 	client.stockKlineRetryGap = 0
@@ -151,8 +151,15 @@ func TestFetchStockKlines5mAggregatesOneMinuteFallback(t *testing.T) {
 	if len(points) != 48 || points[0].SnapshotAt.Format("15:04") != "09:35" || points[47].SnapshotAt.Format("15:04") != "15:00" {
 		t.Fatalf("unexpected fallback bars: count=%d first=%s last=%s", len(points), points[0].SnapshotAt, points[len(points)-1].SnapshotAt)
 	}
-	if points[0].OpenPrice != 10 || points[0].LowPrice != 10 || points[0].Volume != 5 || points[1].Volume != 5 || points[0].Turnover != 50 || math.Abs(points[0].TurnoverRate-0.0005) > 0.0000001 {
+	if points[0].OpenPrice != 10 || points[0].LowPrice != 10 || points[0].Volume != 5 || points[1].Volume != 5 || points[0].Turnover != 1250000 || math.Abs(points[0].TurnoverRate-0.0005) > 0.0000001 {
 		t.Fatalf("unexpected first aggregated bars: first=%+v second=%+v", points[0], points[1])
+	}
+	var totalTurnover int64
+	for _, point := range points {
+		totalTurnover += point.Turnover
+	}
+	if totalTurnover != 60000000 {
+		t.Fatalf("minute turnover was rewritten to the revised daily total: %d", totalTurnover)
 	}
 }
 

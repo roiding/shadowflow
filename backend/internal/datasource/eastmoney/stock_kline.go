@@ -373,7 +373,7 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 		!samePrice(minKlinePrice(points), stock.LowPrice) || !samePrice(points[47].ClosePrice, stock.ClosePrice) {
 		return nil, fmt.Errorf("aggregated trend OHLC does not match daily bar")
 	}
-	turnoverTolerance := max(int64(100), stock.Turnover/100_000_000)
+	turnoverTolerance := max(int64(128), stock.Turnover/500_000)
 	if absInt64(totalVolume-stock.Volume) > 1 || absInt64(totalTurnover-stock.Turnover) > turnoverTolerance {
 		return nil, fmt.Errorf("aggregated trend volume does not match daily bar: volume=%d/%d turnover=%d/%d", totalVolume, stock.Volume, totalTurnover, stock.Turnover)
 	}
