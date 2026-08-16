@@ -133,6 +133,7 @@ type Store interface {
 	DailyClosePage(context.Context, graymarket.RankType, string, string, string, bool, int, int) ([]graymarket.RankRecord, int, error)
 	DailyCloseStocks(context.Context, string, []string) ([]graymarket.RankRecord, error)
 	DailyCloseRecords(context.Context, string) ([]graymarket.RankRecord, error)
+	DailyCloseTradeDates(context.Context, string, int) ([]string, error)
 	HasDailyClose(context.Context, string) (bool, error)
 	HasEndOfDayArchive(context.Context, string) (bool, error)
 	HasStockKlineArchive(context.Context, string) (bool, error)

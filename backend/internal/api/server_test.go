@@ -177,6 +177,45 @@ func TestDailyClosePaginationAndValidation(t *testing.T) {
 	}
 }
 
+func TestThreeDayFocusReportsAccumulationStateAndValidatesDate(t *testing.T) {
+	server, store := testServer(t, "")
+	defer store.Close()
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/focus/three-day?as_of=2026-08-14", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ready":false`) || !strings.Contains(response.Body.String(), `"required_days":3`) {
+		t.Fatalf("unexpected focus response: status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/focus/three-day?as_of=bad-date", nil))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid date to return 400, got %d", response.Code)
+	}
+}
+
+func TestDynamicFocusScanValidatesAndReportsRequestedDays(t *testing.T) {
+	server, store := testServer(t, "")
+	defer store.Close()
+	body := `{"as_of":"2026-08-14","consecutive_days":5,"concept_match":"all","concept_conditions":[],"stock_match":"all","stock_conditions":[],"stock_scope":{"main_board_only":false,"exclude_st":false,"require_qualified_concepts":false}}`
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/focus/scan", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ready":false`) || !strings.Contains(response.Body.String(), `"required_days":5`) {
+		t.Fatalf("unexpected dynamic focus response: status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, invalid := range []string{
+		`{"as_of":"bad-date","consecutive_days":3,"concept_match":"all","stock_match":"all"}`,
+		`{"as_of":"2026-08-14","consecutive_days":0,"concept_match":"all","stock_match":"all"}`,
+		`{"as_of":"2026-08-14","consecutive_days":3,"concept_match":"all","stock_match":"all","unknown":true}`,
+	} {
+		response = httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/focus/scan", strings.NewReader(invalid)))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("expected invalid scan to return 400, got %d: %s", response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestStockResearchAndQualityAPIsExpose48PlusDailyArchive(t *testing.T) {
 	server, store := testServer(t, "")
 	defer store.Close()

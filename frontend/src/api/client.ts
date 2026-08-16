@@ -1,12 +1,12 @@
-import type { ApiEnvelope, BoardStockQuote, CollectionRun, PageMeta, QualityMeta, QualitySummary, RankRecord, RankType, StockResearchPoint, SystemStatus } from './types'
+import type { ApiEnvelope, BoardStockQuote, CollectionRun, FocusResult, FocusScanRequest, PageMeta, QualityMeta, QualitySummary, RankRecord, RankType, StockResearchPoint, SystemStatus } from './types'
 
 const REQUEST_TIMEOUT_MS = 10_000
 
-async function request<T, M = Record<string, unknown>>(path: string): Promise<ApiEnvelope<T, M>> {
+async function request<T, M = Record<string, unknown>>(path: string, init?: RequestInit): Promise<ApiEnvelope<T, M>> {
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   try {
-    const response = await fetch(path, { headers: { Accept: 'application/json' }, signal: controller.signal })
+    const response = await fetch(path, { ...init, headers: { Accept: 'application/json', ...init?.headers }, signal: controller.signal })
     const body = await response.text()
     let payload: ApiEnvelope<T, M>
     try {
@@ -47,6 +47,10 @@ export const api = {
   runs: (date: string) => request<CollectionRun[]>(`/api/v1/collection-runs?trade_date=${date}&limit=120`),
   status: () => request<SystemStatus>('/api/v1/system/status'),
   tradingDays: (from: string, to: string) => request<string[]>(`/api/v1/trading-days?from=${from}&to=${to}`),
+  threeDayFocus: (asOf: string) => request<FocusResult>(`/api/v1/focus/three-day?as_of=${asOf}`),
+  focusScan: (scan: FocusScanRequest) => request<FocusResult>('/api/v1/focus/scan', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scan),
+  }),
   exportURL: (type: Exclude<RankType, 'stock'>, code: string, from: string, to: string) =>
     `/api/v1/research/export?type=${type}&code=${encodeURIComponent(code)}&from=${from}&to=${to}&format=csv`,
   dailyCloseExportURL: (date: string) => `/api/v1/research/daily-close/export?trade_date=${date}`,

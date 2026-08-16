@@ -267,6 +267,38 @@ ORDER BY CASE rank_type WHEN 'industry' THEN 1 WHEN 'concept' THEN 2 ELSE 3 END,
 	return scanRecords(rows)
 }
 
+func (s *Store) DailyCloseTradeDates(ctx context.Context, asOf string, limit int) ([]string, error) {
+	if limit < 1 {
+		return []string{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT trade_date FROM rank_snapshot
+WHERE trade_date<=? AND snapshot_kind='daily_close' AND rank_type IN ('concept','stock')
+GROUP BY trade_date
+HAVING sum(rank_type='concept')>0
+   AND sum(rank_type='concept' AND quote_available=1)=sum(rank_type='concept')
+   AND sum(rank_type='stock')>0
+ORDER BY trade_date DESC LIMIT ?`, asOf, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	dates := make([]string, 0, limit)
+	for rows.Next() {
+		var date string
+		if err := rows.Scan(&date); err != nil {
+			return nil, err
+		}
+		dates = append(dates, date)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for left, right := 0, len(dates)-1; left < right; left, right = left+1, right-1 {
+		dates[left], dates[right] = dates[right], dates[left]
+	}
+	return dates, nil
+}
+
 func (s *Store) HasDailyClose(ctx context.Context, tradeDate string) (bool, error) {
 	var exists int
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(

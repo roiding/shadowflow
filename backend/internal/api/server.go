@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/roiding/shadowflow/internal/focus"
 	"github.com/roiding/shadowflow/internal/graymarket"
 	"github.com/roiding/shadowflow/internal/repository"
 	"github.com/roiding/shadowflow/internal/tradingcalendar"
@@ -82,6 +84,8 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 		r.Get("/research/daily-close/export", server.exportDailyClose)
 		r.Get("/research/quality", server.quality)
 		r.Get("/collection-runs", server.collectionRuns)
+		r.Get("/focus/three-day", server.threeDayFocus)
+		r.Post("/focus/scan", server.focusScan)
 		r.Get("/system/status", server.status)
 	})
 	if len(options) > 0 && options[0].StaticDir != "" {
@@ -89,6 +93,49 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 	}
 	server.router = router
 	return server, nil
+}
+
+func (s *Server) threeDayFocus(w http.ResponseWriter, r *http.Request) {
+	asOf, ok := optionalAsOf(w, r, s.location)
+	if !ok {
+		return
+	}
+	result, err := focus.New(s.store).Scan(r.Context(), asOf)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: result})
+}
+
+func (s *Server) focusScan(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var request focus.ScanRequest
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_focus_request", "request body must be valid JSON")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid_focus_request", "request body must contain one JSON object")
+		return
+	}
+	if request.AsOf == "" {
+		request.AsOf = time.Now().In(s.location).Format("2006-01-02")
+	} else if _, ok := dateParam(w, request.AsOf); !ok {
+		return
+	}
+	result, err := focus.New(s.store).ScanWith(r.Context(), request)
+	if err != nil {
+		if errors.Is(err, focus.ErrInvalidRequest) {
+			writeError(w, http.StatusBadRequest, "invalid_focus_request", err.Error())
+			return
+		}
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: result})
 }
 
 func (s *Server) stockBoards(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,6 @@
 # ShadowFlow 暗流
 
-面向行业、概念和个股资金趋势研究的单机 Web 系统。Go 服务在交易日 `09:31-11:30`、`13:01-15:00` 每分钟采集完整板块榜，仅供盘中实时展示。每天 `16:00` 从东方财富 `darktrade` 与 `darktradetick` 独立重新抓取行业、概念、个股完整日终榜及 48 个五分钟累计资金点；`16:15` 起抓取有成交个股的 48 根未复权五分钟 K。个股 `daily_close` 同时保存当日日 K 的 OHLC、成交量、成交额、换手率和振幅。盘中工作数据只在上述长期数据全部完整后由次日 `09:00` 任务清理。三类日终榜可联合查询和导出，个股所属行业、概念可按任意截面日还原。
+面向行业、概念和个股资金趋势研究的单机 Web 系统。Go 服务在交易日 `09:31-11:30`、`13:01-15:00` 每分钟采集完整板块榜，仅供盘中实时展示。每天 `16:00` 从东方财富 `darktrade` 与 `darktradetick` 独立重新抓取行业、概念、个股完整日终榜及 48 个五分钟累计资金点；`16:15` 起抓取有成交个股的 48 根未复权五分钟 K。个股 `daily_close` 同时保存当日日 K 的 OHLC、成交量、成交额、换手率和振幅。盘中工作数据只在上述长期数据全部完整后由次日 `09:00` 任务清理。三类日终榜可联合查询和导出，个股所属行业、概念可按任意截面日还原；动态筛选器可对任意 1–60 个连续完整交易日配置概念和个股条件。
 
 ## 本地开发
 
@@ -46,6 +46,30 @@ curl 'http://localhost:8080/api/v1/stocks/300308/research-5m?trade_date=2026-08-
 curl 'http://localhost:8080/api/v1/boards/concept/BK1128/stocks?as_of=2026-08-13'
 curl 'http://localhost:8080/api/v1/relations/changes?trade_date=2026-08-13'
 ```
+
+## 动态连续筛选
+
+前端“动态筛选”页允许分别为概念和个股添加或删除任意条件，选择“全部满足”或“任一满足”，并配置连续交易日数、是否仅主板、是否排除 ST、个股是否必须属于命中概念。内置初始模板就是原始策略：连续 3 日，概念成交额大于 500 亿元、个股成交额大于 2 亿元，换手率大于 3%，涨幅 1%–6%，控盘系数 1.5%–6%。控盘系数按 `(主力明盘 + 主力暗盘) / 成交额 × 100%` 即时计算。
+
+筛选读取本系统已经原子归档的完整 `daily_close`，不请求东方财富概念历史 K 线。只有累积日期达到所选连续日数才会计算结果；不足时接口明确返回 `ready=false`，不会补值或推测。停牌个股不会使整日失效，但它本身因缺少可用行情而不会入选。
+
+通用接口为 `POST /api/v1/focus/scan`。API 使用原始单位：资金/成交额为元，百分比型行情字段为小数，控盘系数为百分数；前端会自动换算为亿元和百分比。示例：
+
+```bash
+curl -X POST 'http://localhost:8080/api/v1/focus/scan' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "as_of":"2026-08-14",
+    "consecutive_days":3,
+    "concept_match":"all",
+    "concept_conditions":[{"field":"turnover","operator":"gt","value":50000000000}],
+    "stock_match":"all",
+    "stock_conditions":[{"field":"turnover","operator":"gt","value":200000000}],
+    "stock_scope":{"main_board_only":true,"exclude_st":true,"require_qualified_concepts":true}
+  }'
+```
+
+可用操作符为 `gt`、`gte`、`lt`、`lte`、`eq`、`between`；可用字段见 `backend/openapi.yaml`。兼容接口 `GET /api/v1/focus/three-day?as_of=YYYY-MM-DD` 执行上述完整初始模板。
 
 前端长列表采用固定分页：首页行业/概念榜和板块成分股每页 25 条，采集运行记录每页 20 条，收盘个股榜由后端分页且每页 100 条。单日日期仍使用日期控件；当天非交易日时默认回退到上一个交易日。
 

@@ -256,6 +256,40 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/CollectionRun" }
                   meta: { type: object }
+  /api/v1/focus/scan:
+    post:
+      summary: 按动态条件筛选连续完整日终截面
+      description: 每个所选交易日都必须符合规则；资金字段单位为元，百分比行情字段使用原始小数，control_coefficient 使用百分数。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FocusScanRequest" }
+      responses:
+        "200":
+          description: 筛选结果；完整交易日不足时 ready=false
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/FocusResult" }
+        "400": { $ref: "#/components/responses/Error" }
+  /api/v1/focus/three-day:
+    get:
+      summary: 使用内置三日策略模板筛选
+      parameters:
+        - $ref: "#/components/parameters/AsOf"
+      responses:
+        "200":
+          description: 与动态接口相同的筛选结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/FocusResult" }
+        "400": { $ref: "#/components/responses/Error" }
   /api/v1/system/status:
     get:
       summary: 系统和市场状态
@@ -353,6 +387,51 @@ components:
                 items: { $ref: "#/components/schemas/BoardStockQuote" }
               meta: { type: object }
   schemas:
+    FocusCondition:
+      type: object
+      required: [field, operator, value]
+      properties:
+        field:
+          type: string
+          enum: [turnover, turnover_rate, change_pct, control_coefficient, dark_money, regular_money, main_money_inflow, dark_activity, dark_inflow_ratio, rank, close_price, amplitude, volume, up_count, flat_count, down_count]
+        operator: { type: string, enum: [gt, gte, lt, lte, eq, between] }
+        value: { type: number }
+        max_value: { type: number, description: operator=between 时必填且不得小于 value }
+    FocusScanRequest:
+      type: object
+      required: [as_of, consecutive_days, concept_match, concept_conditions, stock_match, stock_conditions, stock_scope]
+      properties:
+        as_of: { type: string, format: date }
+        consecutive_days: { type: integer, minimum: 1, maximum: 60 }
+        concept_match: { type: string, enum: [all, any] }
+        concept_conditions:
+          type: array
+          maxItems: 20
+          items: { $ref: "#/components/schemas/FocusCondition" }
+        stock_match: { type: string, enum: [all, any] }
+        stock_conditions:
+          type: array
+          maxItems: 20
+          items: { $ref: "#/components/schemas/FocusCondition" }
+        stock_scope:
+          type: object
+          required: [main_board_only, exclude_st, require_qualified_concepts]
+          properties:
+            main_board_only: { type: boolean }
+            exclude_st: { type: boolean }
+            require_qualified_concepts: { type: boolean }
+    FocusResult:
+      type: object
+      properties:
+        requested_as_of: { type: string, format: date }
+        as_of: { type: string, format: date }
+        ready: { type: boolean }
+        trade_dates: { type: array, items: { type: string, format: date } }
+        required_days: { type: integer }
+        request: { $ref: "#/components/schemas/FocusScanRequest" }
+        concepts: { type: array, items: { type: object } }
+        stocks: { type: array, items: { type: object } }
+        stats: { type: object }
     RankRecord:
       type: object
       required: [trade_date, snapshot_at, rank_type, rank, code, name, dark_money, regular_money, main_money_inflow]

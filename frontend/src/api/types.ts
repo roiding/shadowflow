@@ -166,3 +166,87 @@ export interface CollectionRun {
 }
 
 export type MarketStatus = SystemStatus['market_status']
+
+export interface FocusDailyMetric {
+  trade_date: string
+  turnover: number
+  turnover_rate: number
+  change_pct: number
+  dark_money: number
+  regular_money: number
+  main_money_inflow: number
+  dark_activity: number
+  dark_inflow_ratio: number
+  rank: number
+  close_price: number
+  amplitude: number
+  volume: number
+  up_count: number
+  flat_count: number
+  down_count: number
+  control_coefficient: number
+}
+
+export type FocusField = 'turnover' | 'turnover_rate' | 'change_pct' | 'control_coefficient' | 'dark_money' | 'regular_money' | 'main_money_inflow' | 'dark_activity' | 'dark_inflow_ratio' | 'rank' | 'close_price' | 'amplitude' | 'volume' | 'up_count' | 'flat_count' | 'down_count'
+export type FocusOperator = 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'between'
+export type FocusMatchMode = 'all' | 'any'
+
+export interface FocusCondition {
+  field: FocusField
+  operator: FocusOperator
+  value: number
+  max_value?: number
+}
+
+export interface FocusScanRequest {
+  as_of: string
+  consecutive_days: number
+  concept_match: FocusMatchMode
+  concept_conditions: FocusCondition[]
+  stock_match: FocusMatchMode
+  stock_conditions: FocusCondition[]
+  stock_scope: {
+    main_board_only: boolean
+    exclude_st: boolean
+    require_qualified_concepts: boolean
+  }
+}
+
+export interface FocusConceptRef {
+  code: string
+  name: string
+}
+
+export interface FocusConceptCandidate {
+  code: string
+  name: string
+  days: FocusDailyMetric[]
+}
+
+export interface FocusStockCandidate {
+  market: number
+  code: string
+  name: string
+  concepts: FocusConceptRef[]
+  days: FocusDailyMetric[]
+}
+
+export interface FocusResult {
+  requested_as_of: string
+  as_of?: string
+  ready: boolean
+  trade_dates: string[]
+  required_days: number
+  request: FocusScanRequest
+  concepts: FocusConceptCandidate[]
+  stocks: FocusStockCandidate[]
+  stats: {
+    concepts_evaluated: number
+    concepts_qualified: number
+    stocks_evaluated: number
+    stocks_qualified: number
+    non_main_board_excluded: number
+    st_excluded: number
+    missing_record_excluded: number
+  }
+}
