@@ -296,6 +296,42 @@ AND kline_rows=expected_kline_stocks*expected_points)`, tradeDate).Scan(&exists)
 	return exists == 1, err
 }
 
+func (s *Store) MissingStockKlineCodes(ctx context.Context, tradeDate string) ([]string, error) {
+	var expectedStocks, expectedPoints, closeStocks int
+	err := s.db.QueryRowContext(ctx, `SELECT expected_kline_stocks,expected_points,
+(SELECT count(*) FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock' AND quote_available=1)
+FROM stock_archive_quality WHERE trade_date=?`, tradeDate, tradeDate).Scan(&expectedStocks, &expectedPoints, &closeStocks)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: stock archive is unavailable for %s", graymarket.ErrNoData, tradeDate)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if expectedPoints != 48 || closeStocks != expectedStocks {
+		return nil, fmt.Errorf("inconsistent stock archive quality for %s: expected_stocks=%d close_stocks=%d expected_points=%d", tradeDate, expectedStocks, closeStocks, expectedPoints)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT close.code FROM rank_snapshot AS close
+LEFT JOIN (
+	SELECT market,code,sum(kline_available) AS kline_rows
+	FROM stock_research_5m WHERE trade_date=? GROUP BY market,code
+) AS archived ON archived.market=close.market AND archived.code=close.code
+WHERE close.trade_date=? AND close.snapshot_kind='daily_close' AND close.rank_type='stock'
+AND close.quote_available=1 AND coalesce(archived.kline_rows,0)<? ORDER BY close.rank`, tradeDate, tradeDate, expectedPoints)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]string, 0, expectedStocks)
+	for rows.Next() {
+		var code string
+		if err := rows.Scan(&code); err != nil {
+			return nil, err
+		}
+		result = append(result, code)
+	}
+	return result, rows.Err()
+}
+
 type scanner interface {
 	Scan(...any) error
 }

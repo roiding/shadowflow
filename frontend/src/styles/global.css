@@ -170,6 +170,7 @@ kbd { padding: 1px 5px; border: 1px solid var(--line); border-radius: 3px; color
 .run-status { gap: 5px; }
 .run-status > span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
 .run-status.success { color: var(--green); }.run-status.success > span { background: var(--green); }
+.run-status.partial { color: var(--orange); }.run-status.partial > span { background: var(--orange); }
 .run-status.failed { color: var(--red); }.run-status.failed > span { background: var(--red); }
 .loading-block { min-height: 240px; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
 .stocks-page { min-height: 640px; }

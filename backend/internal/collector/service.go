@@ -40,6 +40,8 @@ type store interface {
 	SaveBoardArchive(context.Context, string, graymarket.RankSnapshot, []graymarket.MoneyPoint) error
 	SaveStockArchive(context.Context, string, graymarket.RankSnapshot, []graymarket.MoneyPoint) error
 	SaveStockKlines(context.Context, string, []graymarket.StockKlinePoint) error
+	MissingStockKlineCodes(context.Context, string) ([]string, error)
+	DailyCloseStocks(context.Context, string, []string) ([]graymarket.RankRecord, error)
 	CompactResearch(context.Context, string) ([]repository.QualitySummary, error)
 	CleanupArchivedIntraday(context.Context, string) error
 	HasDailyClose(context.Context, string) (bool, error)
@@ -109,8 +111,7 @@ func (s *Service) CollectEndOfDay(ctx context.Context, runAt time.Time) error {
 }
 
 func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error {
-	closeAt := time.Date(runAt.Year(), runAt.Month(), runAt.Day(), 15, 0, 0, 0, runAt.Location())
-	requestedDate := runAt.Format("20060102")
+	tradeDate := runAt.Format("2006-01-02")
 	klineSource, ok := s.source.(StockKlineSource)
 	if !ok {
 		return errors.New("stock kline source is unavailable")
@@ -118,7 +119,7 @@ func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error
 	runID := newRunID()
 	startedAt := time.Now().UTC()
 	run := repository.CollectionRun{RunID: runID, SnapshotAt: runAt, SnapshotKind: graymarket.SnapshotStockKline, RankType: graymarket.RankStock,
-		Status: repository.RunRunning, RequestedDate: formatDate(requestedDate), AttemptCount: 1, StartedAt: startedAt}
+		Status: repository.RunRunning, RequestedDate: tradeDate, ActualTradeDate: tradeDate, AttemptCount: 1, StartedAt: startedAt}
 	if err := s.store.StartRun(ctx, run); err != nil {
 		return err
 	}
@@ -130,41 +131,67 @@ func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error
 		}
 		return resultErr
 	}
-	snapshot, err := s.source.FetchAll(ctx, graymarket.RankStock, requestedDate, closeAt)
+	missingCodes, err := s.store.MissingStockKlineCodes(ctx, tradeDate)
 	if err != nil {
-		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, errorCode(err), err.Error()
+		errorCode := "storage_error"
+		if errors.Is(err, graymarket.ErrNoData) {
+			errorCode = "no_data"
+		}
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, errorCode, err.Error()
 		return finish(err)
 	}
-	run.ActualTradeDate = snapshot.TradeDate
-	if snapshot.TradeDate != formatDate(requestedDate) {
-		err = fmt.Errorf("upstream trade date %s does not match requested date %s", snapshot.TradeDate, formatDate(requestedDate))
-		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "date_mismatch", err.Error()
+	if len(missingCodes) == 0 {
+		run.Status = repository.RunSuccess
+		return finish(nil)
+	}
+	records, err := s.store.DailyCloseStocks(ctx, tradeDate, missingCodes)
+	if err != nil {
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
 		return finish(err)
 	}
-	if err := s.enrichStockDailyClose(ctx, &snapshot); err != nil {
-		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
+	if len(records) != len(missingCodes) {
+		err = fmt.Errorf("incomplete persisted stock close candidates: expected %d rows, got %d", len(missingCodes), len(records))
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
 		return finish(err)
 	}
-	eligible := snapshot.Records[:0]
-	for _, record := range snapshot.Records {
-		if record.QuoteAvailable {
-			eligible = append(eligible, record)
+	for _, record := range records {
+		if !record.QuoteAvailable {
+			err = fmt.Errorf("persisted stock close candidate %s has no daily bar", record.Code)
+			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
+			return finish(err)
 		}
 	}
-	snapshot.Records = eligible
-	if len(snapshot.Records) == 0 {
-		err = fmt.Errorf("no stocks have a daily bar on %s", snapshot.TradeDate)
-		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "no_data", err.Error()
-		return finish(err)
-	}
-	points, err := klineSource.FetchStockKlines5m(ctx, snapshot)
+	snapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: graymarket.RankStock,
+		SnapshotAt: time.Date(runAt.Year(), runAt.Month(), runAt.Day(), 15, 0, 0, 0, runAt.Location()), Records: records}
+	points, fetchErr := klineSource.FetchStockKlines5m(ctx, snapshot)
 	run.ExpectedTotal, run.FetchedTotal = len(snapshot.Records)*48, len(points)
 	run.PageCount = len(snapshot.Records)
-	if err != nil {
-		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, errorCode(err), err.Error()
+	if len(points) > 0 {
+		if err := s.store.SaveStockKlines(ctx, runID, points); err != nil {
+			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
+			return finish(err)
+		}
+	}
+	if fetchErr != nil {
+		run.Status = repository.RunFailed
+		if len(points) > 0 {
+			run.Status = repository.RunPartial
+		}
+		run.ErrorCode, run.ErrorMessage = errorCode(fetchErr), fetchErr.Error()
+		return finish(fetchErr)
+	}
+	if len(points) != run.ExpectedTotal {
+		err = fmt.Errorf("incomplete stock kline fetch: expected %d rows, got %d", run.ExpectedTotal, len(points))
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
 		return finish(err)
 	}
-	if err := s.store.SaveStockKlines(ctx, runID, points); err != nil {
+	complete, err := s.store.HasStockKlineArchive(ctx, tradeDate)
+	if err != nil {
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
+		return finish(err)
+	}
+	if !complete {
+		err = fmt.Errorf("stock kline archive remains incomplete after fetching all missing candidates")
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
 		return finish(err)
 	}

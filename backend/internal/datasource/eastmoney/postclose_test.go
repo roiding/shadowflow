@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -66,6 +68,42 @@ func TestFetchStockKlines5mMapsUnadjusted48Bars(t *testing.T) {
 	first := points[0]
 	if first.OpenPrice != 10.10 || first.ClosePrice != 10.20 || first.HighPrice != 10.30 || first.LowPrice != 10 || first.Volume != 1234 || first.Turnover != 567890 || first.Amplitude != 0.03 || first.ChangePct != 0.015 || first.ChangeValue != 0.15 || first.TurnoverRate != 0.025 {
 		t.Fatalf("unexpected mapped kline: %+v", first)
+	}
+}
+
+func TestFetchStockKlines5mReturnsCompletedStocksWithBatchError(t *testing.T) {
+	var failedRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("secid") == "0.000001" {
+			failedRequests.Add(1)
+			_, _ = w.Write([]byte("{"))
+			return
+		}
+		rows := make([]string, 0, 48)
+		for _, clock := range archiveClocks() {
+			rows = append(rows, fmt.Sprintf("2026-08-14 %02d:%02d,10.10,10.20,10.30,10.00,1234,567890.00,3.00,1.50,0.15,2.50", clock/100, clock%100))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"rc": 0, "data": map[string]any{"klines": rows}})
+	}))
+	defer server.Close()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+	snapshot := graymarket.RankSnapshot{TradeDate: "2026-08-14", RankType: graymarket.RankStock, SnapshotAt: closeAt,
+		Records: []graymarket.RankRecord{
+			{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Market: 0, Code: "000001"},
+			{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Market: 1, Code: "600001"},
+		}}
+	client := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL)
+	client.stockKlineRetryGap = 0
+	points, err := client.FetchStockKlines5m(context.Background(), snapshot)
+	if err == nil || !strings.Contains(err.Error(), "000001") || !strings.Contains(err.Error(), "completed 1/2 stocks") {
+		t.Fatalf("unexpected partial batch error: %v", err)
+	}
+	if len(points) != 48 || points[0].Code != "600001" {
+		t.Fatalf("completed stock was discarded: points=%d first=%+v", len(points), points[0])
+	}
+	if failedRequests.Load() != 4 {
+		t.Fatalf("failed stock should use four attempts, got %d", failedRequests.Load())
 	}
 }
 

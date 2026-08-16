@@ -121,6 +121,7 @@ type Store interface {
 	SaveBoardArchive(context.Context, string, graymarket.RankSnapshot, []graymarket.MoneyPoint) error
 	SaveStockArchive(context.Context, string, graymarket.RankSnapshot, []graymarket.MoneyPoint) error
 	SaveStockKlines(context.Context, string, []graymarket.StockKlinePoint) error
+	MissingStockKlineCodes(context.Context, string) ([]string, error)
 	CompactResearch(context.Context, string) ([]QualitySummary, error)
 	CleanupIntraday(context.Context, string) error
 	CleanupArchivedIntraday(context.Context, string) error

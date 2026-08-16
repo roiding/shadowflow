@@ -32,7 +32,8 @@ func (c *Client) FetchStockKlines5m(ctx context.Context, snapshot graymarket.Ran
 	if snapshot.RankType != graymarket.RankStock || snapshot.TradeDate == "" || len(snapshot.Records) == 0 {
 		return nil, fmt.Errorf("invalid stock kline snapshot")
 	}
-	ctx, cancel := context.WithCancel(ctx)
+	parentCtx := ctx
+	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 	workerCount := min(2, len(snapshot.Records))
 	jobs := make(chan graymarket.RankRecord, workerCount)
@@ -53,10 +54,7 @@ func (c *Client) FetchStockKlines5m(ctx context.Context, snapshot graymarket.Ran
 				points, err := c.fetchStockKlineWithRetry(ctx, snapshot.TradeDate, stock)
 				select {
 				case results <- stockKlineResult{points: points, err: err}:
-				case <-ctx.Done():
-					return
-				}
-				if err != nil {
+				case <-parentCtx.Done():
 					return
 				}
 			}
@@ -78,15 +76,30 @@ func (c *Client) FetchStockKlines5m(ctx context.Context, snapshot graymarket.Ran
 	}()
 	points := make([]graymarket.StockKlinePoint, 0, len(snapshot.Records)*48)
 	var firstErr error
+	failedStocks := 0
+	consecutiveFailures := 0
+	const maxConsecutiveFailures = 8
 	for result := range results {
-		if result.err != nil && firstErr == nil {
-			firstErr = result.err
-			cancel()
+		if result.err != nil {
+			failedStocks++
+			consecutiveFailures++
+			if firstErr == nil {
+				firstErr = result.err
+			}
+			if consecutiveFailures >= maxConsecutiveFailures {
+				cancel()
+			}
+		} else {
+			consecutiveFailures = 0
+			points = append(points, result.points...)
 		}
-		points = append(points, result.points...)
+	}
+	if parentCtx.Err() != nil {
+		return points, parentCtx.Err()
 	}
 	if firstErr != nil {
-		return nil, firstErr
+		return points, fmt.Errorf("stock kline batch incomplete: completed %d/%d stocks, failed %d; first error: %w",
+			len(points)/48, len(snapshot.Records), failedStocks, firstErr)
 	}
 	if len(points) != len(snapshot.Records)*48 {
 		return nil, fmt.Errorf("incomplete stock kline archive: expected %d points, got %d", len(snapshot.Records)*48, len(points))
@@ -106,7 +119,7 @@ func (c *Client) fetchStockKlineWithRetry(ctx context.Context, tradeDate string,
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(time.Duration(attempt) * time.Second):
+			case <-time.After(time.Duration(attempt) * c.stockKlineRetryGap):
 			}
 		}
 	}

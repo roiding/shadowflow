@@ -480,6 +480,77 @@ func TestSaveStockArchivePersists48MoneyBarsAndDailyK(t *testing.T) {
 	}
 }
 
+func TestSaveStockKlinesCommitsCompleteStocksIncrementally(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+	records := []graymarket.RankRecord{
+		{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Rank: 1, Market: 0, Code: "000001", QuoteAvailable: true, FetchedAt: closeAt},
+		{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Rank: 2, Market: 1, Code: "600001", QuoteAvailable: true, FetchedAt: closeAt},
+	}
+	snapshot := graymarket.RankSnapshot{TradeDate: "2026-08-14", RankType: graymarket.RankStock, SnapshotAt: closeAt, Records: records}
+	if err := store.SaveStockArchive(ctx, "stock-archive", snapshot, testMoneyPoints(snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	missing, err := store.MissingStockKlineCodes(ctx, snapshot.TradeDate)
+	if err != nil || len(missing) != 2 {
+		t.Fatalf("unexpected initial missing stocks: missing=%v err=%v", missing, err)
+	}
+
+	first := testStockKlines(snapshot.TradeDate, location, records[0])
+	if err := store.SaveStockKlines(ctx, "partial-kline", first); err != nil {
+		t.Fatal(err)
+	}
+	quality, err := store.StockArchiveQuality(ctx, snapshot.TradeDate)
+	if err != nil || quality.KlineRows != 48 || quality.KlineArchivedAt != nil {
+		t.Fatalf("partial archive quality is incorrect: quality=%+v err=%v", quality, err)
+	}
+	complete, err := store.HasStockKlineArchive(ctx, snapshot.TradeDate)
+	if err != nil || complete {
+		t.Fatalf("partial archive must remain incomplete: complete=%v err=%v", complete, err)
+	}
+	missing, err = store.MissingStockKlineCodes(ctx, snapshot.TradeDate)
+	if err != nil || len(missing) != 1 || missing[0] != "600001" {
+		t.Fatalf("completed stock should not be fetched again: missing=%v err=%v", missing, err)
+	}
+
+	second := testStockKlines(snapshot.TradeDate, location, records[1])
+	if err := store.SaveStockKlines(ctx, "invalid-partial-stock", second[:47]); err == nil {
+		t.Fatal("an incomplete single-stock batch must be rejected")
+	}
+	quality, err = store.StockArchiveQuality(ctx, snapshot.TradeDate)
+	if err != nil || quality.KlineRows != 48 {
+		t.Fatalf("rejected batch changed persisted progress: quality=%+v err=%v", quality, err)
+	}
+
+	if err := store.SaveStockKlines(ctx, "complete-kline", second); err != nil {
+		t.Fatal(err)
+	}
+	quality, err = store.StockArchiveQuality(ctx, snapshot.TradeDate)
+	if err != nil || quality.KlineRows != 96 || quality.KlineArchivedAt == nil {
+		t.Fatalf("completed archive quality is incorrect: quality=%+v err=%v", quality, err)
+	}
+	complete, err = store.HasStockKlineArchive(ctx, snapshot.TradeDate)
+	if err != nil || !complete {
+		t.Fatalf("stock kline archive should be complete: complete=%v err=%v", complete, err)
+	}
+}
+
+func testStockKlines(tradeDate string, location *time.Location, record graymarket.RankRecord) []graymarket.StockKlinePoint {
+	points := make([]graymarket.StockKlinePoint, 0, 48)
+	for _, clock := range expectedResearchTimes() {
+		at, _ := time.ParseInLocation("2006-01-02 15:04", tradeDate+" "+clock, location)
+		points = append(points, graymarket.StockKlinePoint{TradeDate: tradeDate, SnapshotAt: at, Market: record.Market, Code: record.Code,
+			OpenPrice: 10, HighPrice: 11, LowPrice: 9, ClosePrice: 10.5, Volume: 1000, Turnover: 2000})
+	}
+	return points
+}
+
 func testMoneyPoints(snapshot graymarket.RankSnapshot) []graymarket.MoneyPoint {
 	location := snapshot.SnapshotAt.Location()
 	points := make([]graymarket.MoneyPoint, 0, len(snapshot.Records)*48)

@@ -27,6 +27,7 @@ type Client struct {
 	quoteBaseURLs        []string
 	httpClient           *http.Client
 	pageSize             int
+	stockKlineRetryGap   time.Duration
 }
 
 func NewClient(baseURL string, httpClient *http.Client, pageSize int) *Client {
@@ -37,6 +38,7 @@ func NewClient(baseURL string, httpClient *http.Client, pageSize int) *Client {
 		quoteBaseURLs:        []string{"https://push2.eastmoney.com", "https://push2delay.eastmoney.com"},
 		httpClient:           httpClient,
 		pageSize:             pageSize,
+		stockKlineRetryGap:   time.Second,
 	}
 }
 

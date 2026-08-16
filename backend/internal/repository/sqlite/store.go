@@ -464,16 +464,48 @@ func (s *Store) SaveStockKlines(ctx context.Context, _ string, points []graymark
 		return graymarket.ErrNoData
 	}
 	tradeDate := points[0].TradeDate
+	type stockKey struct {
+		market int64
+		code   string
+	}
+	pointIndexes := make(map[stockKey]map[int]struct{})
+	for _, point := range points {
+		minuteIndex, ok := researchMinuteIndex(point.SnapshotAt)
+		if !ok || point.TradeDate != tradeDate || point.Code == "" {
+			return fmt.Errorf("invalid stock kline point %s %s", point.Code, point.SnapshotAt)
+		}
+		key := stockKey{market: point.Market, code: point.Code}
+		if pointIndexes[key] == nil {
+			pointIndexes[key] = make(map[int]struct{}, 48)
+		}
+		if _, duplicate := pointIndexes[key][minuteIndex]; duplicate {
+			return fmt.Errorf("duplicate stock kline point %s at %s", point.Code, point.SnapshotAt.Format("15:04"))
+		}
+		pointIndexes[key][minuteIndex] = struct{}{}
+	}
+	for key, indexes := range pointIndexes {
+		if len(indexes) != 48 {
+			return fmt.Errorf("incomplete stock kline batch for %s: expected 48 rows, got %d", key.code, len(indexes))
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	for _, point := range points {
-		minuteIndex, ok := researchMinuteIndex(point.SnapshotAt)
-		if !ok || point.TradeDate != tradeDate {
-			return fmt.Errorf("invalid stock kline point %s %s", point.Code, point.SnapshotAt)
+	for key := range pointIndexes {
+		var eligible int
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM rank_snapshot
+WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock' AND market=? AND code=? AND quote_available=1)`,
+			tradeDate, key.market, key.code).Scan(&eligible); err != nil {
+			return err
 		}
+		if eligible != 1 {
+			return fmt.Errorf("stock %s is not an eligible daily-close kline candidate", key.code)
+		}
+	}
+	for _, point := range points {
+		minuteIndex, _ := researchMinuteIndex(point.SnapshotAt)
 		result, err := tx.ExecContext(ctx, `UPDATE stock_research_5m SET
 open_price_e4=?,high_price_e4=?,low_price_e4=?,close_price_e4=?,volume=?,turnover=?,
 amplitude_ppm=?,change_pct_ppm=?,change_value_e4=?,turnover_rate_ppm=?,kline_available=1
@@ -495,11 +527,12 @@ WHERE trade_date=? AND minute_index=? AND market=? AND code=?`, scaleE4(point.Op
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM stock_research_5m WHERE trade_date=? AND kline_available=1`, tradeDate).Scan(&klineRows); err != nil {
 		return err
 	}
-	if klineRows != expectedKlineStocks*expectedPoints {
-		return fmt.Errorf("incomplete stock kline archive: expected %d rows, got %d", expectedKlineStocks*expectedPoints, klineRows)
-	}
 	now := time.Now().UTC().Format(timestampLayout)
-	if _, err := tx.ExecContext(ctx, `UPDATE stock_archive_quality SET kline_rows=?,kline_archived_at=?,updated_at=? WHERE trade_date=?`, klineRows, now, now, tradeDate); err != nil {
+	var archivedAt any
+	if klineRows == expectedKlineStocks*expectedPoints {
+		archivedAt = now
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE stock_archive_quality SET kline_rows=?,kline_archived_at=?,updated_at=? WHERE trade_date=?`, klineRows, archivedAt, now, tradeDate); err != nil {
 		return err
 	}
 	return tx.Commit()
