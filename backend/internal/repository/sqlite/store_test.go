@@ -478,6 +478,20 @@ func TestSaveStockArchivePersists48MoneyBarsAndDailyK(t *testing.T) {
 	if err != nil || !complete {
 		t.Fatalf("stock kline archive should be complete: complete=%v err=%v", complete, err)
 	}
+
+	points := testMoneyPoints(snapshot)
+	points[0].DarkMoney = 999
+	if err := store.SaveStockArchive(ctx, "stock-archive-rerun", snapshot, points); err != nil {
+		t.Fatal(err)
+	}
+	series, err = store.StockResearchSeries(ctx, "000001", snapshot.TradeDate)
+	if err != nil || len(series) != 48 || !series[0].KlineAvailable || series[0].OpenPrice != 10.1234 || series[0].DarkMoney != 999 {
+		t.Fatalf("stock archive rerun did not preserve klines while updating money: series=%+v err=%v", series, err)
+	}
+	quality, err = store.StockArchiveQuality(ctx, snapshot.TradeDate)
+	if err != nil || quality.KlineRows != 48 || quality.KlineArchivedAt == nil {
+		t.Fatalf("stock archive rerun reset completed kline quality: quality=%+v err=%v", quality, err)
+	}
 }
 
 func TestSaveStockKlinesCommitsCompleteStocksIncrementally(t *testing.T) {

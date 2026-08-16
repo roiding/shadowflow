@@ -408,7 +408,7 @@ func (s *Store) SaveStockArchive(ctx context.Context, runID string, snapshot gra
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_research_5m WHERE trade_date=?`, snapshot.TradeDate); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE stock_research_5m SET money_rank=-1 WHERE trade_date=?`, snapshot.TradeDate); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock'`, snapshot.TradeDate); err != nil {
@@ -421,6 +421,11 @@ func (s *Store) SaveStockArchive(ctx context.Context, runID string, snapshot gra
 	for _, record := range snapshot.Records {
 		if record.QuoteAvailable {
 			expectedKlineStocks++
+		} else if _, err := tx.ExecContext(ctx, `UPDATE stock_research_5m SET
+open_price_e4=0,high_price_e4=0,low_price_e4=0,close_price_e4=0,volume=0,turnover=0,
+amplitude_ppm=0,change_pct_ppm=0,change_value_e4=0,turnover_rate_ppm=0,kline_available=0
+WHERE trade_date=? AND market=? AND code=?`, snapshot.TradeDate, record.Market, record.Code); err != nil {
+			return err
 		}
 		if err := insertRecord(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), record); err != nil {
 			return err
@@ -438,21 +443,34 @@ func (s *Store) SaveStockArchive(ctx context.Context, runID string, snapshot gra
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO stock_research_5m
 (trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow)
-VALUES (?,?,?,?,?,?,?,?)`, point.TradeDate, minuteIndex, point.Market, point.Code, point.Rank,
+VALUES (?,?,?,?,?,?,?,?)
+ON CONFLICT(trade_date,minute_index,market,code) DO UPDATE SET
+money_rank=excluded.money_rank,dark_money=excluded.dark_money,
+regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow`, point.TradeDate, minuteIndex, point.Market, point.Code, point.Rank,
 			point.DarkMoney, point.RegularMoney, point.MainMoneyInflow)
 		if err != nil {
 			return err
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_research_5m WHERE trade_date=? AND money_rank=-1`, snapshot.TradeDate); err != nil {
+		return err
+	}
+	var klineRows int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM stock_research_5m WHERE trade_date=? AND kline_available=1`, snapshot.TradeDate).Scan(&klineRows); err != nil {
+		return err
+	}
 	now := time.Now().UTC().Format(timestampLayout)
 	_, err = tx.ExecContext(ctx, `INSERT INTO stock_archive_quality
 (trade_date,expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,daily_close_rows,daily_kline_rows,money_archived_at,updated_at)
-VALUES (?,?,48,?,?,0,?,?,?,?)
+VALUES (?,?,48,?,?,?,?,?,?,?)
 ON CONFLICT(trade_date) DO UPDATE SET expected_stocks=excluded.expected_stocks,expected_points=48,
-expected_kline_stocks=excluded.expected_kline_stocks,money_rows=excluded.money_rows,kline_rows=0,
+expected_kline_stocks=excluded.expected_kline_stocks,money_rows=excluded.money_rows,kline_rows=excluded.kline_rows,
 daily_close_rows=excluded.daily_close_rows,daily_kline_rows=excluded.daily_kline_rows,
-money_archived_at=excluded.money_archived_at,kline_archived_at=NULL,updated_at=excluded.updated_at`,
-		snapshot.TradeDate, len(snapshot.Records), expectedKlineStocks, len(points), len(snapshot.Records), expectedKlineStocks, now, now)
+money_archived_at=excluded.money_archived_at,
+kline_archived_at=CASE WHEN excluded.kline_rows=excluded.expected_kline_stocks*excluded.expected_points
+THEN coalesce(stock_archive_quality.kline_archived_at,excluded.updated_at) ELSE NULL END,
+updated_at=excluded.updated_at`,
+		snapshot.TradeDate, len(snapshot.Records), expectedKlineStocks, len(points), klineRows, len(snapshot.Records), expectedKlineStocks, now, now)
 	if err != nil {
 		return err
 	}
