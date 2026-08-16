@@ -346,7 +346,6 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 
 	points := make([]graymarket.StockKlinePoint, 0, 48)
 	previousClose := stock.PreviousClose
-	var totalVolume, totalTurnover int64
 	for index := range bars {
 		bar := &bars[index]
 		expectedRows := 5
@@ -365,17 +364,11 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 			bar.point.TurnoverRate = stock.TurnoverRate * float64(bar.point.Volume) / float64(stock.Volume)
 		}
 		previousClose = bar.point.ClosePrice
-		totalVolume += bar.point.Volume
-		totalTurnover += bar.point.Turnover
 		points = append(points, bar.point)
 	}
 	if !samePrice(points[0].OpenPrice, stock.OpenPrice) || !samePrice(maxKlinePrice(points), stock.HighPrice) ||
 		!samePrice(minKlinePrice(points), stock.LowPrice) || !samePrice(points[47].ClosePrice, stock.ClosePrice) {
 		return nil, fmt.Errorf("aggregated trend OHLC does not match daily bar")
-	}
-	turnoverTolerance := max(int64(128), stock.Turnover/500_000)
-	if absInt64(totalVolume-stock.Volume) > 1 || absInt64(totalTurnover-stock.Turnover) > turnoverTolerance {
-		return nil, fmt.Errorf("aggregated trend volume does not match daily bar: volume=%d/%d turnover=%d/%d", totalVolume, stock.Volume, totalTurnover, stock.Turnover)
 	}
 	return points, nil
 }
@@ -404,12 +397,6 @@ func researchTimeForIndex(tradeDate string, index int, location *time.Location) 
 }
 
 func samePrice(left, right float64) bool { return math.Abs(left-right) <= 0.0001 }
-func absInt64(value int64) int64 {
-	if value < 0 {
-		return -value
-	}
-	return value
-}
 func maxKlinePrice(points []graymarket.StockKlinePoint) float64 {
 	result := points[0].HighPrice
 	for _, point := range points[1:] {

@@ -140,7 +140,7 @@ func TestFetchStockKlines5mAggregatesOneMinuteFallback(t *testing.T) {
 	snapshot := graymarket.RankSnapshot{TradeDate: "2026-08-14", RankType: graymarket.RankStock, SnapshotAt: closeAt,
 		Records: []graymarket.RankRecord{{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock,
 			Market: 1, Code: "600001", OpenPrice: 10, HighPrice: 10, LowPrice: 10, ClosePrice: 10, PreviousClose: 9,
-			Volume: 240, Turnover: 60000120, TurnoverRate: 0.024, QuoteAvailable: true}}}
+			Volume: 241, Turnover: 60000120, TurnoverRate: 0.0241, QuoteAvailable: true}}}
 	client := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL).
 		WithStockTrendBaseURLs([]string{server.URL + "/api/qt/stock/trends2/get"})
 	client.stockKlineRetryGap = 0
@@ -155,11 +155,13 @@ func TestFetchStockKlines5mAggregatesOneMinuteFallback(t *testing.T) {
 		t.Fatalf("unexpected first aggregated bars: first=%+v second=%+v", points[0], points[1])
 	}
 	var totalTurnover int64
+	var totalVolume int64
 	for _, point := range points {
+		totalVolume += point.Volume
 		totalTurnover += point.Turnover
 	}
-	if totalTurnover != 60000000 {
-		t.Fatalf("minute turnover was rewritten to the revised daily total: %d", totalTurnover)
+	if totalVolume != 240 || totalTurnover != 60000000 {
+		t.Fatalf("minute totals were rewritten to the post-close daily totals: volume=%d turnover=%d", totalVolume, totalTurnover)
 	}
 }
 
