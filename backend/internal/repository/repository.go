@@ -51,6 +51,19 @@ type QualitySummary struct {
 	CompactedAt         *time.Time          `json:"compacted_at,omitempty"`
 }
 
+type StockArchiveQuality struct {
+	TradeDate           string     `json:"trade_date"`
+	ExpectedStocks      int        `json:"expected_stocks"`
+	ExpectedPoints      int        `json:"expected_points"`
+	ExpectedKlineStocks int        `json:"expected_kline_stocks"`
+	MoneyRows           int        `json:"money_rows"`
+	KlineRows           int        `json:"kline_rows"`
+	DailyCloseRows      int        `json:"daily_close_rows"`
+	DailyKlineRows      int        `json:"daily_kline_rows"`
+	MoneyArchivedAt     *time.Time `json:"money_archived_at,omitempty"`
+	KlineArchivedAt     *time.Time `json:"kline_archived_at,omitempty"`
+}
+
 type MetricCount struct {
 	RankType graymarket.RankType
 	Status   RunStatus
@@ -105,17 +118,25 @@ type Store interface {
 	Close() error
 	SaveIntraday(context.Context, string, graymarket.RankSnapshot, bool) error
 	SaveDailyClose(context.Context, string, graymarket.RankSnapshot) error
+	SaveBoardArchive(context.Context, string, graymarket.RankSnapshot, []graymarket.MoneyPoint) error
+	SaveStockArchive(context.Context, string, graymarket.RankSnapshot, []graymarket.MoneyPoint) error
+	SaveStockKlines(context.Context, string, []graymarket.StockKlinePoint) error
 	CompactResearch(context.Context, string) ([]QualitySummary, error)
 	CleanupIntraday(context.Context, string) error
+	CleanupArchivedIntraday(context.Context, string) error
 	LatestRank(context.Context, graymarket.RankType) ([]graymarket.RankRecord, error)
 	RankAt(context.Context, graymarket.RankType, string, time.Time) ([]graymarket.RankRecord, error)
 	IntradaySeries(context.Context, graymarket.RankType, string, string) ([]graymarket.RankRecord, error)
 	ResearchSeries(context.Context, graymarket.RankType, string, time.Time, time.Time) ([]graymarket.RankRecord, error)
+	StockResearchSeries(context.Context, string, string) ([]graymarket.StockResearchPoint, error)
 	DailyClosePage(context.Context, graymarket.RankType, string, string, string, bool, int, int) ([]graymarket.RankRecord, int, error)
 	DailyCloseStocks(context.Context, string, []string) ([]graymarket.RankRecord, error)
 	DailyCloseRecords(context.Context, string) ([]graymarket.RankRecord, error)
 	HasDailyClose(context.Context, string) (bool, error)
+	HasEndOfDayArchive(context.Context, string) (bool, error)
+	HasStockKlineArchive(context.Context, string) (bool, error)
 	Quality(context.Context, string) ([]QualitySummary, error)
+	StockArchiveQuality(context.Context, string) (StockArchiveQuality, error)
 	StartRun(context.Context, CollectionRun) error
 	FinishRun(context.Context, CollectionRun) error
 	RecentRuns(context.Context, string, int) ([]CollectionRun, error)

@@ -76,6 +76,7 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 		r.Get("/boards/{type}/{code}/stocks", server.boardStocks)
 		r.Get("/boards/{type}/{code}/quotes", server.boardQuotes)
 		r.Get("/stocks/{code}/boards", server.stockBoards)
+		r.Get("/stocks/{code}/research-5m", server.stockResearch)
 		r.Get("/relations/changes", server.relationChanges)
 		r.Get("/research/export", server.exportResearch)
 		r.Get("/research/daily-close/export", server.exportDailyClose)
@@ -108,6 +109,32 @@ func (s *Server) stockBoards(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, envelope{Data: relations, Meta: map[string]any{
 		"as_of": asOf, "stock_code": code, "relation_source": graymarket.RelationSourceQuoteClist,
 		"relation_scope": graymarket.RelationScopeBoardConstituents,
+	}})
+}
+
+func (s *Server) stockResearch(w http.ResponseWriter, r *http.Request) {
+	code := chi.URLParam(r, "code")
+	if !stockCodeValid(code) {
+		writeError(w, http.StatusBadRequest, "invalid_stock_code", "stock code must contain exactly 6 digits")
+		return
+	}
+	tradeDate, ok := dateParam(w, r.URL.Query().Get("trade_date"))
+	if !ok {
+		return
+	}
+	points, err := s.store.StockResearchSeries(r.Context(), code, tradeDate)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	klinePoints := 0
+	for _, point := range points {
+		if point.KlineAvailable {
+			klinePoints++
+		}
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: points, Meta: map[string]any{
+		"trade_date": tradeDate, "stock_code": code, "interval": "5m", "money_points": len(points), "kline_points": klinePoints,
 	}})
 }
 
@@ -432,7 +459,7 @@ func (s *Server) intraday(w http.ResponseWriter, r *http.Request) {
 	if len(records) > 0 {
 		interval = "5m"
 		for _, record := range records {
-			isClose := record.SnapshotAt.In(s.location).Format("15:04") == "15:00"
+			isClose := record.SnapshotAt.In(s.location).Format("15:04") == "15:00" && len(record.QuoteTime) != 10
 			if record.SnapshotAt.Minute()%5 != 0 {
 				interval = "1m"
 			}
@@ -580,7 +607,12 @@ func (s *Server) quality(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, envelope{Data: result, Meta: map[string]any{"trade_date": tradeDate}})
+	stockArchive, err := s.store.StockArchiveQuality(r.Context(), tradeDate)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: result, Meta: map[string]any{"trade_date": tradeDate, "stock_archive": stockArchive}})
 }
 
 func (s *Server) collectionRuns(w http.ResponseWriter, r *http.Request) {

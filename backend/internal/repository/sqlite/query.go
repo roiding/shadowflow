@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -29,12 +30,10 @@ ORDER BY rank`, string(rankType), string(rankType))
 	if err != nil || len(result) > 0 {
 		return result, err
 	}
-	// After compaction the board 15:00 close is authoritative. Research points
-	// remain a fallback for older or incomplete dates.
+	// The post-close full snapshot is authoritative after intraday cleanup.
 	rows, err = s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
-WHERE rank_type=? AND snapshot_kind IN ('daily_close','research_5m')
-AND snapshot_at=(SELECT max(snapshot_at) FROM rank_snapshot
-    WHERE rank_type=? AND snapshot_kind IN ('daily_close','research_5m'))
+WHERE rank_type=? AND snapshot_kind='daily_close'
+AND snapshot_at=(SELECT max(snapshot_at) FROM rank_snapshot WHERE rank_type=? AND snapshot_kind='daily_close')
 ORDER BY rank`, string(rankType), string(rankType))
 	if err != nil {
 		return nil, err
@@ -58,6 +57,11 @@ WHERE trade_date=? AND rank_type=? AND snapshot_at=? ORDER BY rank`, tradeDate, 
 	kind := graymarket.SnapshotResearch5m
 	if at.Format("15:04") == "15:00" {
 		kind = graymarket.SnapshotDailyClose
+	} else {
+		result, err = s.boardMoneyRecords(ctx, `trade_date=? AND rank_type=? AND snapshot_at=?`, tradeDate, string(rankType), at.Format(timestampLayout))
+		if err != nil || len(result) > 0 {
+			return result, err
+		}
 	}
 	rows, err = s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
 WHERE trade_date=? AND rank_type=? AND snapshot_at=? AND snapshot_kind=? ORDER BY rank`, tradeDate, string(rankType), at.Format(timestampLayout), string(kind))
@@ -77,8 +81,15 @@ WHERE trade_date=? AND rank_type=? AND code=? ORDER BY snapshot_at`, tradeDate, 
 	if err != nil || len(result) > 0 {
 		return result, err
 	}
-	// The current-day work rows are removed after compaction. Return the 47
-	// research points plus the separate 15:00 close for a continuous monitor.
+	result, err = s.boardMoneyRecords(ctx, `trade_date=? AND rank_type=? AND code=?`, tradeDate, string(rankType), code)
+	if err != nil {
+		return nil, err
+	}
+	if len(result) > 0 {
+		return result, nil
+	}
+	// Compatibility fallback for snapshots archived before the post-close
+	// money-curve model was introduced.
 	rows, err = s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
 WHERE trade_date=? AND rank_type=? AND code=? AND snapshot_kind IN ('research_5m','daily_close')
 ORDER BY snapshot_at`, tradeDate, string(rankType), code)
@@ -89,6 +100,11 @@ ORDER BY snapshot_at`, tradeDate, string(rankType), code)
 }
 
 func (s *Store) ResearchSeries(ctx context.Context, rankType graymarket.RankType, code string, from, to time.Time) ([]graymarket.RankRecord, error) {
+	result, err := s.boardMoneyRecords(ctx, `rank_type=? AND code=? AND snapshot_at>=? AND snapshot_at<=?`,
+		string(rankType), code, from.Format(timestampLayout), to.Format(timestampLayout))
+	if err != nil || len(result) > 0 {
+		return result, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
 WHERE snapshot_kind='research_5m' AND rank_type=? AND code=? AND snapshot_at>=? AND snapshot_at<=?
 ORDER BY snapshot_at`, string(rankType), code, from.Format(timestampLayout), to.Format(timestampLayout))
@@ -96,6 +112,70 @@ ORDER BY snapshot_at`, string(rankType), code, from.Format(timestampLayout), to.
 		return nil, err
 	}
 	return scanRecords(rows)
+}
+
+func (s *Store) StockResearchSeries(ctx context.Context, code, tradeDate string) ([]graymarket.StockResearchPoint, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,
+open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,amplitude_ppm,change_pct_ppm,
+change_value_e4,turnover_rate_ppm,kline_available
+FROM stock_research_5m WHERE trade_date=? AND code=? ORDER BY minute_index`, tradeDate, code)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	clocks := expectedResearchTimes()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	result := make([]graymarket.StockResearchPoint, 0, 48)
+	for rows.Next() {
+		var point graymarket.StockResearchPoint
+		var minuteIndex, klineAvailable int
+		var open, high, low, close, amplitude, changePct, changeValue, turnoverRate int64
+		if err := rows.Scan(&minuteIndex, &point.Market, &point.Code, &point.MoneyRank, &point.DarkMoney,
+			&point.RegularMoney, &point.MainMoneyInflow, &open, &high, &low, &close, &point.Volume,
+			&point.Turnover, &amplitude, &changePct, &changeValue, &turnoverRate, &klineAvailable); err != nil {
+			return nil, err
+		}
+		if minuteIndex < 0 || minuteIndex >= len(clocks) {
+			return nil, fmt.Errorf("invalid stock research minute index %d", minuteIndex)
+		}
+		point.TradeDate = tradeDate
+		point.SnapshotAt, err = time.ParseInLocation("2006-01-02 15:04", tradeDate+" "+clocks[minuteIndex], location)
+		if err != nil {
+			return nil, err
+		}
+		point.OpenPrice, point.HighPrice, point.LowPrice, point.ClosePrice = unscaleE4(open), unscaleE4(high), unscaleE4(low), unscaleE4(close)
+		point.Amplitude, point.ChangePct = unscalePPM(amplitude), unscalePPM(changePct)
+		point.ChangeValue, point.TurnoverRate = unscaleE4(changeValue), unscalePPM(turnoverRate)
+		point.KlineAvailable = klineAvailable != 0
+		result = append(result, point)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) boardMoneyRecords(ctx context.Context, where string, args ...any) ([]graymarket.RankRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT snapshot_at,trade_date,rank_type,rank,market,code,name,
+dark_money,regular_money,main_money_inflow,source_time,fetched_at
+FROM board_money_5m WHERE `+where+` ORDER BY snapshot_at,rank`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]graymarket.RankRecord, 0)
+	for rows.Next() {
+		var record graymarket.RankRecord
+		var snapshotAt, rankType, fetchedAt string
+		var sourceTime int64
+		if err := rows.Scan(&snapshotAt, &record.TradeDate, &rankType, &record.Rank, &record.Market, &record.Code, &record.Name,
+			&record.DarkMoney, &record.RegularMoney, &record.MainMoneyInflow, &sourceTime, &fetchedAt); err != nil {
+			return nil, err
+		}
+		record.RankType = graymarket.RankType(rankType)
+		record.QuoteTime = fmt.Sprintf("%010d", sourceTime)
+		record.SnapshotAt, _ = time.Parse(timestampLayout, snapshotAt)
+		record.FetchedAt, _ = time.Parse(timestampLayout, fetchedAt)
+		result = append(result, record)
+	}
+	return result, rows.Err()
 }
 
 func (s *Store) DailyClosePage(ctx context.Context, rankType graymarket.RankType, tradeDate, search, sort string, descending bool, limit, offset int) ([]graymarket.RankRecord, int, error) {
@@ -195,6 +275,27 @@ SELECT 1 FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' A
 	return exists == 1, err
 }
 
+func (s *Store) HasEndOfDayArchive(ctx context.Context, tradeDate string) (bool, error) {
+	var stockClose, boardCloses, curveTypes, stockMoney int
+	if err := s.db.QueryRowContext(ctx, `SELECT
+(SELECT EXISTS(SELECT 1 FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock')),
+(SELECT count(DISTINCT rank_type) FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type IN ('industry','concept')),
+(SELECT count(*) FROM (SELECT rank_type FROM board_money_5m WHERE trade_date=? GROUP BY rank_type HAVING count(DISTINCT snapshot_at)=48)),
+(SELECT EXISTS(SELECT 1 FROM stock_archive_quality WHERE trade_date=? AND money_rows=expected_stocks*expected_points
+AND daily_close_rows=expected_stocks AND daily_kline_rows=expected_kline_stocks))`,
+		tradeDate, tradeDate, tradeDate, tradeDate).Scan(&stockClose, &boardCloses, &curveTypes, &stockMoney); err != nil {
+		return false, err
+	}
+	return stockClose == 1 && boardCloses == 2 && curveTypes == 2 && stockMoney == 1, nil
+}
+
+func (s *Store) HasStockKlineArchive(ctx context.Context, tradeDate string) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM stock_archive_quality WHERE trade_date=?
+AND kline_rows=expected_kline_stocks*expected_points)`, tradeDate).Scan(&exists)
+	return exists == 1, err
+}
+
 type scanner interface {
 	Scan(...any) error
 }
@@ -272,6 +373,37 @@ FROM research_quality WHERE trade_date=? ORDER BY rank_type`, tradeDate)
 		result = append(result, summary)
 	}
 	return result, rows.Err()
+}
+
+func (s *Store) StockArchiveQuality(ctx context.Context, tradeDate string) (repository.StockArchiveQuality, error) {
+	quality := repository.StockArchiveQuality{TradeDate: tradeDate, ExpectedPoints: 48}
+	var moneyArchivedAt, klineArchivedAt sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,
+daily_close_rows,daily_kline_rows,money_archived_at,kline_archived_at
+FROM stock_archive_quality WHERE trade_date=?`, tradeDate).Scan(&quality.ExpectedStocks, &quality.ExpectedPoints,
+		&quality.ExpectedKlineStocks, &quality.MoneyRows, &quality.KlineRows, &quality.DailyCloseRows,
+		&quality.DailyKlineRows, &moneyArchivedAt, &klineArchivedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return quality, nil
+	}
+	if err != nil {
+		return quality, err
+	}
+	if moneyArchivedAt.Valid {
+		parsed, parseErr := time.Parse(timestampLayout, moneyArchivedAt.String)
+		if parseErr != nil {
+			return quality, parseErr
+		}
+		quality.MoneyArchivedAt = &parsed
+	}
+	if klineArchivedAt.Valid {
+		parsed, parseErr := time.Parse(timestampLayout, klineArchivedAt.String)
+		if parseErr != nil {
+			return quality, parseErr
+		}
+		quality.KlineArchivedAt = &parsed
+	}
+	return quality, nil
 }
 
 func (s *Store) StartRun(ctx context.Context, run repository.CollectionRun) error {

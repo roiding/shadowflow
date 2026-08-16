@@ -17,7 +17,7 @@ import (
 
 func main() {
 	var task, date, at string
-	flag.StringVar(&task, "task", "", "task: boards, compact, daily-close, relations, or cleanup")
+	flag.StringVar(&task, "task", "", "task: boards, end-of-day, stock-kline, daily-close, relations, or cleanup")
 	flag.StringVar(&date, "date", "", "trade date in YYYY-MM-DD")
 	flag.StringVar(&at, "at", "15:00", "snapshot time in HH:MM for boards")
 	flag.Parse()
@@ -56,6 +56,8 @@ func main() {
 	// boards. Keep the manual command aligned with the scheduled-job budget.
 	if task == "relations" {
 		timeout = 45 * time.Minute
+	} else if task == "stock-kline" {
+		timeout = 90 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -65,14 +67,15 @@ func main() {
 		if err := service.CollectBoards(ctx, snapshotAt); err != nil {
 			fatal(err)
 		}
-	case "compact":
-		summaries, err := service.CompactAndCleanup(ctx, date)
-		if err != nil {
+	case "end-of-day":
+		runAt := time.Date(tradeDate.Year(), tradeDate.Month(), tradeDate.Day(), 16, 0, 0, 0, location)
+		if err := service.CollectEndOfDay(ctx, runAt); err != nil {
 			fatal(err)
 		}
-		for _, summary := range summaries {
-			logger.Info("compaction completed", "rank_type", summary.RankType, "minutes", summary.CollectedMinutes,
-				"research_points", summary.CollectedResearch, "daily_close_points", summary.CollectedDailyClose)
+	case "stock-kline":
+		runAt := time.Date(tradeDate.Year(), tradeDate.Month(), tradeDate.Day(), 16, 15, 0, 0, location)
+		if err := service.CollectStockKlines(ctx, runAt); err != nil {
+			fatal(err)
 		}
 	case "daily-close":
 		closeAt := time.Date(tradeDate.Year(), tradeDate.Month(), tradeDate.Day(), 15, 0, 0, 0, location)
@@ -84,7 +87,7 @@ func main() {
 			fatal(err)
 		}
 	case "cleanup":
-		if err := store.CleanupIntraday(ctx, date); err != nil {
+		if err := service.CleanupArchivedIntraday(ctx, date); err != nil {
 			fatal(err)
 		}
 	default:

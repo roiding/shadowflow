@@ -29,6 +29,7 @@ const (
 	SnapshotMinuteWork SnapshotKind = "minute_work"
 	SnapshotResearch5m SnapshotKind = "research_5m"
 	SnapshotDailyClose SnapshotKind = "daily_close"
+	SnapshotStockKline SnapshotKind = "stock_kline_5m"
 )
 
 type BoardType string
@@ -118,6 +119,66 @@ type RankSnapshot struct {
 	RawPages      []RawPage
 	ExpectedTotal int
 	FetchedAt     time.Time
+}
+
+// MoneyPoint is a post-close, upstream-revised point from darktradetick.
+// The endpoint does not provide quote, activity, breadth, or leader fields, so
+// those values deliberately do not share the full RankRecord model.
+type MoneyPoint struct {
+	TradeDate       string    `json:"trade_date"`
+	SnapshotAt      time.Time `json:"snapshot_at"`
+	RankType        RankType  `json:"rank_type"`
+	Rank            int64     `json:"rank"`
+	Market          int64     `json:"market"`
+	Code            string    `json:"code"`
+	Name            string    `json:"name"`
+	DarkMoney       int64     `json:"dark_money"`
+	RegularMoney    int64     `json:"regular_money"`
+	MainMoneyInflow int64     `json:"main_money_inflow"`
+	SourceTime      int64     `json:"source_time"`
+	FetchedAt       time.Time `json:"fetched_at"`
+}
+
+type StockKlinePoint struct {
+	TradeDate    string    `json:"trade_date"`
+	SnapshotAt   time.Time `json:"snapshot_at"`
+	Market       int64     `json:"market"`
+	Code         string    `json:"code"`
+	OpenPrice    float64   `json:"open_price"`
+	HighPrice    float64   `json:"high_price"`
+	LowPrice     float64   `json:"low_price"`
+	ClosePrice   float64   `json:"close_price"`
+	Volume       int64     `json:"volume"`
+	Turnover     int64     `json:"turnover"`
+	Amplitude    float64   `json:"amplitude"`
+	ChangePct    float64   `json:"change_pct"`
+	ChangeValue  float64   `json:"change_value"`
+	TurnoverRate float64   `json:"turnover_rate"`
+	FetchedAt    time.Time `json:"fetched_at"`
+}
+
+// StockResearchPoint joins one revised five-minute money point with the
+// matching unadjusted five-minute market bar.
+type StockResearchPoint struct {
+	TradeDate       string    `json:"trade_date"`
+	SnapshotAt      time.Time `json:"snapshot_at"`
+	Market          int64     `json:"market"`
+	Code            string    `json:"code"`
+	MoneyRank       int64     `json:"money_rank"`
+	DarkMoney       int64     `json:"dark_money"`
+	RegularMoney    int64     `json:"regular_money"`
+	MainMoneyInflow int64     `json:"main_money_inflow"`
+	OpenPrice       float64   `json:"open_price"`
+	HighPrice       float64   `json:"high_price"`
+	LowPrice        float64   `json:"low_price"`
+	ClosePrice      float64   `json:"close_price"`
+	Volume          int64     `json:"volume"`
+	Turnover        int64     `json:"turnover"`
+	Amplitude       float64   `json:"amplitude"`
+	ChangePct       float64   `json:"change_pct"`
+	ChangeValue     float64   `json:"change_value"`
+	TurnoverRate    float64   `json:"turnover_rate"`
+	KlineAvailable  bool      `json:"kline_available"`
 }
 
 type Board struct {

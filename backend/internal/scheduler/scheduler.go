@@ -42,11 +42,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 }
 
 func (s *Scheduler) check(ctx context.Context, current time.Time) {
-	if !s.calendar.IsTradingDay(current) || current.Second() < 5 {
+	if current.Second() < 5 {
 		return
 	}
 	kind := jobKind(current)
-	if kind == "" {
+	if kind == "" || kind != "cleanup" && !s.calendar.IsTradingDay(current) {
 		return
 	}
 	key := current.Format("2006-01-02T15:04") + ":" + kind
@@ -66,12 +66,14 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 			s.mu.Unlock()
 		}()
 		timeout := 50 * time.Second
-		if kind == "compact" {
-			timeout = 2 * time.Minute
-		} else if kind == "daily-close" {
-			timeout = 8 * time.Minute
+		if kind == "end-of-day" {
+			timeout = 15 * time.Minute
+		} else if kind == "stock-kline" {
+			timeout = 90 * time.Minute
 		} else if kind == "relations" {
 			timeout = 45 * time.Minute
+		} else if kind == "cleanup" {
+			timeout = 2 * time.Minute
 		}
 		jobCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
@@ -79,15 +81,24 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 		switch kind {
 		case "minute":
 			err = s.collector.CollectBoards(jobCtx, current.Truncate(time.Minute))
-		case "compact":
-			_, err = s.collector.CompactAndCleanup(jobCtx, current.Format("2006-01-02"))
-		case "daily-close":
-			if s.collector.HasDailyClose(jobCtx, current.Format("2006-01-02")) {
-				s.logger.Info("daily close already available; skipping retry", "trade_date", current.Format("2006-01-02"), "at", current)
+		case "end-of-day":
+			if s.collector.HasEndOfDayArchive(jobCtx, current.Format("2006-01-02")) {
+				s.logger.Info("end-of-day archive already available; skipping retry", "trade_date", current.Format("2006-01-02"), "at", current)
 				return
 			}
-			snapshotAt := time.Date(current.Year(), current.Month(), current.Day(), 15, 0, 0, 0, s.location)
-			err = s.collector.CollectDailyClose(jobCtx, snapshotAt)
+			err = s.collector.CollectEndOfDay(jobCtx, current)
+		case "cleanup":
+			err = s.collector.CleanupArchivedIntraday(jobCtx, current.Format("2006-01-02"))
+		case "stock-kline":
+			if s.collector.HasStockKlineArchive(jobCtx, current.Format("2006-01-02")) {
+				s.logger.Info("stock kline archive already available; skipping retry", "trade_date", current.Format("2006-01-02"), "at", current)
+				return
+			}
+			if !s.collector.HasEndOfDayArchive(jobCtx, current.Format("2006-01-02")) {
+				s.logger.Warn("stock kline archive is waiting for end-of-day money archive", "trade_date", current.Format("2006-01-02"), "at", current)
+				return
+			}
+			err = s.collector.CollectStockKlines(jobCtx, current)
 		case "relations":
 			tradeDate := current.Format("2006-01-02")
 			if s.collector.HasStockBoardRelations(jobCtx, tradeDate) {
@@ -106,10 +117,14 @@ func jobKind(current time.Time) string {
 	switch {
 	case isTradingMinute(current):
 		return "minute"
-	case current.Hour() == 15 && (current.Minute() == 5 || current.Minute() == 7 || current.Minute() == 9):
-		return "compact"
-	case current.Hour() == 15 && (current.Minute() == 10 || current.Minute() == 20 || current.Minute() == 30):
-		return "daily-close"
+	case current.Hour() == 16 && (current.Minute() == 0 || current.Minute() == 5 || current.Minute() == 10):
+		return "end-of-day"
+	case current.Hour() == 16 && current.Minute() == 15,
+		current.Hour() == 17 && current.Minute() == 30,
+		current.Hour() == 20 && current.Minute() == 0:
+		return "stock-kline"
+	case current.Hour() == 9 && current.Minute() == 0:
+		return "cleanup"
 	case current.Hour() == 8 && (current.Minute() == 0 || current.Minute() == 50),
 		current.Hour() == 9 && current.Minute() == 15:
 		return "relations"

@@ -86,7 +86,7 @@ func TestIntradayCompactionAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(summaries) != 2 || summaries[0].CollectedMinutes != 240 || summaries[0].CollectedResearch != 47 || summaries[0].CollectedDailyClose != 1 {
+	if len(summaries) != 2 || summaries[0].CollectedMinutes != 240 || summaries[0].CollectedResearch != 48 || summaries[0].CollectedDailyClose != 1 {
 		t.Fatalf("unexpected summaries: %+v", summaries)
 	}
 	from := time.Date(2026, 8, 12, 0, 0, 0, 0, location)
@@ -95,7 +95,7 @@ func TestIntradayCompactionAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(series) != 47 || series[0].SnapshotAt.Format("15:04") != "09:35" || series[46].SnapshotAt.Format("15:04") != "14:55" {
+	if len(series) != 48 || series[0].SnapshotAt.Format("15:04") != "09:35" || series[47].SnapshotAt.Format("15:04") != "15:00" {
 		t.Fatalf("unexpected research series: count=%d first=%s last=%s", len(series), series[0].SnapshotAt, series[len(series)-1].SnapshotAt)
 	}
 	var workCount int
@@ -106,11 +106,11 @@ func TestIntradayCompactionAndCleanup(t *testing.T) {
 		t.Fatalf("work table was not cleaned: count=%d", workCount)
 	}
 	work, err := store.IntradaySeries(ctx, graymarket.RankIndustry, "industry-code", tradeDate)
-	if err != nil || len(work) != 48 || work[len(work)-1].SnapshotAt.Format("15:04") != "15:00" {
+	if err != nil || len(work) != 49 || work[len(work)-1].SnapshotAt.Format("15:04") != "15:00" {
 		t.Fatalf("intraday query did not fall back to research data: count=%d err=%v", len(work), err)
 	}
 	series, err = store.ResearchSeries(ctx, graymarket.RankIndustry, "industry-code", from, to)
-	if err != nil || len(series) != 47 {
+	if err != nil || len(series) != 48 {
 		t.Fatalf("research data was lost: count=%d err=%v", len(series), err)
 	}
 	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept} {
@@ -128,11 +128,11 @@ func TestIntradayCompactionAndCleanup(t *testing.T) {
 		t.Fatalf("latest did not prefer the archived board close: records=%+v err=%v", latest, err)
 	}
 	quality, err := store.Quality(ctx, tradeDate)
-	if err != nil || len(quality) != 2 || quality[0].ExpectedResearch != 47 || quality[0].CollectedResearch != 47 || quality[0].ExpectedDailyClose != 1 || quality[0].CollectedDailyClose != 1 || len(quality[0].MissingResearch) != 0 || len(quality[0].MissingDailyClose) != 0 {
+	if err != nil || len(quality) != 2 || quality[0].ExpectedResearch != 48 || quality[0].CollectedResearch != 48 || quality[0].ExpectedDailyClose != 1 || quality[0].CollectedDailyClose != 1 || len(quality[0].MissingResearch) != 0 || len(quality[0].MissingDailyClose) != 0 {
 		t.Fatalf("quality did not separate research and close points: quality=%+v err=%v", quality, err)
 	}
 	second, err := store.CompactResearch(ctx, tradeDate)
-	if err != nil || len(second) != 2 || second[0].CollectedResearch != 47 || second[0].CollectedDailyClose != 1 {
+	if err != nil || len(second) != 2 || second[0].CollectedResearch != 48 || second[0].CollectedDailyClose != 1 {
 		t.Fatalf("repeated compaction was not idempotent: summaries=%+v err=%v", second, err)
 	}
 }
@@ -244,12 +244,12 @@ missing_research_json TEXT NOT NULL, compacted_at TEXT NOT NULL, PRIMARY KEY (tr
 		t.Fatalf("legacy 15:00 snapshot was not moved: research=%d close=%d", researchCount, closeCount)
 	}
 	quality, err := store.Quality(ctx, "2026-08-12")
-	if err != nil || len(quality) != 1 || quality[0].ExpectedResearch != 47 || quality[0].CollectedDailyClose != 1 {
+	if err != nil || len(quality) != 1 || quality[0].ExpectedResearch != 48 || quality[0].CollectedResearch != 0 || quality[0].CollectedDailyClose != 1 {
 		t.Fatalf("legacy quality was not migrated: quality=%+v err=%v", quality, err)
 	}
 }
 
-func TestOpenCleansIntradayForFullyCompactedDates(t *testing.T) {
+func TestArchivedIntradayIsOnlyCleanedByNextDayTask(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.db")
 	store, err := Open(path)
 	if err != nil {
@@ -259,8 +259,9 @@ func TestOpenCleansIntradayForFullyCompactedDates(t *testing.T) {
 	now := time.Now().UTC().Format(timestampLayout)
 	for _, rankType := range []string{"industry", "concept"} {
 		_, err = store.db.ExecContext(ctx, `INSERT INTO research_quality
-(trade_date,rank_type,expected_minutes,collected_minutes,expected_research,collected_research,missing_minutes_json,missing_research_json,compacted_at)
-VALUES (?,?,?,?,?,?,?,?,?)`, "2026-08-12", rankType, 240, 240, 47, 47, "[]", "[]", now)
+(trade_date,rank_type,expected_minutes,collected_minutes,expected_research,collected_research,
+expected_daily_close,collected_daily_close,missing_minutes_json,missing_research_json,missing_daily_close_json,compacted_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, "2026-08-12", rankType, 240, 240, 48, 48, 1, 1, "[]", "[]", "[]", now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -270,6 +271,21 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "close-"+rankTy
 		if err != nil {
 			t.Fatal(err)
 		}
+		for index, clock := range expectedResearchTimes() {
+			at, _ := time.ParseInLocation("2006-01-02 15:04", "2026-08-12 "+clock, time.FixedZone("Asia/Shanghai", 8*60*60))
+			_, err = store.db.ExecContext(ctx, `INSERT INTO board_money_5m
+(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,source_time,fetched_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, "archive-"+rankType, at.Format(timestampLayout), "2026-08-12", rankType, 1, 90,
+				"code-"+rankType, rankType, index, index, index*2, 0, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO stock_archive_quality
+(trade_date,expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,daily_close_rows,daily_kline_rows,money_archived_at,kline_archived_at,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?)`, "2026-08-12", 1, 48, 1, 48, 48, 1, 1, now, now, now); err != nil {
+		t.Fatal(err)
 	}
 	_, err = store.db.ExecContext(ctx, `INSERT INTO rank_intraday_work
 (run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,quote_time,latest_price_raw,change_pct,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at)
@@ -290,9 +306,192 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "stale", now, "2026
 	if err := store.db.QueryRowContext(ctx, "SELECT count(*) FROM rank_intraday_work WHERE trade_date='2026-08-12'").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 {
-		t.Fatalf("expected stale intraday rows to be cleaned, got %d", count)
+	if count != 1 {
+		t.Fatalf("restart must preserve intraday rows until the cleanup job, got %d", count)
 	}
+	if err := store.CleanupArchivedIntraday(ctx, "2026-08-13"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, "SELECT count(*) FROM rank_intraday_work WHERE trade_date='2026-08-12'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("expected next-day cleanup to remove archived intraday rows, got %d", count)
+	}
+}
+
+func TestCleanupRetainsIntradayWhenAnyLongTermArchivePartIsMissing(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	tradeDate := "2026-08-12"
+	now := time.Now().UTC().Format(timestampLayout)
+	for _, rankType := range []string{"industry", "concept"} {
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO research_quality
+(trade_date,rank_type,expected_minutes,collected_minutes,expected_research,collected_research,
+expected_daily_close,collected_daily_close,missing_minutes_json,missing_research_json,missing_daily_close_json,compacted_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, tradeDate, rankType, 240, 240, 48, 48, 1, 1, "[]", "[]", "[]", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO stock_archive_quality
+(trade_date,expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,daily_close_rows,daily_kline_rows,money_archived_at,kline_archived_at,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?)`, tradeDate, 2, 48, 1, 96, 48, 2, 1, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO rank_intraday_work
+(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,quote_time,latest_price_raw,change_pct,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "work", now, tradeDate, "industry", 1, 90, "BK001", "work", "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", "", 101, 6, 1, now); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name     string
+		breakSQL string
+		fixSQL   string
+	}{
+		{"board money", `UPDATE research_quality SET collected_research=47 WHERE trade_date='2026-08-12' AND rank_type='industry'`, `UPDATE research_quality SET collected_research=48 WHERE trade_date='2026-08-12' AND rank_type='industry'`},
+		{"board close", `UPDATE research_quality SET collected_daily_close=0 WHERE trade_date='2026-08-12' AND rank_type='concept'`, `UPDATE research_quality SET collected_daily_close=1 WHERE trade_date='2026-08-12' AND rank_type='concept'`},
+		{"stock money", `UPDATE stock_archive_quality SET money_rows=95 WHERE trade_date='2026-08-12'`, `UPDATE stock_archive_quality SET money_rows=96 WHERE trade_date='2026-08-12'`},
+		{"stock five-minute K", `UPDATE stock_archive_quality SET kline_rows=47 WHERE trade_date='2026-08-12'`, `UPDATE stock_archive_quality SET kline_rows=48 WHERE trade_date='2026-08-12'`},
+		{"stock close", `UPDATE stock_archive_quality SET daily_close_rows=1 WHERE trade_date='2026-08-12'`, `UPDATE stock_archive_quality SET daily_close_rows=2 WHERE trade_date='2026-08-12'`},
+		{"stock daily K", `UPDATE stock_archive_quality SET daily_kline_rows=0 WHERE trade_date='2026-08-12'`, `UPDATE stock_archive_quality SET daily_kline_rows=1 WHERE trade_date='2026-08-12'`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := store.db.ExecContext(ctx, test.breakSQL); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CleanupArchivedIntraday(ctx, "2026-08-13"); err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM rank_intraday_work WHERE trade_date=?`, tradeDate).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 1 {
+				t.Fatalf("cleanup removed work data while %s was incomplete", test.name)
+			}
+			if _, err := store.db.ExecContext(ctx, test.fixSQL); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	if err := store.CleanupArchivedIntraday(ctx, "2026-08-13"); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM rank_intraday_work WHERE trade_date=?`, tradeDate).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("cleanup retained fully archived work data: %d", count)
+	}
+}
+
+func TestSaveBoardArchivePersists48MoneyPointsAndOneClose(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+	record := graymarket.RankRecord{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankIndustry,
+		Rank: 1, Market: 90, Code: "BK001", Name: "行业", DarkMoney: 500, FetchedAt: closeAt}
+	snapshot := graymarket.RankSnapshot{TradeDate: record.TradeDate, RankType: record.RankType, SnapshotAt: closeAt, Records: []graymarket.RankRecord{record}}
+	points := testMoneyPoints(snapshot)
+	if err := store.SaveBoardArchive(ctx, "board-archive", snapshot, points); err != nil {
+		t.Fatal(err)
+	}
+	var moneyRows, closeRows int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM board_money_5m WHERE trade_date=? AND rank_type='industry'`, record.TradeDate).Scan(&moneyRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM rank_snapshot WHERE trade_date=? AND rank_type='industry' AND snapshot_kind='daily_close'`, record.TradeDate).Scan(&closeRows); err != nil {
+		t.Fatal(err)
+	}
+	quality, err := store.Quality(ctx, record.TradeDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moneyRows != 48 || closeRows != 1 || len(quality) != 1 || quality[0].CollectedResearch != 48 || quality[0].CollectedDailyClose != 1 {
+		t.Fatalf("unexpected board archive: money=%d close=%d quality=%+v", moneyRows, closeRows, quality)
+	}
+}
+
+func TestSaveStockArchivePersists48MoneyBarsAndDailyK(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+	records := []graymarket.RankRecord{
+		{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Rank: 1, Market: 0, Code: "000001", Name: "交易股", QuoteAvailable: true, OpenPrice: 10, HighPrice: 11, LowPrice: 9, ClosePrice: 10.5, FetchedAt: closeAt},
+		{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Rank: 2, Market: 1, Code: "600001", Name: "停牌股", PreviousClose: 8, FetchedAt: closeAt},
+	}
+	snapshot := graymarket.RankSnapshot{TradeDate: "2026-08-14", RankType: graymarket.RankStock, SnapshotAt: closeAt, Records: records}
+	if err := store.SaveStockArchive(ctx, "stock-archive", snapshot, testMoneyPoints(snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	quality, err := store.StockArchiveQuality(ctx, snapshot.TradeDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quality.ExpectedStocks != 2 || quality.ExpectedKlineStocks != 1 || quality.MoneyRows != 96 || quality.DailyCloseRows != 2 || quality.DailyKlineRows != 1 || quality.KlineRows != 0 {
+		t.Fatalf("unexpected stock money/daily archive quality: %+v", quality)
+	}
+
+	klines := make([]graymarket.StockKlinePoint, 0, 48)
+	for index, clock := range expectedResearchTimes() {
+		at, parseErr := time.ParseInLocation("2006-01-02 15:04", snapshot.TradeDate+" "+clock, location)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		klines = append(klines, graymarket.StockKlinePoint{TradeDate: snapshot.TradeDate, SnapshotAt: at, Market: 0, Code: "000001",
+			OpenPrice: 10.1234, HighPrice: 10.5678, LowPrice: 9.8765, ClosePrice: 10.4321,
+			Volume: int64(1000 + index), Turnover: int64(2000 + index), Amplitude: 0.123456,
+			ChangePct: -0.012345, ChangeValue: -0.1234, TurnoverRate: 0.023456})
+	}
+	if err := store.SaveStockKlines(ctx, "stock-kline", klines); err != nil {
+		t.Fatal(err)
+	}
+	series, err := store.StockResearchSeries(ctx, "000001", snapshot.TradeDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(series) != 48 || series[47].SnapshotAt.Format("15:04") != "15:00" || !series[0].KlineAvailable ||
+		series[0].OpenPrice != 10.1234 || series[0].Amplitude != 0.123456 || series[0].ChangePct != -0.012345 {
+		t.Fatalf("unexpected joined stock research series: %+v", series)
+	}
+	quality, err = store.StockArchiveQuality(ctx, snapshot.TradeDate)
+	if err != nil || quality.KlineRows != 48 || quality.KlineArchivedAt == nil {
+		t.Fatalf("unexpected completed stock quality: quality=%+v err=%v", quality, err)
+	}
+	complete, err := store.HasStockKlineArchive(ctx, snapshot.TradeDate)
+	if err != nil || !complete {
+		t.Fatalf("stock kline archive should be complete: complete=%v err=%v", complete, err)
+	}
+}
+
+func testMoneyPoints(snapshot graymarket.RankSnapshot) []graymarket.MoneyPoint {
+	location := snapshot.SnapshotAt.Location()
+	points := make([]graymarket.MoneyPoint, 0, len(snapshot.Records)*48)
+	for _, record := range snapshot.Records {
+		for index, clock := range expectedResearchTimes() {
+			at, _ := time.ParseInLocation("2006-01-02 15:04", snapshot.TradeDate+" "+clock, location)
+			points = append(points, graymarket.MoneyPoint{TradeDate: snapshot.TradeDate, SnapshotAt: at, RankType: snapshot.RankType,
+				Rank: int64(index + 1), Market: record.Market, Code: record.Code, Name: record.Name,
+				DarkMoney: int64(index), RegularMoney: int64(index * 2), MainMoneyInflow: int64(index * 3), FetchedAt: snapshot.SnapshotAt})
+		}
+	}
+	return points
 }
 
 func TestOperationalMetrics(t *testing.T) {

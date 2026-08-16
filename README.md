@@ -1,6 +1,6 @@
 # ShadowFlow 暗流
 
-面向行业、概念资金趋势研究的单机 Web 系统。Go 服务在交易日 `09:31-11:30`、`13:01-15:00` 每分钟采集完整板块榜；盘后将 `09:35-11:30`、`13:05-14:55` 的 47 个五分钟点沉淀为研究数据，将行业、概念 `15:00` 另存为日终快照，并在 `15:10` 抓取完整个股收盘榜及同日 OHLC、前收盘、成交量、成交额、换手率和振幅。三类榜单统一归入当天 `daily_close` 数据集，可联合查询和导出。盘后还会维护个股所属行业、概念：首次建立全量基线，后续交易日仅永久记录新增和删除事件，并可还原任意截面日的归属。板块成分股查询会关联同日个股暗盘榜，展示暗盘排名、资金、主力净流入和上游原始活跃度。React 前端默认每 60 秒读取本地 Go API。
+面向行业、概念和个股资金趋势研究的单机 Web 系统。Go 服务在交易日 `09:31-11:30`、`13:01-15:00` 每分钟采集完整板块榜，仅供盘中实时展示。每天 `16:00` 从东方财富 `darktrade` 与 `darktradetick` 独立重新抓取行业、概念、个股完整日终榜及 48 个五分钟累计资金点；`16:15` 起抓取有成交个股的 48 根未复权五分钟 K。个股 `daily_close` 同时保存当日日 K 的 OHLC、成交量、成交额、换手率和振幅。盘中工作数据只在上述长期数据全部完整后由次日 `09:00` 任务清理。三类日终榜可联合查询和导出，个股所属行业、概念可按任意截面日还原。
 
 ## 本地开发
 
@@ -42,6 +42,7 @@ curl 'http://localhost:8080/api/v1/ranks/daily-close?type=concept&trade_date=202
 curl 'http://localhost:8080/api/v1/ranks/daily-close?type=stock&trade_date=2026-08-13'
 curl -o daily-close.csv 'http://localhost:8080/api/v1/research/daily-close/export?trade_date=2026-08-13'
 curl 'http://localhost:8080/api/v1/stocks/300308/boards?as_of=2026-08-13'
+curl 'http://localhost:8080/api/v1/stocks/300308/research-5m?trade_date=2026-08-13'
 curl 'http://localhost:8080/api/v1/boards/concept/BK1128/stocks?as_of=2026-08-13'
 curl 'http://localhost:8080/api/v1/relations/changes?trade_date=2026-08-13'
 ```
@@ -103,8 +104,9 @@ docker compose start shadowflow
 ```bash
 cd backend
 go run ./cmd/collect -task boards -date 2026-08-13 -at 14:30
-go run ./cmd/collect -task compact -date 2026-08-13
-go run ./cmd/collect -task daily-close -date 2026-08-13
+go run ./cmd/collect -task end-of-day -date 2026-08-13
+go run ./cmd/collect -task stock-kline -date 2026-08-13
+go run ./cmd/collect -task cleanup -date 2026-08-14
 go run ./cmd/collect -task relations -date 2026-08-13
 ```
 
@@ -114,7 +116,7 @@ go run ./cmd/collect -task relations -date 2026-08-13
 docker compose run --rm --entrypoint /app/collect shadowflow -task relations -date 2026-08-13
 ```
 
-`compact` 会在同一个 SQLite 事务中写入 47 个研究点、行业/概念 15:00 日终快照、质量摘要并清理分钟工作表。调度器在 `15:05` 执行，失败时于 `15:07`、`15:09` 补试。若缺失任一板块的 15:00 点，任务明确失败且保留分钟工作表供重试，不会静默补填。单独使用 `-task cleanup` 前应先确认研究和日终沉淀均成功。
+`end-of-day` 在 `16:00` 执行，失败时于 `16:05`、`16:10` 补试，原子写入行业、概念、个股各自的完整日终榜和 48 个盘后修订资金点。`stock-kline` 在 `16:15` 执行，并于 `17:30`、`20:00` 补试，保存有成交个股的 48 根未复权五分钟 K。`cleanup` 每天 `09:00` 检查上一交易日：两类板块资金与日终、个股资金、五分钟 K、完整日终榜和日 K 任一不完整，都不会删除盘中工作数据。
 
 关系维护按东方财富行业目录 `t:2` 和广义概念目录 `t:3` 逐板块反查全部成分股。它会在交易日开盘前的 `08:00` 自动执行，失败或当天尚未成功时在 `08:50`、`09:15` 补试，因此盘中分析可读取当天的最新归属关系。扫描数据逐板块写入临时表，不在内存中保存全市场关系；只有完整扫描成功后，才会在一个事务中写入基线或当日 `added`/`removed` 事件并更新物化当前态。中途失败只清理临时数据，不会改变已有关系。首次部署或错过调度时可手工执行 `-task relations`。
 

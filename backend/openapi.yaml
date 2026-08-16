@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ShadowFlow API
-  version: 0.2.0
+  version: 0.3.0
   description: 行业、概念分钟榜单、盘后研究数据，以及可按截面日还原的个股行业/概念归属接口。
 servers:
   - url: http://localhost:8080
@@ -76,7 +76,7 @@ paths:
         "200": { $ref: "#/components/responses/RankList" }
   /api/v1/boards/{type}/{code}/intraday:
     get:
-      summary: 板块当日分钟序列，盘后回退到 47 个 5 分钟研究点加 15:00 日终点
+      summary: 板块当日分钟序列，盘后回退到含 15:00 的 48 个五分钟资金点
       parameters:
         - $ref: "#/components/parameters/BoardTypePath"
         - $ref: "#/components/parameters/Code"
@@ -85,7 +85,8 @@ paths:
         "200": { $ref: "#/components/responses/RankList" }
   /api/v1/boards/{type}/{code}/trend:
     get:
-      summary: 板块历史 5 分钟研究序列
+      summary: 板块历史五分钟资金研究序列
+      description: 盘后从 darktradetick 重新抓取，仅包含暗盘资金、明盘资金和主力净流入三项累计资金字段。
       parameters:
         - $ref: "#/components/parameters/BoardTypePath"
         - $ref: "#/components/parameters/Code"
@@ -128,6 +129,28 @@ paths:
         - $ref: "#/components/parameters/AsOf"
       responses:
         "200": { $ref: "#/components/responses/RelationList" }
+        "400": { $ref: "#/components/responses/Error" }
+  /api/v1/stocks/{code}/research-5m:
+    get:
+      summary: 查询个股单日五分钟资金与未复权行情联合序列
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[0-9]{6}$", example: "300308" }
+        - $ref: "#/components/parameters/TradeDate"
+      responses:
+        "200":
+          description: 48 个五分钟资金点及对应行情 K
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/StockResearchPoint" }
+                  meta: { type: object }
         "400": { $ref: "#/components/responses/Error" }
   /api/v1/relations/changes:
     get:
@@ -419,7 +442,7 @@ components:
       properties:
         run_id: { type: string }
         snapshot_at: { type: string, format: date-time }
-        snapshot_kind: { type: string, enum: [minute_work, research_5m, daily_close] }
+        snapshot_kind: { type: string, enum: [minute_work, research_5m, daily_close, stock_kline_5m] }
         rank_type: { type: string, enum: [stock, industry, concept] }
         status: { type: string, enum: [running, success, partial, failed, skipped] }
         requested_date: { type: string, format: date }
@@ -442,6 +465,28 @@ components:
         trading_day: { type: boolean }
         latest_trading_day: { type: string, format: date }
         uptime_seconds: { type: integer, format: int64 }
+    StockResearchPoint:
+      type: object
+      properties:
+        trade_date: { type: string, format: date }
+        snapshot_at: { type: string, format: date-time }
+        market: { type: integer, format: int64 }
+        code: { type: string }
+        money_rank: { type: integer, format: int64 }
+        dark_money: { type: integer, format: int64 }
+        regular_money: { type: integer, format: int64 }
+        main_money_inflow: { type: integer, format: int64 }
+        open_price: { type: number }
+        high_price: { type: number }
+        low_price: { type: number }
+        close_price: { type: number }
+        volume: { type: integer, format: int64 }
+        turnover: { type: integer, format: int64 }
+        amplitude: { type: number }
+        change_pct: { type: number }
+        change_value: { type: number }
+        turnover_rate: { type: number }
+        kline_available: { type: boolean }
     QualityEnvelope:
       type: object
       properties:
@@ -461,7 +506,23 @@ components:
               missing_minutes: { type: array, items: { type: string } }
               missing_research_snapshots: { type: array, items: { type: string } }
               missing_daily_close_snapshots: { type: array, items: { type: string } }
-        meta: { type: object }
+        meta:
+          type: object
+          properties:
+            trade_date: { type: string, format: date }
+            stock_archive:
+              type: object
+              properties:
+                trade_date: { type: string, format: date }
+                expected_stocks: { type: integer }
+                expected_points: { type: integer, const: 48 }
+                expected_kline_stocks: { type: integer }
+                money_rows: { type: integer }
+                kline_rows: { type: integer }
+                daily_close_rows: { type: integer }
+                daily_kline_rows: { type: integer }
+                money_archived_at: { type: string, format: date-time }
+                kline_archived_at: { type: string, format: date-time }
     ErrorEnvelope:
       type: object
       properties:

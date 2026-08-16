@@ -100,6 +100,71 @@ CREATE INDEX IF NOT EXISTS idx_snapshot_rank
 CREATE INDEX IF NOT EXISTS idx_snapshot_series
     ON rank_snapshot (snapshot_kind, rank_type, code, snapshot_at);
 
+CREATE TABLE IF NOT EXISTS board_money_5m (
+    run_id TEXT NOT NULL,
+    snapshot_at TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    rank_type TEXT NOT NULL CHECK (rank_type IN ('industry', 'concept')),
+    rank INTEGER NOT NULL,
+    market INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    dark_money INTEGER NOT NULL,
+    regular_money INTEGER NOT NULL,
+    main_money_inflow INTEGER NOT NULL,
+    source_time INTEGER NOT NULL,
+    fetched_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (trade_date, snapshot_at, rank_type, code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_board_money_series
+    ON board_money_5m (rank_type, code, snapshot_at);
+CREATE INDEX IF NOT EXISTS idx_board_money_rank
+    ON board_money_5m (trade_date, rank_type, snapshot_at, rank);
+
+CREATE TABLE IF NOT EXISTS stock_research_5m (
+    trade_date TEXT NOT NULL,
+    minute_index INTEGER NOT NULL CHECK (minute_index BETWEEN 0 AND 47),
+    market INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    money_rank INTEGER NOT NULL,
+    dark_money INTEGER NOT NULL,
+    regular_money INTEGER NOT NULL,
+    main_money_inflow INTEGER NOT NULL,
+    open_price_e4 INTEGER NOT NULL DEFAULT 0,
+    high_price_e4 INTEGER NOT NULL DEFAULT 0,
+    low_price_e4 INTEGER NOT NULL DEFAULT 0,
+    close_price_e4 INTEGER NOT NULL DEFAULT 0,
+    volume INTEGER NOT NULL DEFAULT 0,
+    turnover INTEGER NOT NULL DEFAULT 0,
+    amplitude_ppm INTEGER NOT NULL DEFAULT 0,
+    change_pct_ppm INTEGER NOT NULL DEFAULT 0,
+    change_value_e4 INTEGER NOT NULL DEFAULT 0,
+    turnover_rate_ppm INTEGER NOT NULL DEFAULT 0,
+    kline_available INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (trade_date, minute_index, market, code)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_stock_research_series
+    ON stock_research_5m (market, code, trade_date, minute_index);
+CREATE INDEX IF NOT EXISTS idx_stock_research_rank
+    ON stock_research_5m (trade_date, minute_index, money_rank);
+
+CREATE TABLE IF NOT EXISTS stock_archive_quality (
+    trade_date TEXT PRIMARY KEY,
+    expected_stocks INTEGER NOT NULL,
+    expected_points INTEGER NOT NULL DEFAULT 48,
+    expected_kline_stocks INTEGER NOT NULL DEFAULT 0,
+    money_rows INTEGER NOT NULL DEFAULT 0,
+    kline_rows INTEGER NOT NULL DEFAULT 0,
+    daily_close_rows INTEGER NOT NULL DEFAULT 0,
+    daily_kline_rows INTEGER NOT NULL DEFAULT 0,
+    money_archived_at TEXT,
+    kline_archived_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS raw_response (
     run_id TEXT NOT NULL,
     snapshot_at TEXT NOT NULL,

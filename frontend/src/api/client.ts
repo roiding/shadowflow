@@ -1,4 +1,4 @@
-import type { ApiEnvelope, BoardStockQuote, CollectionRun, PageMeta, QualitySummary, RankRecord, RankType, SystemStatus } from './types'
+import type { ApiEnvelope, BoardStockQuote, CollectionRun, PageMeta, QualityMeta, QualitySummary, RankRecord, RankType, StockResearchPoint, SystemStatus } from './types'
 
 const REQUEST_TIMEOUT_MS = 10_000
 
@@ -42,7 +42,8 @@ export const api = {
     const params = new URLSearchParams({ type, trade_date: date, q: query, sort, direction, page: String(page), page_size: String(pageSize) })
     return request<RankRecord[], PageMeta>(`/api/v1/ranks/daily-close?${params}`)
   },
-  quality: (date: string) => request<QualitySummary[]>(`/api/v1/research/quality?trade_date=${date}`),
+  quality: (date: string) => request<QualitySummary[], QualityMeta>(`/api/v1/research/quality?trade_date=${date}`),
+  stockResearch: (code: string, date: string) => request<StockResearchPoint[]>(`/api/v1/stocks/${encodeURIComponent(code)}/research-5m?trade_date=${date}`),
   runs: (date: string) => request<CollectionRun[]>(`/api/v1/collection-runs?trade_date=${date}&limit=120`),
   status: () => request<SystemStatus>('/api/v1/system/status'),
   tradingDays: (from: string, to: string) => request<string[]>(`/api/v1/trading-days?from=${from}&to=${to}`),

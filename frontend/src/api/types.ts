@@ -106,6 +106,46 @@ export interface QualitySummary {
   compacted_at?: string
 }
 
+export interface StockArchiveQuality {
+  trade_date: string
+  expected_stocks: number
+  expected_points: number
+  expected_kline_stocks: number
+  money_rows: number
+  kline_rows: number
+  daily_close_rows: number
+  daily_kline_rows: number
+  money_archived_at?: string
+  kline_archived_at?: string
+}
+
+export interface QualityMeta {
+  trade_date: string
+  stock_archive: StockArchiveQuality
+}
+
+export interface StockResearchPoint {
+  trade_date: string
+  snapshot_at: string
+  market: number
+  code: string
+  money_rank: number
+  dark_money: number
+  regular_money: number
+  main_money_inflow: number
+  open_price: number
+  high_price: number
+  low_price: number
+  close_price: number
+  volume: number
+  turnover: number
+  amplitude: number
+  change_pct: number
+  change_value: number
+  turnover_rate: number
+  kline_available: boolean
+}
+
 export interface CollectionRun {
   run_id: string
   snapshot_at: string

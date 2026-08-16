@@ -177,6 +177,47 @@ func TestDailyClosePaginationAndValidation(t *testing.T) {
 	}
 }
 
+func TestStockResearchAndQualityAPIsExpose48PlusDailyArchive(t *testing.T) {
+	server, store := testServer(t, "")
+	defer store.Close()
+	ctx := context.Background()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	tradeDate := "2026-08-14"
+	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+	record := graymarket.RankRecord{TradeDate: tradeDate, SnapshotAt: closeAt, RankType: graymarket.RankStock,
+		Rank: 1, Market: 0, Code: "000001", Name: "one", QuoteAvailable: true, OpenPrice: 10, ClosePrice: 11, FetchedAt: closeAt}
+	snapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: graymarket.RankStock, SnapshotAt: closeAt, Records: []graymarket.RankRecord{record}}
+	money := make([]graymarket.MoneyPoint, 0, 48)
+	klines := make([]graymarket.StockKlinePoint, 0, 48)
+	for _, session := range []struct{ start, end int }{{9*60 + 35, 11*60 + 30}, {13*60 + 5, 15 * 60}} {
+		for minute := session.start; minute <= session.end; minute += 5 {
+			at := time.Date(2026, 8, 14, minute/60, minute%60, 0, 0, location)
+			money = append(money, graymarket.MoneyPoint{TradeDate: tradeDate, SnapshotAt: at, RankType: graymarket.RankStock,
+				Rank: 1, Market: 0, Code: record.Code, Name: record.Name, DarkMoney: 10, RegularMoney: 20, MainMoneyInflow: 30, FetchedAt: closeAt})
+			klines = append(klines, graymarket.StockKlinePoint{TradeDate: tradeDate, SnapshotAt: at, Market: 0, Code: record.Code,
+				OpenPrice: 10, HighPrice: 11, LowPrice: 9, ClosePrice: 10.5, Volume: 100, Turnover: 1000})
+		}
+	}
+	if err := store.SaveStockArchive(ctx, "stock", snapshot, money); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveStockKlines(ctx, "kline", klines); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/stocks/000001/research-5m?trade_date="+tradeDate, nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"money_points":48`) || !strings.Contains(response.Body.String(), `"kline_points":48`) || !strings.Contains(response.Body.String(), `"snapshot_at":"2026-08-14T15:00:00+08:00"`) {
+		t.Fatalf("unexpected stock research response: status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/research/quality?trade_date="+tradeDate, nil))
+	for _, expected := range []string{`"expected_points":48`, `"expected_kline_stocks":1`, `"money_rows":48`, `"kline_rows":48`, `"daily_close_rows":1`, `"daily_kline_rows":1`} {
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), expected) {
+			t.Fatalf("quality response missing %s: status=%d body=%s", expected, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestMetricsAndStaticSPA(t *testing.T) {
 	staticDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("<h1>app</h1>"), 0o644); err != nil {

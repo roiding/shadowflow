@@ -20,10 +20,49 @@ type sourceResult struct {
 }
 
 type fakeSource struct {
-	mu       sync.Mutex
-	results  []sourceResult
-	calls    int
-	quoteErr error
+	mu               sync.Mutex
+	results          []sourceResult
+	calls            int
+	quoteErr         error
+	unavailableQuote map[string]bool
+}
+
+func (s *fakeSource) FetchMoney5m(_ context.Context, snapshot graymarket.RankSnapshot, includeClose bool) ([]graymarket.MoneyPoint, error) {
+	pointsPerCode := 47
+	if includeClose {
+		pointsPerCode = 48
+	}
+	points := make([]graymarket.MoneyPoint, 0, len(snapshot.Records)*pointsPerCode)
+	for _, record := range snapshot.Records {
+		for _, session := range []struct{ start, end int }{{9*60 + 35, 11*60 + 30}, {13*60 + 5, 14*60 + 55}} {
+			for minute := session.start; minute <= session.end; minute += 5 {
+				at := time.Date(snapshot.SnapshotAt.Year(), snapshot.SnapshotAt.Month(), snapshot.SnapshotAt.Day(), minute/60, minute%60, 0, 0, snapshot.SnapshotAt.Location())
+				points = append(points, graymarket.MoneyPoint{TradeDate: snapshot.TradeDate, SnapshotAt: at, RankType: record.RankType,
+					Rank: record.Rank, Market: record.Market, Code: record.Code, Name: record.Name, DarkMoney: record.DarkMoney,
+					RegularMoney: record.RegularMoney, MainMoneyInflow: record.MainMoneyInflow, FetchedAt: at})
+			}
+		}
+		if includeClose {
+			at := time.Date(snapshot.SnapshotAt.Year(), snapshot.SnapshotAt.Month(), snapshot.SnapshotAt.Day(), 15, 0, 0, 0, snapshot.SnapshotAt.Location())
+			points = append(points, graymarket.MoneyPoint{TradeDate: snapshot.TradeDate, SnapshotAt: at, RankType: record.RankType,
+				Rank: record.Rank, Market: record.Market, Code: record.Code, Name: record.Name, DarkMoney: record.DarkMoney,
+				RegularMoney: record.RegularMoney, MainMoneyInflow: record.MainMoneyInflow, FetchedAt: at})
+		}
+	}
+	return points, nil
+}
+
+func (s *fakeSource) FetchStockKlines5m(_ context.Context, snapshot graymarket.RankSnapshot) ([]graymarket.StockKlinePoint, error) {
+	points := make([]graymarket.StockKlinePoint, 0, len(snapshot.Records)*48)
+	for _, record := range snapshot.Records {
+		for _, session := range []struct{ start, end int }{{9*60 + 35, 11*60 + 30}, {13*60 + 5, 15 * 60}} {
+			for minute := session.start; minute <= session.end; minute += 5 {
+				at := time.Date(snapshot.SnapshotAt.Year(), snapshot.SnapshotAt.Month(), snapshot.SnapshotAt.Day(), minute/60, minute%60, 0, 0, snapshot.SnapshotAt.Location())
+				points = append(points, graymarket.StockKlinePoint{TradeDate: snapshot.TradeDate, SnapshotAt: at, Market: record.Market, Code: record.Code, ClosePrice: 10, FetchedAt: at})
+			}
+		}
+	}
+	return points, nil
 }
 
 func (s *fakeSource) FetchAll(context.Context, graymarket.RankType, string, time.Time) (graymarket.RankSnapshot, error) {
@@ -40,10 +79,11 @@ func (s *fakeSource) FetchStockQuotes(_ context.Context, relations []graymarket.
 	}
 	quotes := make([]graymarket.StockQuote, 0, len(relations))
 	for _, relation := range relations {
+		available := !s.unavailableQuote[relation.StockCode]
 		quotes = append(quotes, graymarket.StockQuote{StockCode: relation.StockCode, StockMarket: relation.StockMarket,
 			StockName: relation.StockName, LatestPrice: 10, OpenPrice: 9.5, HighPrice: 10.5, LowPrice: 9.25,
 			PreviousClose: 9, ChangePct: 0.1111, ChangeValue: 1, Volume: 100, Turnover: 1000,
-			TurnoverRate: 0.02, Amplitude: 0.1, QuoteTime: "2026-08-14T07:00:00Z", Available: true})
+			TurnoverRate: 0.02, Amplitude: 0.1, QuoteTime: "2026-08-14T07:00:00Z", Available: available})
 	}
 	return quotes, nil
 }
@@ -54,6 +94,8 @@ type fakeStore struct {
 	finished        []repository.CollectionRun
 	savedIntraday   int
 	savedDailyClose int
+	savedArchives   int
+	savedKlineRows  int
 	lastDailyClose  graymarket.RankSnapshot
 	startErr        error
 	finishErr       error
@@ -79,6 +121,25 @@ func (s *fakeStore) SaveDailyClose(_ context.Context, _ string, snapshot graymar
 	return s.saveErr
 }
 
+func (s *fakeStore) SaveBoardArchive(_ context.Context, _ string, _ graymarket.RankSnapshot, _ []graymarket.MoneyPoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.savedArchives++
+	return s.saveErr
+}
+
+func (s *fakeStore) SaveStockArchive(_ context.Context, _ string, _ graymarket.RankSnapshot, _ []graymarket.MoneyPoint) error {
+	s.savedArchives++
+	return s.saveErr
+}
+
+func (s *fakeStore) SaveStockKlines(_ context.Context, _ string, points []graymarket.StockKlinePoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.savedKlineRows = len(points)
+	return s.saveErr
+}
+
 func (s *fakeStore) CompactResearch(context.Context, string) ([]repository.QualitySummary, error) {
 	return s.quality, s.compactErr
 }
@@ -86,6 +147,16 @@ func (s *fakeStore) CompactResearch(context.Context, string) ([]repository.Quali
 func (s *fakeStore) HasDailyClose(context.Context, string) (bool, error) {
 	return s.hasDailyClose, s.hasCloseErr
 }
+
+func (s *fakeStore) HasEndOfDayArchive(context.Context, string) (bool, error) {
+	return s.hasDailyClose, s.hasCloseErr
+}
+
+func (s *fakeStore) HasStockKlineArchive(context.Context, string) (bool, error) {
+	return s.hasDailyClose, s.hasCloseErr
+}
+
+func (s *fakeStore) CleanupArchivedIntraday(context.Context, string) error { return nil }
 
 func (s *fakeStore) StartRun(_ context.Context, run repository.CollectionRun) error {
 	s.mu.Lock()
@@ -235,5 +306,28 @@ func TestCollectDailyCloseFailsWhenQuoteEnrichmentFails(t *testing.T) {
 	}
 	if len(store.finished) != 1 || store.finished[0].ErrorCode != "quote_enrichment" {
 		t.Fatalf("unexpected failed run: %+v", store.finished)
+	}
+}
+
+func TestCollectStockKlinesExcludesStocksWithoutDailyBar(t *testing.T) {
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+	runAt := time.Date(2026, 8, 14, 16, 15, 0, 0, location)
+	snapshot := graymarket.RankSnapshot{TradeDate: "2026-08-14", RankType: graymarket.RankStock, SnapshotAt: closeAt,
+		Records: []graymarket.RankRecord{
+			{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Market: 0, Code: "000001", Name: "交易股"},
+			{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Market: 1, Code: "600001", Name: "停牌股"},
+		}}
+	source := &fakeSource{results: []sourceResult{{snapshot: snapshot}}, unavailableQuote: map[string]bool{"600001": true}}
+	store := &fakeStore{}
+	if err := newTestService(source, store).CollectStockKlines(context.Background(), runAt); err != nil {
+		t.Fatal(err)
+	}
+	if store.savedKlineRows != 48 || len(store.finished) != 1 {
+		t.Fatalf("unexpected kline save: rows=%d runs=%+v", store.savedKlineRows, store.finished)
+	}
+	run := store.finished[0]
+	if run.Status != repository.RunSuccess || run.ExpectedTotal != 48 || run.FetchedTotal != 48 || run.PageCount != 1 {
+		t.Fatalf("kline run counted suspended stock: %+v", run)
 	}
 }
