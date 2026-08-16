@@ -244,7 +244,7 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 		"secid": {fmt.Sprintf("%d.%s", stock.Market, stock.Code)}, "ndays": {"5"}, "iscr": {"0"},
 		"ut":      {"fa5fd1943c7b386f172d6893dbfba10b"},
 		"fields1": {"f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13"},
-		"fields2": {"f51,f52,f53,f54,f55,f56,f57,f58"},
+		"fields2": {"f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"},
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"?"+params.Encode(), nil)
 	if err != nil {
@@ -275,9 +275,11 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 	bars := make([]aggregatedTrendBar, 48)
 	seenMinutes := make(map[string]struct{}, 241)
 	minuteRows := 0
+	var previousAt time.Time
+	var cumulativeVolume int64
 	for _, raw := range payload.Data.Trends {
 		fields, err := csv.NewReader(strings.NewReader(raw)).Read()
-		if err != nil || len(fields) < 8 {
+		if err != nil || len(fields) < 11 {
 			return nil, fmt.Errorf("invalid trend row %q", raw)
 		}
 		at, err := time.ParseInLocation("2006-01-02 15:04", fields[0], location)
@@ -295,6 +297,10 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 			return nil, fmt.Errorf("duplicate trend minute %s", fields[0])
 		}
 		seenMinutes[fields[0]] = struct{}{}
+		if !previousAt.IsZero() && !at.After(previousAt) {
+			return nil, fmt.Errorf("trend rows are not chronological at %s", fields[0])
+		}
+		previousAt = at
 		minuteRows++
 		openPrice, closePrice, highPrice, lowPrice := decimal(fields[1]), decimal(fields[2]), decimal(fields[3]), decimal(fields[4])
 		bar := &bars[index]
@@ -310,7 +316,12 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 		if bar.minuteRows == 0 || lowPrice < bar.point.LowPrice {
 			bar.point.LowPrice = lowPrice
 		}
-		bar.point.Volume += integer(fields[5])
+		nextCumulativeVolume := integer(fields[10])
+		if nextCumulativeVolume < cumulativeVolume {
+			return nil, fmt.Errorf("trend cumulative volume decreased at %s", fields[0])
+		}
+		bar.point.Volume += nextCumulativeVolume - cumulativeVolume
+		cumulativeVolume = nextCumulativeVolume
 		bar.point.Turnover += integer(fields[6])
 		bar.minuteRows++
 	}
@@ -347,8 +358,17 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 		!samePrice(minKlinePrice(points), stock.LowPrice) || !samePrice(points[47].ClosePrice, stock.ClosePrice) {
 		return nil, fmt.Errorf("aggregated trend OHLC does not match daily bar")
 	}
-	if absInt64(totalVolume-stock.Volume) > 1 || absInt64(totalTurnover-stock.Turnover) > 1 {
+	turnoverTolerance := max(int64(10), stock.Turnover/1_000_000_000)
+	if absInt64(totalVolume-stock.Volume) > 1 || absInt64(totalTurnover-stock.Turnover) > turnoverTolerance {
 		return nil, fmt.Errorf("aggregated trend volume does not match daily bar: volume=%d/%d turnover=%d/%d", totalVolume, stock.Volume, totalTurnover, stock.Turnover)
+	}
+	points[47].Volume += stock.Volume - totalVolume
+	points[47].Turnover += stock.Turnover - totalTurnover
+	if points[47].Volume < 0 || points[47].Turnover < 0 {
+		return nil, fmt.Errorf("daily volume adjustment made final trend bucket negative")
+	}
+	if stock.Volume > 0 {
+		points[47].TurnoverRate = stock.TurnoverRate * float64(points[47].Volume) / float64(stock.Volume)
 	}
 	return points, nil
 }

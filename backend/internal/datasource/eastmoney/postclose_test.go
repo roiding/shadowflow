@@ -113,11 +113,14 @@ func TestFetchStockKlines5mAggregatesOneMinuteFallback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/trends2/") {
 			rows := make([]string, 0, 241)
+			cumulativeVolume := 0
 			for minute := 9*60 + 30; minute <= 11*60+30; minute++ {
-				rows = append(rows, fmt.Sprintf("2026-08-14 %02d:%02d,10.00,10.00,10.00,10.00,1,10.00,10.000", minute/60, minute%60))
+				cumulativeVolume++
+				rows = append(rows, fmt.Sprintf("2026-08-14 %02d:%02d,10.00,10.00,10.00,10.00,1,10.00,10.000,1,0.00,%d", minute/60, minute%60, cumulativeVolume))
 			}
 			for minute := 13*60 + 1; minute <= 15*60; minute++ {
-				rows = append(rows, fmt.Sprintf("2026-08-14 %02d:%02d,10.00,10.00,10.00,10.00,1,10.00,10.000", minute/60, minute%60))
+				cumulativeVolume++
+				rows = append(rows, fmt.Sprintf("2026-08-14 %02d:%02d,10.00,10.00,10.00,10.00,1,10.00,10.000,1,0.00,%d", minute/60, minute%60, cumulativeVolume))
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"rc": 0, "data": map[string]any{"trends": rows}})
 			return
