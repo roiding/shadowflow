@@ -41,6 +41,8 @@ func (c *Client) FetchStockKlines5m(ctx context.Context, snapshot graymarket.Ran
 	if snapshot.RankType != graymarket.RankStock || snapshot.TradeDate == "" || len(snapshot.Records) == 0 {
 		return nil, fmt.Errorf("invalid stock kline snapshot")
 	}
+	c.stockKlineFailures.Store(0)
+	c.stockKlineDisabled.Store(false)
 	parentCtx := ctx
 	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
@@ -208,7 +210,7 @@ func (c *Client) fetchStockKline(ctx context.Context, tradeDate string, stock gr
 			return nil, fmt.Errorf("unexpected kline time %s", fields[0])
 		}
 		points = append(points, graymarket.StockKlinePoint{
-			TradeDate: tradeDate, SnapshotAt: at, Market: stock.Market, Code: stock.Code,
+			TradeDate: tradeDate, SnapshotAt: at, Market: stock.Market, Code: stock.Code, Source: graymarket.KlineSourceFiveMinute,
 			OpenPrice: decimal(fields[1]), ClosePrice: decimal(fields[2]), HighPrice: decimal(fields[3]), LowPrice: decimal(fields[4]),
 			Volume: integer(fields[5]), Turnover: integer(fields[6]), Amplitude: percent(fields[7]), ChangePct: percent(fields[8]),
 			ChangeValue: decimal(fields[9]), TurnoverRate: percent(fields[10]), FetchedAt: fetchedAt,
@@ -356,7 +358,7 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 			return nil, fmt.Errorf("incomplete five-minute trend bucket %d: expected %d rows, got %d", index, expectedRows, bar.minuteRows)
 		}
 		bar.point.TradeDate, bar.point.SnapshotAt = tradeDate, researchTimeForIndex(tradeDate, index, location)
-		bar.point.Market, bar.point.Code, bar.point.FetchedAt = stock.Market, stock.Code, fetchedAt
+		bar.point.Market, bar.point.Code, bar.point.Source, bar.point.FetchedAt = stock.Market, stock.Code, graymarket.KlineSourceTrend241, fetchedAt
 		bar.point.Amplitude = (bar.point.HighPrice - bar.point.LowPrice) / previousClose
 		bar.point.ChangeValue = bar.point.ClosePrice - previousClose
 		bar.point.ChangePct = bar.point.ChangeValue / previousClose

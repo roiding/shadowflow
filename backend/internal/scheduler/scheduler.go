@@ -6,29 +6,60 @@ import (
 	"sync"
 	"time"
 
-	"github.com/roiding/shadowflow/internal/collector"
+	"github.com/roiding/shadowflow/internal/repository"
 	"github.com/roiding/shadowflow/internal/tradingcalendar"
 )
 
+type collectorService interface {
+	CollectBoards(context.Context, time.Time) error
+	CollectEndOfDay(context.Context, time.Time) error
+	CollectStockKlines(context.Context, time.Time) error
+	CleanupArchivedIntraday(context.Context, string) error
+	Maintain(context.Context, time.Time, int, int) (repository.MaintenanceResult, error)
+	HasEndOfDayArchive(context.Context, string) bool
+	HasStockKlineArchive(context.Context, string) bool
+	CollectStockBoardRelations(context.Context, string) error
+	HasStockBoardRelations(context.Context, string) bool
+}
+
+type Options struct {
+	SuccessRunRetentionDays int
+	FailureRunRetentionDays int
+}
+
 type Scheduler struct {
-	collector *collector.Service
+	collector collectorService
 	calendar  *tradingcalendar.Calendar
 	logger    *slog.Logger
 	location  *time.Location
 	mu        sync.Mutex
-	running   bool
+	running   map[string]bool
 	lastKeys  map[string]struct{}
+	options   Options
 }
 
-func New(service *collector.Service, calendar *tradingcalendar.Calendar, logger *slog.Logger) (*Scheduler, error) {
+func New(service collectorService, calendar *tradingcalendar.Calendar, logger *slog.Logger, options ...Options) (*Scheduler, error) {
 	location, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
 		return nil, err
 	}
-	return &Scheduler{collector: service, calendar: calendar, logger: logger, location: location, lastKeys: make(map[string]struct{})}, nil
+	config := Options{SuccessRunRetentionDays: 30, FailureRunRetentionDays: 180}
+	if len(options) > 0 {
+		config = options[0]
+	}
+	return &Scheduler{
+		collector: service,
+		calendar:  calendar,
+		logger:    logger,
+		location:  location,
+		running:   make(map[string]bool),
+		lastKeys:  make(map[string]struct{}),
+		options:   config,
+	}, nil
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
+	s.recoverLatestArchive(ctx, time.Now().In(s.location))
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -46,71 +77,153 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 		return
 	}
 	kind := jobKind(current)
-	if kind == "" || kind != "cleanup" && !s.calendar.IsTradingDay(current) {
+	if kind == "" || kind != "cleanup" && kind != "maintenance" && !s.calendar.IsTradingDay(current) {
 		return
 	}
-	key := current.Format("2006-01-02T15:04") + ":" + kind
+	s.startJob(ctx, kind, current, current.Format("2006-01-02"))
+}
+
+func (s *Scheduler) startJob(ctx context.Context, kind string, current time.Time, tradeDate string) bool {
+	lane := jobLane(kind)
+	key := current.Format("2006-01-02T15:04") + ":" + kind + ":" + tradeDate
 	s.mu.Lock()
-	if _, ok := s.lastKeys[key]; ok || s.running {
+	if s.running[lane] {
 		s.mu.Unlock()
-		return
+		return false
 	}
-	s.lastKeys[key], s.running = struct{}{}, true
+	if _, ok := s.lastKeys[key]; ok {
+		s.mu.Unlock()
+		return false
+	}
+	s.lastKeys[key] = struct{}{}
+	s.running[lane] = true
 	s.mu.Unlock()
 
 	go func() {
 		defer func() {
 			s.mu.Lock()
-			s.running = false
+			s.running[lane] = false
 			s.prune(current)
 			s.mu.Unlock()
 		}()
-		timeout := 50 * time.Second
-		if kind == "end-of-day" {
-			timeout = 15 * time.Minute
-		} else if kind == "stock-kline" {
-			timeout = 90 * time.Minute
-		} else if kind == "relations" {
-			timeout = 45 * time.Minute
-		} else if kind == "cleanup" {
-			timeout = 2 * time.Minute
-		}
-		jobCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		var err error
-		switch kind {
-		case "minute":
-			err = s.collector.CollectBoards(jobCtx, current.Truncate(time.Minute))
-		case "end-of-day":
-			if s.collector.HasEndOfDayArchive(jobCtx, current.Format("2006-01-02")) {
-				s.logger.Info("end-of-day archive already available; skipping retry", "trade_date", current.Format("2006-01-02"), "at", current)
-				return
-			}
-			err = s.collector.CollectEndOfDay(jobCtx, current)
-		case "cleanup":
-			err = s.collector.CleanupArchivedIntraday(jobCtx, current.Format("2006-01-02"))
-		case "stock-kline":
-			if s.collector.HasStockKlineArchive(jobCtx, current.Format("2006-01-02")) {
-				s.logger.Info("stock kline archive already available; skipping retry", "trade_date", current.Format("2006-01-02"), "at", current)
-				return
-			}
-			if !s.collector.HasEndOfDayArchive(jobCtx, current.Format("2006-01-02")) {
-				s.logger.Warn("stock kline archive is waiting for end-of-day money archive", "trade_date", current.Format("2006-01-02"), "at", current)
-				return
-			}
-			err = s.collector.CollectStockKlines(jobCtx, current)
-		case "relations":
-			tradeDate := current.Format("2006-01-02")
-			if s.collector.HasStockBoardRelations(jobCtx, tradeDate) {
-				s.logger.Info("stock-board relations already synchronized; skipping retry", "trade_date", tradeDate, "at", current)
-				return
-			}
-			err = s.collector.CollectStockBoardRelations(jobCtx, tradeDate)
-		}
-		if err != nil {
-			s.logger.Error("scheduled job failed", "kind", kind, "at", current, "error", err)
-		}
+		s.runJob(ctx, kind, current, tradeDate)
 	}()
+	return true
+}
+
+func (s *Scheduler) runJob(ctx context.Context, kind string, current time.Time, tradeDate string) {
+	timeout := 50 * time.Second
+	switch kind {
+	case "end-of-day":
+		timeout = 15 * time.Minute
+	case "stock-kline":
+		timeout = 90 * time.Minute
+	case "relations":
+		timeout = 45 * time.Minute
+	case "cleanup", "maintenance":
+		timeout = 2 * time.Minute
+	case "startup-recovery":
+		timeout = 105 * time.Minute
+	}
+	jobCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var err error
+	switch kind {
+	case "minute":
+		err = s.collector.CollectBoards(jobCtx, current.Truncate(time.Minute))
+	case "end-of-day":
+		if s.collector.HasEndOfDayArchive(jobCtx, tradeDate) {
+			s.logger.Info("end-of-day archive already available; skipping retry", "trade_date", tradeDate, "at", current)
+			return
+		}
+		err = s.collector.CollectEndOfDay(jobCtx, parseShanghaiTime(tradeDate, "16:00", current))
+	case "cleanup":
+		err = s.collector.CleanupArchivedIntraday(jobCtx, tradeDate)
+	case "maintenance":
+		_, err = s.collector.Maintain(jobCtx, current, s.options.SuccessRunRetentionDays, s.options.FailureRunRetentionDays)
+	case "stock-kline":
+		if s.collector.HasStockKlineArchive(jobCtx, tradeDate) {
+			s.logger.Info("stock kline archive already available; skipping retry", "trade_date", tradeDate, "at", current)
+			return
+		}
+		if !s.collector.HasEndOfDayArchive(jobCtx, tradeDate) {
+			s.logger.Warn("stock kline archive is waiting for end-of-day money archive", "trade_date", tradeDate, "at", current)
+			return
+		}
+		err = s.collector.CollectStockKlines(jobCtx, parseShanghaiTime(tradeDate, "16:15", current))
+	case "relations":
+		if s.collector.HasStockBoardRelations(jobCtx, tradeDate) {
+			s.logger.Info("stock-board relations already synchronized; skipping retry", "trade_date", tradeDate, "at", current)
+			return
+		}
+		err = s.collector.CollectStockBoardRelations(jobCtx, tradeDate)
+	case "startup-recovery":
+		err = s.recoverArchive(jobCtx, tradeDate, current)
+	}
+	if err != nil {
+		s.logger.Error("scheduled job failed", "kind", kind, "trade_date", tradeDate, "at", current, "error", err)
+	}
+}
+
+func (s *Scheduler) recoverLatestArchive(ctx context.Context, current time.Time) {
+	tradeDate, ok := recoveryTradeDate(s.calendar, current)
+	if !ok {
+		return
+	}
+	s.startJob(ctx, "startup-recovery", current, tradeDate)
+}
+
+func (s *Scheduler) recoverArchive(ctx context.Context, tradeDate string, current time.Time) error {
+	if !s.collector.HasEndOfDayArchive(ctx, tradeDate) {
+		if err := s.collector.CollectEndOfDay(ctx, parseShanghaiTime(tradeDate, "16:00", current)); err != nil {
+			return err
+		}
+	}
+	if !s.collector.HasStockKlineArchive(ctx, tradeDate) {
+		if err := s.collector.CollectStockKlines(ctx, parseShanghaiTime(tradeDate, "16:15", current)); err != nil {
+			return err
+		}
+	}
+	return s.collector.CleanupArchivedIntraday(ctx, current.Format("2006-01-02"))
+}
+
+func recoveryTradeDate(calendar *tradingcalendar.Calendar, current time.Time) (string, bool) {
+	if calendar.IsTradingDay(current) {
+		afterOpen := current.Hour() > 9 || current.Hour() == 9 && current.Minute() >= 30
+		if afterOpen && current.Hour() < 16 {
+			return "", false
+		}
+	}
+	var day time.Time
+	if calendar.IsTradingDay(current) && current.Hour() >= 16 {
+		day = current
+	} else {
+		day = calendar.PreviousTradingDay(current)
+	}
+	return day.Format("2006-01-02"), true
+}
+
+func parseShanghaiTime(tradeDate, clock string, fallback time.Time) time.Time {
+	location := fallback.Location()
+	value, err := time.ParseInLocation("2006-01-02 15:04", tradeDate+" "+clock, location)
+	if err != nil {
+		return time.Date(fallback.Year(), fallback.Month(), fallback.Day(), 16, 0, 0, 0, location)
+	}
+	return value
+}
+
+func jobLane(kind string) string {
+	switch kind {
+	case "minute":
+		return "intraday"
+	case "relations":
+		return "relations"
+	case "maintenance":
+		return "maintenance"
+	default:
+		return "archive"
+	}
 }
 
 func jobKind(current time.Time) string {
@@ -125,6 +238,8 @@ func jobKind(current time.Time) string {
 		return "stock-kline"
 	case current.Hour() == 9 && current.Minute() == 0:
 		return "cleanup"
+	case current.Hour() == 9 && current.Minute() == 5:
+		return "maintenance"
 	case current.Hour() == 8 && (current.Minute() == 0 || current.Minute() == 50),
 		current.Hour() == 9 && current.Minute() == 15:
 		return "relations"

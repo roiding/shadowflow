@@ -51,6 +51,8 @@ type store interface {
 	HasDailyClose(context.Context, string) (bool, error)
 	HasEndOfDayArchive(context.Context, string) (bool, error)
 	HasStockKlineArchive(context.Context, string) (bool, error)
+	SealArchiveRevision(context.Context, string, string) (repository.ArchiveRevision, error)
+	Maintain(context.Context, time.Time, int, int) (repository.MaintenanceResult, error)
 	StartRun(context.Context, repository.CollectionRun) error
 	FinishRun(context.Context, repository.CollectionRun) error
 }
@@ -101,6 +103,8 @@ func (s *Service) CollectDailyClose(ctx context.Context, snapshotAt time.Time) e
 func (s *Service) CollectEndOfDay(ctx context.Context, runAt time.Time) error {
 	closeAt := time.Date(runAt.Year(), runAt.Month(), runAt.Day(), 15, 0, 0, 0, runAt.Location())
 	date := runAt.Format("20060102")
+	tradeDate := runAt.Format("2006-01-02")
+	revisionID := "eod-" + newRunID()
 	errCh := make(chan error, 3)
 	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept} {
 		rankType := rankType
@@ -110,6 +114,16 @@ func (s *Service) CollectEndOfDay(ctx context.Context, runAt time.Time) error {
 	var combined error
 	for range 3 {
 		combined = errors.Join(combined, <-errCh)
+	}
+	if combined == nil {
+		klineComplete, err := s.store.HasStockKlineArchive(ctx, tradeDate)
+		if err != nil {
+			return err
+		}
+		if klineComplete {
+			_, err = s.store.SealArchiveRevision(ctx, tradeDate, revisionID)
+			combined = errors.Join(combined, err)
+		}
 	}
 	return combined
 }
@@ -145,6 +159,10 @@ func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error
 		return finish(err)
 	}
 	if len(missingCodes) == 0 {
+		if _, err := s.store.SealArchiveRevision(ctx, tradeDate, "kline-"+runID); err != nil {
+			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
+			return finish(err)
+		}
 		run.Status = repository.RunSuccess
 		return finish(nil)
 	}
@@ -199,6 +217,10 @@ func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
 		return finish(err)
 	}
+	if _, err := s.store.SealArchiveRevision(ctx, tradeDate, "kline-"+runID); err != nil {
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
+		return finish(err)
+	}
 	run.Status = repository.RunSuccess
 	return finish(nil)
 }
@@ -223,6 +245,10 @@ func (s *Service) HasEndOfDayArchive(ctx context.Context, tradeDate string) bool
 
 func (s *Service) CleanupArchivedIntraday(ctx context.Context, beforeDate string) error {
 	return s.store.CleanupArchivedIntraday(ctx, beforeDate)
+}
+
+func (s *Service) Maintain(ctx context.Context, at time.Time, successRetentionDays, failureRetentionDays int) (repository.MaintenanceResult, error) {
+	return s.store.Maintain(ctx, at, successRetentionDays, failureRetentionDays)
 }
 
 func (s *Service) HasDailyClose(ctx context.Context, tradeDate string) bool {

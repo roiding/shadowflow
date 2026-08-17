@@ -144,6 +144,7 @@ type StockKlinePoint struct {
 	SnapshotAt   time.Time `json:"snapshot_at"`
 	Market       int64     `json:"market"`
 	Code         string    `json:"code"`
+	Source       string    `json:"source"`
 	OpenPrice    float64   `json:"open_price"`
 	HighPrice    float64   `json:"high_price"`
 	LowPrice     float64   `json:"low_price"`
@@ -156,6 +157,12 @@ type StockKlinePoint struct {
 	TurnoverRate float64   `json:"turnover_rate"`
 	FetchedAt    time.Time `json:"fetched_at"`
 }
+
+const (
+	KlineSourceFiveMinute = "stock_kline_5m"
+	KlineSourceTrend241   = "stock_trends_1m_241"
+	KlineSourceUnknown    = "unknown"
+)
 
 // StockResearchPoint joins one revised five-minute money point with the
 // matching unadjusted five-minute market bar.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -560,7 +561,7 @@ func testStockKlines(tradeDate string, location *time.Location, record graymarke
 	for _, clock := range expectedResearchTimes() {
 		at, _ := time.ParseInLocation("2006-01-02 15:04", tradeDate+" "+clock, location)
 		points = append(points, graymarket.StockKlinePoint{TradeDate: tradeDate, SnapshotAt: at, Market: record.Market, Code: record.Code,
-			OpenPrice: 10, HighPrice: 11, LowPrice: 9, ClosePrice: 10.5, Volume: 1000, Turnover: 2000})
+			Source: graymarket.KlineSourceFiveMinute, OpenPrice: 10, HighPrice: 11, LowPrice: 9, ClosePrice: 10.5, Volume: 1000, Turnover: 2000})
 	}
 	return points
 }
@@ -602,6 +603,408 @@ func TestOperationalMetrics(t *testing.T) {
 	}
 	if len(metrics.RunCounts) != 1 || metrics.RunCounts[0].Value != 1 || len(metrics.RecordCounts) != 1 || metrics.RecordCounts[0].Value != 71 {
 		t.Fatalf("unexpected metrics: %+v", metrics)
+	}
+}
+
+func TestArchiveManifestTracksCompletenessAndKlineSource(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	tradeDate := "2026-08-14"
+	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept} {
+		record := graymarket.RankRecord{TradeDate: tradeDate, SnapshotAt: closeAt, RankType: rankType,
+			Rank: 1, Market: 90, Code: "BK-" + string(rankType), Name: string(rankType), FetchedAt: closeAt}
+		snapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: rankType, SnapshotAt: closeAt,
+			Records: []graymarket.RankRecord{record}}
+		if err := store.SaveBoardArchive(ctx, "board-"+string(rankType), snapshot, testMoneyPoints(snapshot)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stock := graymarket.RankRecord{TradeDate: tradeDate, SnapshotAt: closeAt, RankType: graymarket.RankStock,
+		Rank: 1, Market: 0, Code: "000001", Name: "stock", QuoteAvailable: true, FetchedAt: closeAt}
+	stockSnapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: graymarket.RankStock,
+		SnapshotAt: closeAt, Records: []graymarket.RankRecord{stock}}
+	if err := store.SaveStockArchive(ctx, "stock", stockSnapshot, testMoneyPoints(stockSnapshot)); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := store.ArchiveManifest(ctx, tradeDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Status != archiveManifestPending || len(manifest.ValidationErrors) == 0 {
+		t.Fatalf("manifest completed before stock klines: %+v", manifest)
+	}
+	klines := testStockKlines(tradeDate, location, stock)
+	for index := range klines {
+		klines[index].Source = graymarket.KlineSourceTrend241
+	}
+	if err := store.SaveStockKlines(ctx, "kline", klines); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err = store.ArchiveManifest(ctx, tradeDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Status != archiveManifestCompleted || manifest.CompletedAt == nil || len(manifest.ValidationErrors) != 0 ||
+		manifest.IndustryCloseRows != 1 || manifest.IndustryMoneyRows != 48 ||
+		manifest.ConceptCloseRows != 1 || manifest.ConceptMoneyRows != 48 ||
+		manifest.StockCloseRows != 1 || manifest.StockMoneyRows != 48 ||
+		manifest.StockKlineRows != 48 || manifest.StockDailyKlineRows != 1 ||
+		manifest.CodeCount != 3 || len(manifest.CodeSetSHA256) != 64 ||
+		manifest.KlineSourceCounts[graymarket.KlineSourceTrend241] != 1 {
+		t.Fatalf("unexpected complete manifest: %+v", manifest)
+	}
+}
+
+func TestArchiveRevisionPreservesSupersededDailyData(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	tradeDate := "2026-08-14"
+	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept} {
+		record := graymarket.RankRecord{TradeDate: tradeDate, SnapshotAt: closeAt, RankType: rankType,
+			Rank: 1, Market: 90, Code: "BK-" + string(rankType), Name: string(rankType), FetchedAt: closeAt}
+		snapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: rankType, SnapshotAt: closeAt,
+			Records: []graymarket.RankRecord{record}}
+		if err := store.SaveBoardArchive(ctx, "board-"+string(rankType), snapshot, testMoneyPoints(snapshot)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stock := graymarket.RankRecord{TradeDate: tradeDate, SnapshotAt: closeAt, RankType: graymarket.RankStock,
+		Rank: 1, Market: 0, Code: "000001", Name: "stock", QuoteAvailable: true,
+		ClosePrice: 10, DarkMoney: 100, FetchedAt: closeAt}
+	snapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: graymarket.RankStock,
+		SnapshotAt: closeAt, Records: []graymarket.RankRecord{stock}}
+	if err := store.SaveStockArchive(ctx, "stock-v1", snapshot, testMoneyPoints(snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveStockKlines(ctx, "kline-v1", testStockKlines(tradeDate, location, stock)); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.SealArchiveRevision(ctx, tradeDate, "revision-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot.Records[0].DarkMoney = 999
+	points := testMoneyPoints(snapshot)
+	points[0].DarkMoney = 777
+	if err := store.SaveStockArchive(ctx, "stock-v2", snapshot, points); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.SealArchiveRevision(ctx, tradeDate, "revision-two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.RevisionNo != 1 || second.RevisionNo != 2 || second.PreviousRevision != first.RevisionID ||
+		first.ContentSHA256 == second.ContentSHA256 {
+		t.Fatalf("unexpected revision chain: first=%+v second=%+v", first, second)
+	}
+	var firstCloseMoney, secondCloseMoney, firstPointMoney, secondPointMoney int64
+	if err := store.db.QueryRowContext(ctx, `SELECT dark_money FROM rank_snapshot_revision
+WHERE revision_id='revision-one' AND rank_type='stock' AND code='000001'`).Scan(&firstCloseMoney); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT dark_money FROM rank_snapshot_revision
+WHERE revision_id='revision-two' AND rank_type='stock' AND code='000001'`).Scan(&secondCloseMoney); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT dark_money FROM stock_research_revision
+WHERE revision_id='revision-one' AND code='000001' AND minute_index=0`).Scan(&firstPointMoney); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT dark_money FROM stock_research_revision
+WHERE revision_id='revision-two' AND code='000001' AND minute_index=0`).Scan(&secondPointMoney); err != nil {
+		t.Fatal(err)
+	}
+	if firstCloseMoney != 100 || secondCloseMoney != 999 || firstPointMoney != 0 || secondPointMoney != 777 {
+		t.Fatalf("superseded data changed: close=%d/%d point=%d/%d",
+			firstCloseMoney, secondCloseMoney, firstPointMoney, secondPointMoney)
+	}
+	manifest, err := store.ArchiveManifest(ctx, tradeDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revisions, err := store.ArchiveRevisions(ctx, tradeDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.CurrentRevisionID != second.RevisionID || manifest.RevisionNo != 2 ||
+		len(revisions) != 2 || revisions[0].RevisionID != second.RevisionID {
+		t.Fatalf("current revision pointer is incorrect: manifest=%+v revisions=%+v", manifest, revisions)
+	}
+	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept} {
+		record := graymarket.RankRecord{TradeDate: tradeDate, SnapshotAt: closeAt, RankType: rankType,
+			Rank: 1, Market: 90, Code: "BK-" + string(rankType), Name: string(rankType), FetchedAt: closeAt}
+		boardSnapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: rankType,
+			SnapshotAt: closeAt, Records: []graymarket.RankRecord{record}}
+		if err := store.SaveBoardArchive(ctx, "rerun-"+string(rankType), boardSnapshot, testMoneyPoints(boardSnapshot)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SaveStockArchive(ctx, "stock-v3", snapshot, points); err != nil {
+		t.Fatal(err)
+	}
+	third, err := store.SealArchiveRevision(ctx, tradeDate, "revision-three")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.RevisionNo != 3 || third.ContentSHA256 != second.ContentSHA256 {
+		t.Fatalf("identical rerun did not create a content-addressed revision: second=%+v third=%+v", second, third)
+	}
+}
+
+func TestVersionedFeaturesAndFutureLabels(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	dates := []string{"2026-08-10", "2026-08-11", "2026-08-12", "2026-08-13", "2026-08-14", "2026-08-17"}
+	detectedAt := time.Date(2026, 8, 10, 8, 0, 0, 0, location).UTC().Format(timestampLayout)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO stock_board_relation_baseline
+(baseline_date,stock_code,stock_market,stock_name,board_code,board_name,board_type,
+source_order,relation_source,relation_scope,detected_at,raw_data)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, dates[0], "000001", 0, "stock", "BK-IND", "industry",
+		"industry", 1, graymarket.RelationSourceQuoteClist,
+		graymarket.RelationScopeBoardConstituents, detectedAt, `{}`); err != nil {
+		t.Fatal(err)
+	}
+	for index, tradeDate := range dates {
+		closeAt, parseErr := time.ParseInLocation("2006-01-02 15:04", tradeDate+" 15:00", location)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		industry := graymarket.RankRecord{TradeDate: tradeDate, SnapshotAt: closeAt,
+			RankType: graymarket.RankIndustry, Rank: 1, Market: 90, Code: "BK-IND",
+			Name: "industry", QuoteAvailable: true, ClosePrice: 100 + float64(index),
+			ChangePct: 0.01, Turnover: int64(1_000_000 + index*100_000),
+			DarkMoney: int64(100 + index), MainMoneyInflow: int64(200 + index*10),
+			DarkActivity: 0.02, FetchedAt: closeAt}
+		concept := graymarket.RankRecord{TradeDate: tradeDate, SnapshotAt: closeAt,
+			RankType: graymarket.RankConcept, Rank: 1, Market: 90, Code: "BK-CON",
+			Name: "concept", QuoteAvailable: true, ClosePrice: 200 + float64(index),
+			ChangePct: 0.01, Turnover: int64(2_000_000 + index*100_000),
+			DarkMoney: int64(200 + index), MainMoneyInflow: int64(300 + index*10),
+			DarkActivity: 0.03, FetchedAt: closeAt}
+		for _, record := range []graymarket.RankRecord{industry, concept} {
+			snapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: record.RankType,
+				SnapshotAt: closeAt, Records: []graymarket.RankRecord{record}}
+			points := testMoneyPoints(snapshot)
+			if err := store.SaveBoardArchive(ctx, "board-"+string(record.RankType)+"-"+tradeDate, snapshot, points); err != nil {
+				t.Fatal(err)
+			}
+		}
+		stock := graymarket.RankRecord{TradeDate: tradeDate, SnapshotAt: closeAt,
+			RankType: graymarket.RankStock, Rank: 1, Market: 0, Code: "000001", Name: "stock",
+			QuoteAvailable: true, ClosePrice: 10 + float64(index), ChangePct: 0.02,
+			Turnover: int64(500_000 + index*100_000), DarkMoney: int64(50 + index*10),
+			RegularMoney: int64(25 + index*5), MainMoneyInflow: int64(75 + index*15),
+			DarkActivity: 0.1, FetchedAt: closeAt}
+		stockSnapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: graymarket.RankStock,
+			SnapshotAt: closeAt, Records: []graymarket.RankRecord{stock}}
+		if err := store.SaveStockArchive(ctx, "stock-"+tradeDate, stockSnapshot, testMoneyPoints(stockSnapshot)); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveStockKlines(ctx, "kline-"+tradeDate, testStockKlines(tradeDate, location, stock)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SealArchiveRevision(ctx, tradeDate, fmt.Sprintf("revision-%d", index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	features, set, err := store.DailyFeatures(ctx, dates[4], "", graymarket.RankStock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(features) != 1 || set.RevisionID != "revision-4" || len(set.SourceRevisions) != 5 {
+		t.Fatalf("unexpected feature set: features=%+v set=%+v", features, set)
+	}
+	feature := features[0]
+	if feature.PrimaryIndustryCode != "BK-IND" || !feature.CurveAvailable ||
+		feature.SelfTurnoverPercentile5 == nil || math.Abs(*feature.SelfTurnoverPercentile5-0.9) > 1e-9 ||
+		feature.SelfDarkMoneyPercentile5 == nil || math.Abs(*feature.SelfDarkMoneyPercentile5-0.9) > 1e-9 ||
+		feature.ConsecutiveInflowDays != 5 || feature.MoneyAcceleration != 0 ||
+		math.Abs(feature.MorningDarkShare-float64(23)/47) > 1e-9 ||
+		math.Abs(feature.LateDarkShare-float64(6)/47) > 1e-9 ||
+		feature.PriceMoneyDivergence {
+		t.Fatalf("unexpected derived stock feature: %+v", feature)
+	}
+
+	labels, err := store.FutureReturnLabels(ctx, dates[0], "", "", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stockLabel *repository.FutureReturnLabel
+	for index := range labels {
+		if labels[index].RankType == graymarket.RankStock && labels[index].Code == "000001" {
+			stockLabel = &labels[index]
+			break
+		}
+	}
+	if stockLabel == nil || stockLabel.TargetRevisionID != "revision-5" ||
+		math.Abs(stockLabel.ReturnRate-0.5) > 1e-9 ||
+		stockLabel.RelativeIndustryReturn == nil ||
+		math.Abs(*stockLabel.RelativeIndustryReturn-0.45) > 1e-9 ||
+		math.Abs(stockLabel.MaxFavorableReturn-0.5) > 1e-9 ||
+		math.Abs(stockLabel.MaxAdverseReturn-0.1) > 1e-9 {
+		t.Fatalf("unexpected five-day stock label: %+v", stockLabel)
+	}
+
+	tradeDate := dates[5]
+	closeAt, err := time.ParseInLocation("2006-01-02 15:04", tradeDate+" 15:00", location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []graymarket.RankRecord{
+		{TradeDate: tradeDate, SnapshotAt: closeAt, RankType: graymarket.RankIndustry,
+			Rank: 1, Market: 90, Code: "BK-IND", Name: "industry", QuoteAvailable: true,
+			ClosePrice: 110, ChangePct: 0.05, Turnover: 2_000_000, DarkMoney: 200, FetchedAt: closeAt},
+		{TradeDate: tradeDate, SnapshotAt: closeAt, RankType: graymarket.RankConcept,
+			Rank: 1, Market: 90, Code: "BK-CON", Name: "concept", QuoteAvailable: true,
+			ClosePrice: 220, ChangePct: 0.05, Turnover: 3_000_000, DarkMoney: 300, FetchedAt: closeAt},
+	} {
+		snapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: record.RankType,
+			SnapshotAt: closeAt, Records: []graymarket.RankRecord{record}}
+		if err := store.SaveBoardArchive(ctx, "rerun-"+string(record.RankType), snapshot, testMoneyPoints(snapshot)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rerunStock := graymarket.RankRecord{TradeDate: tradeDate, SnapshotAt: closeAt,
+		RankType: graymarket.RankStock, Rank: 1, Market: 0, Code: "000001", Name: "stock",
+		QuoteAvailable: true, ClosePrice: 20, ChangePct: 0.1, Turnover: 2_000_000,
+		DarkMoney: 500, MainMoneyInflow: 600, DarkActivity: 0.1, FetchedAt: closeAt}
+	rerunSnapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: graymarket.RankStock,
+		SnapshotAt: closeAt, Records: []graymarket.RankRecord{rerunStock}}
+	if err := store.SaveStockArchive(ctx, "rerun-stock", rerunSnapshot, testMoneyPoints(rerunSnapshot)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SealArchiveRevision(ctx, tradeDate, "revision-5b"); err != nil {
+		t.Fatal(err)
+	}
+	var labelVersions int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM future_return_label
+WHERE signal_revision_id='revision-0' AND horizon=5 AND rank_type='stock' AND code='000001'`).
+		Scan(&labelVersions); err != nil {
+		t.Fatal(err)
+	}
+	currentLabels, err := store.FutureReturnLabels(ctx, dates[0], "", "", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if labelVersions != 2 || len(currentLabels) == 0 {
+		t.Fatalf("target revision labels were overwritten: versions=%d current=%+v", labelVersions, currentLabels)
+	}
+	for _, label := range currentLabels {
+		if label.RankType == graymarket.RankStock && label.Code == "000001" {
+			if label.TargetRevisionID != "revision-5b" || math.Abs(label.ReturnRate-1) > 1e-9 {
+				t.Fatalf("current target label is incorrect after rerun: %+v", label)
+			}
+		}
+	}
+	supersededLabels, err := store.FutureReturnLabels(ctx, dates[0], "revision-0", "revision-5", 5)
+	if err != nil || len(supersededLabels) == 0 {
+		t.Fatalf("superseded target labels are not queryable: labels=%+v err=%v", supersededLabels, err)
+	}
+	for _, label := range supersededLabels {
+		if label.RankType == graymarket.RankStock && label.Code == "000001" &&
+			(label.TargetRevisionID != "revision-5" || math.Abs(label.ReturnRate-0.5) > 1e-9) {
+			t.Fatalf("superseded target label changed: %+v", label)
+		}
+	}
+}
+
+func TestMaintenanceAppliesSeparateRetentionAndPreservesDailyRaw(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	at := time.Date(2026, 8, 17, 10, 0, 0, 0, time.UTC)
+	insertRun := func(id, status string, started time.Time) {
+		t.Helper()
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO collection_run
+(run_id,snapshot_at,snapshot_kind,rank_type,status,requested_date,actual_trade_date,
+expected_total,fetched_total,page_count,attempt_count,started_at,finished_at,duration_ms,error_code,error_message)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, started.Format(timestampLayout), "minute_work", "industry",
+			status, started.Format("2006-01-02"), "", 0, 0, 0, 1, started.Format(timestampLayout),
+			started.Format(timestampLayout), 0, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertRun("old-success", "success", time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	insertRun("old-failed", "failed", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	insertRun("recent-failed", "failed", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC))
+	old := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC).Format(timestampLayout)
+	for _, kind := range []string{"research_5m", "daily_close"} {
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO raw_response
+(run_id,snapshot_at,snapshot_kind,rank_type,page,content_encoding,compression,body,fetched_at)
+VALUES (?,?,?,?,?,?,?,?,?)`, "raw-"+kind, old, kind, "industry", 1, "utf-8", "gzip", []byte("x"), old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, status := range []string{"success", "failed"} {
+		started := old
+		if status == "failed" {
+			started = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Format(timestampLayout)
+		}
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO relation_sync_run
+(run_id,trade_date,status,board_count,relation_count,added_count,removed_count,baseline_built,
+started_at,finished_at,duration_ms,error_code,error_message)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, fmt.Sprintf("relation-%d", index), "2026-01-01", status,
+			0, 0, 0, 0, 0, started, started, 0, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := store.Maintain(ctx, at, 30, 180)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SuccessfulRunsDeleted != 1 || result.FailedRunsDeleted != 1 ||
+		result.TransientRawDeleted != 1 || result.RelationRunsDeleted != 2 || !result.Optimized {
+		t.Fatalf("unexpected maintenance result: %+v", result)
+	}
+	var runCount, rawCount int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM collection_run`).Scan(&runCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM raw_response`).Scan(&rawCount); err != nil {
+		t.Fatal(err)
+	}
+	if runCount != 1 || rawCount != 1 {
+		t.Fatalf("maintenance removed the wrong records: runs=%d raw=%d", runCount, rawCount)
+	}
+	metrics, err := store.OperationalMetrics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[repository.RunStatus]int64{}
+	for _, item := range metrics.RunCounts {
+		counts[item.Status] += item.Value
+	}
+	if counts[repository.RunSuccess] != 1 || counts[repository.RunFailed] != 2 || len(metrics.LastSuccess) != 1 {
+		t.Fatalf("maintenance lost rolled-up metrics: %+v", metrics)
+	}
+	second, err := store.Maintain(ctx, at.Add(24*time.Hour), 30, 180)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Optimized {
+		t.Fatal("PRAGMA optimize should not run again within 30 days")
 	}
 }
 

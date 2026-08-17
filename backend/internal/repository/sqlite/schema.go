@@ -165,6 +165,255 @@ CREATE TABLE IF NOT EXISTS stock_archive_quality (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS stock_kline_source (
+    trade_date TEXT NOT NULL,
+    market INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    source TEXT NOT NULL,
+    point_count INTEGER NOT NULL,
+    parser_version TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    PRIMARY KEY (trade_date, market, code)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_stock_kline_source_type
+    ON stock_kline_source (trade_date, source);
+
+CREATE TABLE IF NOT EXISTS daily_archive_manifest (
+    trade_date TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status IN ('incomplete', 'complete')),
+    industry_close_rows INTEGER NOT NULL,
+    industry_money_rows INTEGER NOT NULL,
+    concept_close_rows INTEGER NOT NULL,
+    concept_money_rows INTEGER NOT NULL,
+    stock_close_rows INTEGER NOT NULL,
+    stock_money_rows INTEGER NOT NULL,
+    stock_kline_rows INTEGER NOT NULL,
+    stock_daily_kline_rows INTEGER NOT NULL,
+    expected_stock_rows INTEGER NOT NULL,
+    expected_stock_kline_rows INTEGER NOT NULL,
+    code_count INTEGER NOT NULL,
+    code_set_sha256 TEXT NOT NULL,
+    kline_source_counts_json TEXT NOT NULL,
+    darktrade_contract TEXT NOT NULL,
+    darktradetick_contract TEXT NOT NULL,
+    stock_kline_contract TEXT NOT NULL,
+    parser_version TEXT NOT NULL,
+    validation_errors_json TEXT NOT NULL,
+    completed_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS daily_archive_revision (
+    revision_id TEXT PRIMARY KEY,
+    trade_date TEXT NOT NULL,
+    revision_no INTEGER NOT NULL,
+    previous_revision_id TEXT,
+    content_sha256 TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (trade_date, revision_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_archive_revision_date
+    ON daily_archive_revision (trade_date, revision_no DESC);
+
+CREATE TABLE IF NOT EXISTS daily_archive_current (
+    trade_date TEXT PRIMARY KEY,
+    revision_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rank_snapshot_revision (
+    revision_id TEXT NOT NULL,
+    snapshot_at TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    requested_date TEXT NOT NULL,
+    snapshot_kind TEXT NOT NULL,
+    rank_type TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    market INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    quote_time TEXT NOT NULL,
+    latest_price_raw INTEGER NOT NULL,
+    open_price REAL NOT NULL,
+    high_price REAL NOT NULL,
+    low_price REAL NOT NULL,
+    close_price REAL NOT NULL,
+    previous_close REAL NOT NULL,
+    change_value REAL NOT NULL,
+    change_pct REAL NOT NULL,
+    volume INTEGER NOT NULL,
+    turnover INTEGER NOT NULL,
+    turnover_rate REAL NOT NULL,
+    amplitude REAL NOT NULL,
+    quote_available INTEGER NOT NULL,
+    dark_money INTEGER NOT NULL,
+    regular_money INTEGER NOT NULL,
+    main_money_inflow INTEGER NOT NULL,
+    dark_activity REAL NOT NULL,
+    dark_inflow_ratio REAL NOT NULL,
+    up_count INTEGER NOT NULL,
+    flat_count INTEGER NOT NULL,
+    down_count INTEGER NOT NULL,
+    leader_name TEXT NOT NULL,
+    leader_code TEXT NOT NULL,
+    source_version INTEGER NOT NULL,
+    source_sort_flag INTEGER NOT NULL,
+    source_descending INTEGER NOT NULL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (revision_id, snapshot_kind, snapshot_at, rank_type, code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rank_snapshot_revision_date
+    ON rank_snapshot_revision (revision_id, trade_date, rank_type, rank);
+
+CREATE TABLE IF NOT EXISTS board_money_revision (
+    revision_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    snapshot_at TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    rank_type TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    market INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    dark_money INTEGER NOT NULL,
+    regular_money INTEGER NOT NULL,
+    main_money_inflow INTEGER NOT NULL,
+    source_time INTEGER NOT NULL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (revision_id, snapshot_at, rank_type, code)
+);
+
+CREATE TABLE IF NOT EXISTS stock_research_revision (
+    revision_id TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    minute_index INTEGER NOT NULL,
+    market INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    money_rank INTEGER NOT NULL,
+    dark_money INTEGER NOT NULL,
+    regular_money INTEGER NOT NULL,
+    main_money_inflow INTEGER NOT NULL,
+    open_price_e4 INTEGER NOT NULL,
+    high_price_e4 INTEGER NOT NULL,
+    low_price_e4 INTEGER NOT NULL,
+    close_price_e4 INTEGER NOT NULL,
+    volume INTEGER NOT NULL,
+    turnover INTEGER NOT NULL,
+    amplitude_ppm INTEGER NOT NULL,
+    change_pct_ppm INTEGER NOT NULL,
+    change_value_e4 INTEGER NOT NULL,
+    turnover_rate_ppm INTEGER NOT NULL,
+    kline_available INTEGER NOT NULL,
+    PRIMARY KEY (revision_id, trade_date, minute_index, market, code)
+);
+
+CREATE TABLE IF NOT EXISTS stock_kline_source_revision (
+    revision_id TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    market INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    source TEXT NOT NULL,
+    point_count INTEGER NOT NULL,
+    parser_version TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    PRIMARY KEY (revision_id, trade_date, market, code)
+);
+
+CREATE TABLE IF NOT EXISTS raw_response_revision (
+    revision_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    snapshot_at TEXT NOT NULL,
+    snapshot_kind TEXT NOT NULL,
+    rank_type TEXT NOT NULL,
+    page INTEGER NOT NULL,
+    content_encoding TEXT NOT NULL,
+    compression TEXT NOT NULL,
+    body BLOB NOT NULL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (revision_id, snapshot_kind, snapshot_at, rank_type, page)
+);
+
+CREATE TABLE IF NOT EXISTS daily_feature_set (
+    revision_id TEXT PRIMARY KEY,
+    trade_date TEXT NOT NULL,
+    feature_version TEXT NOT NULL,
+    source_revisions_json TEXT NOT NULL,
+    generated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS daily_feature (
+    revision_id TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    rank_type TEXT NOT NULL,
+    market INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    primary_industry_code TEXT NOT NULL,
+    signed_dark_activity REAL NOT NULL,
+    capital_intensity REAL NOT NULL,
+    control_coefficient REAL NOT NULL,
+    rank_percentile REAL NOT NULL,
+    turnover_percentile REAL NOT NULL,
+    dark_money_percentile REAL NOT NULL,
+    self_turnover_percentile_5 REAL,
+    self_turnover_percentile_10 REAL,
+    self_turnover_percentile_20 REAL,
+    self_turnover_percentile_60 REAL,
+    self_dark_money_percentile_5 REAL,
+    self_dark_money_percentile_10 REAL,
+    self_dark_money_percentile_20 REAL,
+    self_dark_money_percentile_60 REAL,
+    rank_change_1 INTEGER NOT NULL,
+    consecutive_inflow_days INTEGER NOT NULL,
+    money_acceleration INTEGER NOT NULL,
+    curve_available INTEGER NOT NULL,
+    morning_dark_share REAL NOT NULL,
+    afternoon_dark_share REAL NOT NULL,
+    late_dark_share REAL NOT NULL,
+    max_inflow_minute_index INTEGER NOT NULL,
+    max_outflow_minute_index INTEGER NOT NULL,
+    tail_acceleration INTEGER NOT NULL,
+    max_dark_drawdown INTEGER NOT NULL,
+    intraday_reversal INTEGER NOT NULL,
+    price_money_divergence INTEGER NOT NULL,
+    PRIMARY KEY (revision_id, rank_type, market, code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_feature_date
+    ON daily_feature (trade_date, rank_type, code);
+
+CREATE TABLE IF NOT EXISTS future_return_label (
+    signal_revision_id TEXT NOT NULL,
+    target_revision_id TEXT NOT NULL,
+    signal_date TEXT NOT NULL,
+    target_date TEXT NOT NULL,
+    horizon INTEGER NOT NULL,
+    rank_type TEXT NOT NULL,
+    market INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    return_rate REAL NOT NULL,
+    relative_industry_return REAL,
+    max_favorable_return REAL NOT NULL,
+    max_adverse_return REAL NOT NULL,
+    label_version TEXT NOT NULL,
+    generated_at TEXT NOT NULL,
+    PRIMARY KEY (signal_revision_id, target_revision_id, horizon, rank_type, market, code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_future_return_target
+    ON future_return_label (target_date, horizon, rank_type, code);
+
+CREATE TABLE IF NOT EXISTS database_maintenance (
+    name TEXT PRIMARY KEY,
+    completed_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS raw_response (
     run_id TEXT NOT NULL,
     snapshot_at TEXT NOT NULL,
@@ -199,6 +448,16 @@ CREATE TABLE IF NOT EXISTS collection_run (
 
 CREATE INDEX IF NOT EXISTS idx_collection_run_date
     ON collection_run (requested_date, snapshot_at DESC);
+
+CREATE TABLE IF NOT EXISTS collection_run_rollup (
+    rank_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    run_count INTEGER NOT NULL,
+    record_count INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    latest_success_at TEXT,
+    PRIMARY KEY (rank_type, status)
+);
 
 CREATE TABLE IF NOT EXISTS research_quality (
     trade_date TEXT NOT NULL,

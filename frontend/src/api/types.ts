@@ -80,6 +80,7 @@ export interface PageMeta {
   trade_date: string
   rank_type: RankType
   snapshot_kind: 'daily_close'
+  revision_id?: string
 }
 
 export interface SystemStatus {
@@ -89,6 +90,13 @@ export interface SystemStatus {
   trading_day: boolean
   latest_trading_day: string
   uptime_seconds: number
+  trading_calendar: {
+    valid_through?: string
+    updated_at?: string
+    source?: string
+    days_remaining: number
+    expired: boolean
+  }
 }
 
 export interface QualitySummary {
@@ -119,9 +127,100 @@ export interface StockArchiveQuality {
   kline_archived_at?: string
 }
 
+export interface DailyArchiveManifest {
+  trade_date: string
+  status: 'incomplete' | 'complete'
+  industry_close_rows: number
+  industry_money_rows: number
+  concept_close_rows: number
+  concept_money_rows: number
+  stock_close_rows: number
+  stock_money_rows: number
+  stock_kline_rows: number
+  stock_daily_kline_rows: number
+  expected_stock_rows: number
+  expected_stock_kline_rows: number
+  code_count: number
+  code_set_sha256: string
+  kline_source_counts: Record<string, number>
+  darktrade_contract: string
+  darktradetick_contract: string
+  stock_kline_contract: string
+  parser_version: string
+  validation_errors: string[]
+  completed_at?: string
+  updated_at?: string
+  current_revision_id?: string
+  revision_no?: number
+}
+
+export interface ArchiveRevision {
+  revision_id: string
+  trade_date: string
+  revision_no: number
+  previous_revision?: string
+  content_sha256: string
+  created_at: string
+}
+
+export interface DailyFeature {
+  revision_id: string
+  trade_date: string
+  rank_type: RankType
+  market: number
+  code: string
+  name: string
+  primary_industry_code?: string
+  signed_dark_activity: number
+  capital_intensity: number
+  control_coefficient: number
+  rank_percentile: number
+  turnover_percentile: number
+  dark_money_percentile: number
+  self_turnover_percentile_5?: number
+  self_turnover_percentile_10?: number
+  self_turnover_percentile_20?: number
+  self_turnover_percentile_60?: number
+  self_dark_money_percentile_5?: number
+  self_dark_money_percentile_10?: number
+  self_dark_money_percentile_20?: number
+  self_dark_money_percentile_60?: number
+  rank_change_1: number
+  consecutive_inflow_days: number
+  money_acceleration: number
+  curve_available: boolean
+  morning_dark_share: number
+  afternoon_dark_share: number
+  late_dark_share: number
+  max_inflow_minute_index: number
+  max_outflow_minute_index: number
+  tail_acceleration: number
+  max_dark_drawdown: number
+  intraday_reversal: boolean
+  price_money_divergence: boolean
+}
+
+export interface FutureReturnLabel {
+  signal_revision_id: string
+  target_revision_id: string
+  signal_date: string
+  target_date: string
+  horizon: number
+  rank_type: RankType
+  market: number
+  code: string
+  return_rate: number
+  relative_industry_return?: number
+  max_favorable_return: number
+  max_adverse_return: number
+  label_version: string
+  generated_at: string
+}
+
 export interface QualityMeta {
   trade_date: string
   stock_archive: StockArchiveQuality
+  archive_manifest: DailyArchiveManifest
 }
 
 export interface StockResearchPoint {
@@ -221,6 +320,7 @@ export interface FocusConceptCandidate {
   code: string
   name: string
   days: FocusDailyMetric[]
+  evaluations: FocusDayEvaluation[]
 }
 
 export interface FocusStockCandidate {
@@ -229,6 +329,29 @@ export interface FocusStockCandidate {
   name: string
   concepts: FocusConceptRef[]
   days: FocusDailyMetric[]
+  evaluations: FocusDayEvaluation[]
+}
+
+export interface FocusConditionEvaluation {
+  condition: FocusCondition
+  actual_value: number
+  passed: boolean
+}
+
+export interface FocusDayEvaluation {
+  trade_date: string
+  matched: boolean
+  conditions: FocusConditionEvaluation[]
+}
+
+export interface FocusRejection {
+  kind: 'concept' | 'stock'
+  market?: number
+  code: string
+  name: string
+  reason: 'condition_failed' | 'non_main_board' | 'st_excluded' | 'missing_daily_close'
+  failed_date?: string
+  evaluation?: FocusDayEvaluation
 }
 
 export interface FocusResult {
@@ -240,6 +363,8 @@ export interface FocusResult {
   request: FocusScanRequest
   concepts: FocusConceptCandidate[]
   stocks: FocusStockCandidate[]
+  rejections: FocusRejection[]
+  rejections_truncated: boolean
   stats: {
     concepts_evaluated: number
     concepts_qualified: number

@@ -67,7 +67,7 @@ func TestFetchStockKlines5mMapsUnadjusted48Bars(t *testing.T) {
 		t.Fatalf("unexpected kline points: %+v", points)
 	}
 	first := points[0]
-	if first.OpenPrice != 10.10 || first.ClosePrice != 10.20 || first.HighPrice != 10.30 || first.LowPrice != 10 || first.Volume != 1234 || first.Turnover != 567890 || first.Amplitude != 0.03 || first.ChangePct != 0.015 || first.ChangeValue != 0.15 || first.TurnoverRate != 0.025 {
+	if first.Source != graymarket.KlineSourceFiveMinute || first.OpenPrice != 10.10 || first.ClosePrice != 10.20 || first.HighPrice != 10.30 || first.LowPrice != 10 || first.Volume != 1234 || first.Turnover != 567890 || first.Amplitude != 0.03 || first.ChangePct != 0.015 || first.ChangeValue != 0.15 || first.TurnoverRate != 0.025 {
 		t.Fatalf("unexpected mapped kline: %+v", first)
 	}
 }
@@ -150,6 +150,9 @@ func TestFetchStockKlines5mAggregatesOneMinuteFallback(t *testing.T) {
 	}
 	if len(points) != 48 || points[0].SnapshotAt.Format("15:04") != "09:35" || points[47].SnapshotAt.Format("15:04") != "15:00" {
 		t.Fatalf("unexpected fallback bars: count=%d first=%s last=%s", len(points), points[0].SnapshotAt, points[len(points)-1].SnapshotAt)
+	}
+	if points[0].Source != graymarket.KlineSourceTrend241 {
+		t.Fatalf("fallback source was not recorded: %+v", points[0])
 	}
 	if points[0].OpenPrice != 10 || points[0].LowPrice != 10 || points[0].Volume != 5 || points[1].Volume != 5 || points[0].Turnover != 1250000 || math.Abs(points[0].TurnoverRate-0.0005) > 0.0000001 {
 		t.Fatalf("unexpected first aggregated bars: first=%+v second=%+v", points[0], points[1])

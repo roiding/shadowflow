@@ -219,6 +219,14 @@ func (s *fakeStore) HasStockKlineArchive(context.Context, string) (bool, error) 
 
 func (s *fakeStore) CleanupArchivedIntraday(context.Context, string) error { return nil }
 
+func (s *fakeStore) Maintain(context.Context, time.Time, int, int) (repository.MaintenanceResult, error) {
+	return repository.MaintenanceResult{}, nil
+}
+
+func (s *fakeStore) SealArchiveRevision(_ context.Context, tradeDate, revisionID string) (repository.ArchiveRevision, error) {
+	return repository.ArchiveRevision{TradeDate: tradeDate, RevisionID: revisionID}, nil
+}
+
 func (s *fakeStore) StartRun(_ context.Context, run repository.CollectionRun) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

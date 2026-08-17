@@ -11,6 +11,8 @@ services:
       TZ: Asia/Shanghai
       SHADOWFLOW_DATABASE_PATH: /data/shadowflow.db
       SHADOWFLOW_CALENDAR_PATH: /app/config/trading_calendar.json
+      SHADOWFLOW_CALENDAR_AUTO_UPDATE: "true"
+      SHADOWFLOW_CALENDAR_REFRESH_LEAD_DAYS: "45"
       SHADOWFLOW_STATIC_DIR: /app/web
       SHADOWFLOW_PAGE_SIZE: "100"
       SHADOWFLOW_REQUEST_TIMEOUT_SECONDS: "5"

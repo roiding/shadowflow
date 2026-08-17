@@ -55,6 +55,18 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate stock archive quality: %w", err)
 	}
+	if err := migrateArchiveMetadata(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate archive metadata: %w", err)
+	}
+	if err := migrateArchiveRevisions(store); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate archive revisions: %w", err)
+	}
+	if err := migrateAnalytics(store); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate analytics: %w", err)
+	}
 	if _, err := db.Exec(`UPDATE collection_run
 SET status='failed', finished_at=COALESCE(finished_at, ?), error_code='interrupted',
 error_message='process stopped before collection completed'
@@ -393,6 +405,9 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, runID, point.SnapshotAt.Format(timestampLay
 	if err := upsertQuality(ctx, tx, summary); err != nil {
 		return err
 	}
+	if err := refreshArchiveManifest(ctx, tx, snapshot.TradeDate); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -455,6 +470,13 @@ regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflo
 	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_research_5m WHERE trade_date=? AND money_rank=-1`, snapshot.TradeDate); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_kline_source AS source WHERE trade_date=?
+AND NOT EXISTS (SELECT 1 FROM rank_snapshot AS close
+WHERE close.trade_date=source.trade_date AND close.snapshot_kind='daily_close'
+AND close.rank_type='stock' AND close.market=source.market AND close.code=source.code
+AND close.quote_available=1)`, snapshot.TradeDate); err != nil {
+		return err
+	}
 	var klineRows int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM stock_research_5m WHERE trade_date=? AND kline_available=1`, snapshot.TradeDate).Scan(&klineRows); err != nil {
 		return err
@@ -474,10 +496,13 @@ updated_at=excluded.updated_at`,
 	if err != nil {
 		return err
 	}
+	if err := refreshArchiveManifest(ctx, tx, snapshot.TradeDate); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
-func (s *Store) SaveStockKlines(ctx context.Context, _ string, points []graymarket.StockKlinePoint) error {
+func (s *Store) SaveStockKlines(ctx context.Context, runID string, points []graymarket.StockKlinePoint) error {
 	if len(points) == 0 {
 		return graymarket.ErrNoData
 	}
@@ -487,6 +512,8 @@ func (s *Store) SaveStockKlines(ctx context.Context, _ string, points []graymark
 		code   string
 	}
 	pointIndexes := make(map[stockKey]map[int]struct{})
+	sources := make(map[stockKey]string)
+	fetchedAt := make(map[stockKey]time.Time)
 	for _, point := range points {
 		minuteIndex, ok := researchMinuteIndex(point.SnapshotAt)
 		if !ok || point.TradeDate != tradeDate || point.Code == "" {
@@ -500,6 +527,17 @@ func (s *Store) SaveStockKlines(ctx context.Context, _ string, points []graymark
 			return fmt.Errorf("duplicate stock kline point %s at %s", point.Code, point.SnapshotAt.Format("15:04"))
 		}
 		pointIndexes[key][minuteIndex] = struct{}{}
+		source := point.Source
+		if source == "" {
+			source = graymarket.KlineSourceUnknown
+		}
+		if previous := sources[key]; previous != "" && previous != source {
+			return fmt.Errorf("stock %s kline batch mixes sources %s and %s", point.Code, previous, source)
+		}
+		sources[key] = source
+		if point.FetchedAt.After(fetchedAt[key]) {
+			fetchedAt[key] = point.FetchedAt
+		}
 	}
 	for key, indexes := range pointIndexes {
 		if len(indexes) != 48 {
@@ -538,6 +576,23 @@ WHERE trade_date=? AND minute_index=? AND market=? AND code=?`, scaleE4(point.Op
 			return fmt.Errorf("stock money point is missing for %s at %s", point.Code, point.SnapshotAt.Format("15:04"))
 		}
 	}
+	now := time.Now().UTC()
+	for key, indexes := range pointIndexes {
+		at := fetchedAt[key]
+		if at.IsZero() {
+			at = now
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO stock_kline_source
+(trade_date,market,code,source,point_count,parser_version,fetched_at,run_id)
+VALUES (?,?,?,?,?,?,?,?)
+ON CONFLICT(trade_date,market,code) DO UPDATE SET source=excluded.source,
+point_count=excluded.point_count,parser_version=excluded.parser_version,
+fetched_at=excluded.fetched_at,run_id=excluded.run_id`,
+			tradeDate, key.market, key.code, sources[key], len(indexes), archiveParserVersion,
+			at.Format(timestampLayout), runID); err != nil {
+			return err
+		}
+	}
 	var expectedKlineStocks, expectedPoints, klineRows int
 	if err := tx.QueryRowContext(ctx, `SELECT expected_kline_stocks,expected_points FROM stock_archive_quality WHERE trade_date=?`, tradeDate).Scan(&expectedKlineStocks, &expectedPoints); err != nil {
 		return err
@@ -545,12 +600,15 @@ WHERE trade_date=? AND minute_index=? AND market=? AND code=?`, scaleE4(point.Op
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM stock_research_5m WHERE trade_date=? AND kline_available=1`, tradeDate).Scan(&klineRows); err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(timestampLayout)
+	nowText := now.Format(timestampLayout)
 	var archivedAt any
 	if klineRows == expectedKlineStocks*expectedPoints {
-		archivedAt = now
+		archivedAt = nowText
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE stock_archive_quality SET kline_rows=?,kline_archived_at=?,updated_at=? WHERE trade_date=?`, klineRows, archivedAt, now, tradeDate); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE stock_archive_quality SET kline_rows=?,kline_archived_at=?,updated_at=? WHERE trade_date=?`, klineRows, archivedAt, nowText, tradeDate); err != nil {
+		return err
+	}
+	if err := refreshArchiveManifest(ctx, tx, tradeDate); err != nil {
 		return err
 	}
 	return tx.Commit()

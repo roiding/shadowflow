@@ -83,6 +83,9 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 		r.Get("/research/export", server.exportResearch)
 		r.Get("/research/daily-close/export", server.exportDailyClose)
 		r.Get("/research/quality", server.quality)
+		r.Get("/research/revisions", server.archiveRevisions)
+		r.Get("/research/features", server.dailyFeatures)
+		r.Get("/research/labels", server.futureLabels)
 		r.Get("/collection-runs", server.collectionRuns)
 		r.Get("/focus/three-day", server.threeDayFocus)
 		r.Post("/focus/scan", server.focusScan)
@@ -169,7 +172,14 @@ func (s *Server) stockResearch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	points, err := s.store.StockResearchSeries(r.Context(), code, tradeDate)
+	revisionID := strings.TrimSpace(r.URL.Query().Get("revision_id"))
+	var points []graymarket.StockResearchPoint
+	var err error
+	if revisionID == "" {
+		points, err = s.store.StockResearchSeries(r.Context(), code, tradeDate)
+	} else {
+		points, err = s.store.StockResearchRevisionSeries(r.Context(), revisionID, code)
+	}
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -181,7 +191,8 @@ func (s *Server) stockResearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, envelope{Data: points, Meta: map[string]any{
-		"trade_date": tradeDate, "stock_code": code, "interval": "5m", "money_points": len(points), "kline_points": klinePoints,
+		"trade_date": tradeDate, "stock_code": code, "interval": "5m",
+		"money_points": len(points), "kline_points": klinePoints, "revision_id": revisionID,
 	}})
 }
 
@@ -381,6 +392,11 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	for _, item := range metrics.ResearchMissingSnapshot {
 		fmt.Fprintf(w, "shadowflow_research_missing_snapshots_total{rank_type=%q} %.0f\n", item.RankType, item.Value)
 	}
+	coverage := s.calendar.Coverage(time.Now().In(s.location))
+	writeMetricHelp(w, "shadowflow_trading_calendar_days_remaining", "Days remaining in the explicit exchange calendar", "gauge")
+	fmt.Fprintf(w, "shadowflow_trading_calendar_days_remaining %d\n", coverage.DaysRemaining)
+	writeMetricHelp(w, "shadowflow_trading_calendar_expired", "Whether the explicit exchange calendar has expired", "gauge")
+	fmt.Fprintf(w, "shadowflow_trading_calendar_expired %d\n", boolIntAPI(coverage.Expired))
 }
 
 func writeMetricHelp(w http.ResponseWriter, name, help, metricType string) {
@@ -532,12 +548,21 @@ func (s *Server) trend(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	records, err := s.store.ResearchSeries(r.Context(), rankType, chi.URLParam(r, "code"), from, to)
+	revisionID := strings.TrimSpace(r.URL.Query().Get("revision_id"))
+	var records []graymarket.RankRecord
+	var err error
+	if revisionID == "" {
+		records, err = s.store.ResearchSeries(r.Context(), rankType, chi.URLParam(r, "code"), from, to)
+	} else {
+		records, err = s.store.BoardResearchRevisionSeries(r.Context(), revisionID, rankType, chi.URLParam(r, "code"))
+	}
 	if err != nil {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, envelope{Data: records, Meta: map[string]any{"count": len(records), "interval": "5m", "from": from, "to": to}})
+	writeJSON(w, http.StatusOK, envelope{Data: records, Meta: map[string]any{
+		"count": len(records), "interval": "5m", "from": from, "to": to, "revision_id": revisionID,
+	}})
 }
 
 func (s *Server) dailyClose(w http.ResponseWriter, r *http.Request) {
@@ -585,7 +610,14 @@ func (s *Server) dailyClose(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "query_too_long", "q cannot exceed 50 characters")
 		return
 	}
-	records, total, err := s.store.DailyClosePage(r.Context(), rankType, tradeDate, search, sort, direction == "desc", pageSize, (page-1)*pageSize)
+	revisionID := strings.TrimSpace(r.URL.Query().Get("revision_id"))
+	var records []graymarket.RankRecord
+	var total int
+	if revisionID == "" {
+		records, total, err = s.store.DailyClosePage(r.Context(), rankType, tradeDate, search, sort, direction == "desc", pageSize, (page-1)*pageSize)
+	} else {
+		records, total, err = s.store.DailyCloseRevisionPage(r.Context(), revisionID, rankType, search, sort, direction == "desc", pageSize, (page-1)*pageSize)
+	}
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -594,7 +626,16 @@ func (s *Server) dailyClose(w http.ResponseWriter, r *http.Request) {
 	if total > 0 {
 		pages = (total + pageSize - 1) / pageSize
 	}
-	writeJSON(w, http.StatusOK, envelope{Data: records, Meta: map[string]any{"count": len(records), "total": total, "page": page, "page_size": pageSize, "pages": pages, "trade_date": tradeDate, "rank_type": rankType, "snapshot_kind": graymarket.SnapshotDailyClose}})
+	if revisionID == "" {
+		if manifest, manifestErr := s.store.ArchiveManifest(r.Context(), tradeDate); manifestErr == nil {
+			revisionID = manifest.CurrentRevisionID
+		}
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: records, Meta: map[string]any{
+		"count": len(records), "total": total, "page": page, "page_size": pageSize,
+		"pages": pages, "trade_date": tradeDate, "rank_type": rankType,
+		"snapshot_kind": graymarket.SnapshotDailyClose, "revision_id": revisionID,
+	}})
 }
 
 func pageParams(w http.ResponseWriter, r *http.Request) (int, int, bool) {
@@ -659,7 +700,105 @@ func (s *Server) quality(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, envelope{Data: result, Meta: map[string]any{"trade_date": tradeDate, "stock_archive": stockArchive}})
+	manifest, err := s.store.ArchiveManifest(r.Context(), tradeDate)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: result, Meta: map[string]any{
+		"trade_date": tradeDate, "stock_archive": stockArchive, "archive_manifest": manifest,
+	}})
+}
+
+func (s *Server) archiveRevisions(w http.ResponseWriter, r *http.Request) {
+	tradeDate, ok := dateParam(w, r.URL.Query().Get("trade_date"))
+	if !ok {
+		return
+	}
+	revisions, err := s.store.ArchiveRevisions(r.Context(), tradeDate)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	manifest, err := s.store.ArchiveManifest(r.Context(), tradeDate)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: revisions, Meta: map[string]any{
+		"trade_date": tradeDate, "count": len(revisions), "current_revision_id": manifest.CurrentRevisionID,
+	}})
+}
+
+func (s *Server) dailyFeatures(w http.ResponseWriter, r *http.Request) {
+	tradeDate, ok := dateParam(w, r.URL.Query().Get("trade_date"))
+	if !ok {
+		return
+	}
+	var rankType graymarket.RankType
+	if value := r.URL.Query().Get("type"); value != "" {
+		var err error
+		rankType, err = graymarket.ParseRankType(value)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_type", "type must be industry, concept, or stock")
+			return
+		}
+	}
+	revisionID := strings.TrimSpace(r.URL.Query().Get("revision_id"))
+	features, featureSet, err := s.store.DailyFeatures(r.Context(), tradeDate, revisionID, rankType)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: features, Meta: map[string]any{
+		"count": len(features), "trade_date": tradeDate, "rank_type": rankType,
+		"feature_set": featureSet,
+	}})
+}
+
+func (s *Server) futureLabels(w http.ResponseWriter, r *http.Request) {
+	tradeDate, ok := dateParam(w, r.URL.Query().Get("trade_date"))
+	if !ok {
+		return
+	}
+	horizon := 0
+	if value := r.URL.Query().Get("horizon"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed != 1 && parsed != 3 && parsed != 5 && parsed != 10 && parsed != 20 {
+			writeError(w, http.StatusBadRequest, "invalid_horizon", "horizon must be 1, 3, 5, 10, or 20")
+			return
+		}
+		horizon = parsed
+	}
+	var rankType graymarket.RankType
+	if value := r.URL.Query().Get("type"); value != "" {
+		var err error
+		rankType, err = graymarket.ParseRankType(value)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_type", "type must be industry, concept, or stock")
+			return
+		}
+	}
+	targetRevisionID := strings.TrimSpace(r.URL.Query().Get("target_revision_id"))
+	labels, err := s.store.FutureReturnLabels(r.Context(), tradeDate,
+		strings.TrimSpace(r.URL.Query().Get("revision_id")), targetRevisionID, horizon)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if rankType != "" {
+		filtered := labels[:0]
+		for _, label := range labels {
+			if label.RankType == rankType {
+				filtered = append(filtered, label)
+			}
+		}
+		labels = filtered
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: labels, Meta: map[string]any{
+		"count": len(labels), "trade_date": tradeDate, "rank_type": rankType,
+		"horizon": horizon, "target_revision_id": targetRevisionID,
+	}})
 }
 
 func (s *Server) collectionRuns(w http.ResponseWriter, r *http.Request) {
@@ -681,8 +820,15 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
 		"server_time": now, "timezone": "Asia/Shanghai", "market_status": s.marketStatus(now),
 		"trading_day": s.calendar.IsTradingDay(now), "latest_trading_day": s.latestTradingDay(now),
-		"uptime_seconds": int64(time.Since(s.started).Seconds()),
+		"uptime_seconds": int64(time.Since(s.started).Seconds()), "trading_calendar": s.calendar.Coverage(now),
 	}})
+}
+
+func boolIntAPI(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (s *Server) latestTradingDay(value time.Time) string {
@@ -738,21 +884,33 @@ func (s *Server) exportDailyClose(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	records, err := s.store.DailyCloseRecords(r.Context(), tradeDate)
+	revisionID := strings.TrimSpace(r.URL.Query().Get("revision_id"))
+	var records []graymarket.RankRecord
+	var err error
+	if revisionID == "" {
+		records, err = s.store.DailyCloseRecords(r.Context(), tradeDate)
+	} else {
+		records, err = s.store.DailyCloseRevisionRecords(r.Context(), revisionID)
+	}
 	if err != nil {
 		s.internalError(w, err)
 		return
+	}
+	if revisionID == "" {
+		if manifest, manifestErr := s.store.ArchiveManifest(r.Context(), tradeDate); manifestErr == nil {
+			revisionID = manifest.CurrentRevisionID
+		}
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="shadowflow-daily-close-%s.csv"`, tradeDate))
 	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
 	writer := csv.NewWriter(w)
-	_ = writer.Write([]string{"trade_date", "snapshot_kind", "snapshot_at", "rank_type", "rank", "code", "name",
+	_ = writer.Write([]string{"revision_id", "trade_date", "snapshot_kind", "snapshot_at", "rank_type", "rank", "code", "name",
 		"open_price", "high_price", "low_price", "close_price", "previous_close", "change_value", "change_pct",
 		"volume", "turnover", "turnover_rate", "amplitude", "quote_available", "latest_price_raw",
 		"dark_money", "regular_money", "main_money_inflow", "dark_activity", "dark_inflow_ratio", "up_count", "flat_count", "down_count"})
 	for _, record := range records {
-		_ = writer.Write([]string{record.TradeDate, string(graymarket.SnapshotDailyClose), record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, record.Name,
+		_ = writer.Write([]string{revisionID, record.TradeDate, string(graymarket.SnapshotDailyClose), record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, record.Name,
 			strconv.FormatFloat(record.OpenPrice, 'f', 4, 64), strconv.FormatFloat(record.HighPrice, 'f', 4, 64), strconv.FormatFloat(record.LowPrice, 'f', 4, 64),
 			strconv.FormatFloat(record.ClosePrice, 'f', 4, 64), strconv.FormatFloat(record.PreviousClose, 'f', 4, 64), strconv.FormatFloat(record.ChangeValue, 'f', 4, 64),
 			strconv.FormatFloat(record.ChangePct, 'f', 8, 64), strconv.FormatInt(record.Volume, 10), strconv.FormatInt(record.Turnover, 10),

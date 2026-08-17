@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/roiding/shadowflow/internal/graymarket"
@@ -211,6 +212,32 @@ func (s *Store) StockBoardRelations(ctx context.Context, stockCode, asOf string)
 
 func (s *Store) BoardStockRelations(ctx context.Context, boardType graymarket.BoardType, boardCode, asOf string) ([]graymarket.StockBoardRelation, error) {
 	return s.relationsAsOf(ctx, asOf, "board_type=? AND board_code=?", []any{string(boardType), boardCode}, "stock_code")
+}
+
+func (s *Store) BoardStockRelationsBatch(ctx context.Context, boardType graymarket.BoardType, boardCodes []string, asOf string) ([]graymarket.StockBoardRelation, error) {
+	unique := make([]string, 0, len(boardCodes))
+	seen := make(map[string]struct{}, len(boardCodes))
+	for _, code := range boardCodes {
+		if code == "" {
+			continue
+		}
+		if _, exists := seen[code]; exists {
+			continue
+		}
+		seen[code] = struct{}{}
+		unique = append(unique, code)
+	}
+	if len(unique) == 0 {
+		return []graymarket.StockBoardRelation{}, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(unique)), ",")
+	args := make([]any, 0, len(unique)+1)
+	args = append(args, string(boardType))
+	for _, code := range unique {
+		args = append(args, code)
+	}
+	return s.relationsAsOf(ctx, asOf, "board_type=? AND board_code IN ("+placeholders+")",
+		args, "board_code,stock_code")
 }
 
 func (s *Store) relationsAsOf(ctx context.Context, asOf, filter string, filterArgs []any, orderBy string) ([]graymarket.StockBoardRelation, error) {

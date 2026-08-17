@@ -9,9 +9,10 @@ import (
 )
 
 type fakeSource struct {
-	dates     []string
-	records   map[string][]graymarket.RankRecord
-	relations map[string][]graymarket.StockBoardRelation
+	dates      []string
+	records    map[string][]graymarket.RankRecord
+	relations  map[string][]graymarket.StockBoardRelation
+	batchCalls int
 }
 
 func (f *fakeSource) DailyCloseTradeDates(context.Context, string, int) ([]string, error) {
@@ -24,6 +25,18 @@ func (f *fakeSource) DailyCloseRecords(_ context.Context, date string) ([]grayma
 
 func (f *fakeSource) BoardStockRelations(_ context.Context, _ graymarket.BoardType, code, _ string) ([]graymarket.StockBoardRelation, error) {
 	return f.relations[code], nil
+}
+
+func (f *fakeSource) BoardStockRelationsBatch(_ context.Context, _ graymarket.BoardType, codes []string, _ string) ([]graymarket.StockBoardRelation, error) {
+	f.batchCalls++
+	var result []graymarket.StockBoardRelation
+	for _, code := range codes {
+		for _, relation := range f.relations[code] {
+			relation.BoardCode = code
+			result = append(result, relation)
+		}
+	}
+	return result, nil
 }
 
 func TestScanUsesThreeCompleteDailyClosesAndMainBoardNonSTRelations(t *testing.T) {
@@ -62,6 +75,26 @@ func TestScanUsesThreeCompleteDailyClosesAndMainBoardNonSTRelations(t *testing.T
 	}
 	if result.Stats.NonMainBoardExcluded != 1 || result.Stats.STExcluded != 1 {
 		t.Fatalf("unexpected exclusions: %+v", result.Stats)
+	}
+	if source.batchCalls != 1 {
+		t.Fatalf("qualified concept relations used %d batch calls, want 1", source.batchCalls)
+	}
+	if len(result.Concepts[0].Evaluations) != 3 || !result.Concepts[0].Evaluations[0].Matched ||
+		len(result.Rejections) < 3 {
+		t.Fatalf("condition explanations are missing: %+v", result)
+	}
+	var boundaryFailure *CandidateRejection
+	for index := range result.Rejections {
+		if result.Rejections[index].Code == "BK002" {
+			boundaryFailure = &result.Rejections[index]
+			break
+		}
+	}
+	if boundaryFailure == nil || boundaryFailure.FailedDate != dates[0] ||
+		boundaryFailure.Evaluation == nil || len(boundaryFailure.Evaluation.Conditions) == 0 ||
+		boundaryFailure.Evaluation.Conditions[0].ActualValue != 50_000_000_000 ||
+		boundaryFailure.Evaluation.Conditions[0].Passed {
+		t.Fatalf("boundary failure explanation is incorrect: %+v", boundaryFailure)
 	}
 }
 

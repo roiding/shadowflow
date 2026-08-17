@@ -9,15 +9,20 @@ import (
 )
 
 type Config struct {
-	ListenAddr       string
-	DatabasePath     string
-	CalendarPath     string
-	UpstreamBaseURL  string
-	QuoteBaseURLs    []string
-	PageSize         int
-	RequestTimeout   time.Duration
-	StaticDir        string
-	SchedulerEnabled bool
+	ListenAddr              string
+	DatabasePath            string
+	CalendarPath            string
+	CalendarAutoUpdate      bool
+	CalendarSourceURL       string
+	CalendarRefreshLeadDays int
+	UpstreamBaseURL         string
+	QuoteBaseURLs           []string
+	PageSize                int
+	RequestTimeout          time.Duration
+	StaticDir               string
+	SchedulerEnabled        bool
+	SuccessRunRetentionDays int
+	FailureRunRetentionDays int
 }
 
 func Load() (Config, error) {
@@ -33,20 +38,47 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	calendarAutoUpdate, err := envBool("SHADOWFLOW_CALENDAR_AUTO_UPDATE", true)
+	if err != nil {
+		return Config{}, err
+	}
+	calendarRefreshLeadDays, err := envInt("SHADOWFLOW_CALENDAR_REFRESH_LEAD_DAYS", 45)
+	if err != nil {
+		return Config{}, err
+	}
+	successRetentionDays, err := envInt("SHADOWFLOW_SUCCESS_RUN_RETENTION_DAYS", 30)
+	if err != nil {
+		return Config{}, err
+	}
+	failureRetentionDays, err := envInt("SHADOWFLOW_FAILURE_RUN_RETENTION_DAYS", 180)
+	if err != nil {
+		return Config{}, err
+	}
 	if pageSize < 1 || pageSize > 100 {
 		return Config{}, fmt.Errorf("SHADOWFLOW_PAGE_SIZE must be between 1 and 100")
 	}
+	if successRetentionDays < 1 || failureRetentionDays < successRetentionDays {
+		return Config{}, fmt.Errorf("run retention must satisfy 1 <= success days <= failure days")
+	}
+	if calendarRefreshLeadDays < 1 || calendarRefreshLeadDays > 180 {
+		return Config{}, fmt.Errorf("SHADOWFLOW_CALENDAR_REFRESH_LEAD_DAYS must be between 1 and 180")
+	}
 
 	return Config{
-		ListenAddr:       env("SHADOWFLOW_LISTEN_ADDR", ":8080"),
-		DatabasePath:     env("SHADOWFLOW_DATABASE_PATH", "./data/shadowflow.db"),
-		CalendarPath:     env("SHADOWFLOW_CALENDAR_PATH", "./config/trading_calendar.json"),
-		UpstreamBaseURL:  env("SHADOWFLOW_UPSTREAM_URL", "https://quotederivates.eastmoney.com/datacenter/darktrade"),
-		QuoteBaseURLs:    envList("SHADOWFLOW_QUOTE_BASE_URLS", []string{"https://push2.eastmoney.com", "https://push2delay.eastmoney.com"}),
-		PageSize:         pageSize,
-		RequestTimeout:   time.Duration(timeoutSeconds) * time.Second,
-		StaticDir:        os.Getenv("SHADOWFLOW_STATIC_DIR"),
-		SchedulerEnabled: schedulerEnabled,
+		ListenAddr:              env("SHADOWFLOW_LISTEN_ADDR", ":8080"),
+		DatabasePath:            env("SHADOWFLOW_DATABASE_PATH", "./data/shadowflow.db"),
+		CalendarPath:            env("SHADOWFLOW_CALENDAR_PATH", "./config/trading_calendar.json"),
+		CalendarAutoUpdate:      calendarAutoUpdate,
+		CalendarSourceURL:       env("SHADOWFLOW_CALENDAR_SOURCE_URL", "https://www.sse.com.cn/disclosure/dealinstruc/closed/"),
+		CalendarRefreshLeadDays: calendarRefreshLeadDays,
+		UpstreamBaseURL:         env("SHADOWFLOW_UPSTREAM_URL", "https://quotederivates.eastmoney.com/datacenter/darktrade"),
+		QuoteBaseURLs:           envList("SHADOWFLOW_QUOTE_BASE_URLS", []string{"https://push2.eastmoney.com", "https://push2delay.eastmoney.com"}),
+		PageSize:                pageSize,
+		RequestTimeout:          time.Duration(timeoutSeconds) * time.Second,
+		StaticDir:               os.Getenv("SHADOWFLOW_STATIC_DIR"),
+		SchedulerEnabled:        schedulerEnabled,
+		SuccessRunRetentionDays: successRetentionDays,
+		FailureRunRetentionDays: failureRetentionDays,
 	}, nil
 }
 

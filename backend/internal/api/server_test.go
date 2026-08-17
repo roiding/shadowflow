@@ -250,10 +250,91 @@ func TestStockResearchAndQualityAPIsExpose48PlusDailyArchive(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/research/quality?trade_date="+tradeDate, nil))
-	for _, expected := range []string{`"expected_points":48`, `"expected_kline_stocks":1`, `"money_rows":48`, `"kline_rows":48`, `"daily_close_rows":1`, `"daily_kline_rows":1`} {
+	for _, expected := range []string{`"expected_points":48`, `"expected_kline_stocks":1`, `"money_rows":48`, `"kline_rows":48`, `"daily_close_rows":1`, `"daily_kline_rows":1`, `"archive_manifest":`, `"status":"incomplete"`} {
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), expected) {
 			t.Fatalf("quality response missing %s: status=%d body=%s", expected, response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestRevisionFeatureAndVersionedExportAPIs(t *testing.T) {
+	server, store := testServer(t, "")
+	defer store.Close()
+	ctx := context.Background()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	tradeDate := "2026-08-14"
+	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+	moneyPoints := func(snapshot graymarket.RankSnapshot) []graymarket.MoneyPoint {
+		result := make([]graymarket.MoneyPoint, 0, len(snapshot.Records)*48)
+		for _, record := range snapshot.Records {
+			for _, session := range []struct{ start, end int }{{9*60 + 35, 11*60 + 30}, {13*60 + 5, 15 * 60}} {
+				for minute := session.start; minute <= session.end; minute += 5 {
+					at := time.Date(2026, 8, 14, minute/60, minute%60, 0, 0, location)
+					result = append(result, graymarket.MoneyPoint{TradeDate: tradeDate, SnapshotAt: at,
+						RankType: record.RankType, Rank: record.Rank, Market: record.Market, Code: record.Code,
+						Name: record.Name, DarkMoney: int64(len(result) % 48), MainMoneyInflow: 10, FetchedAt: closeAt})
+				}
+			}
+		}
+		return result
+	}
+	for _, record := range []graymarket.RankRecord{
+		{TradeDate: tradeDate, SnapshotAt: closeAt, RankType: graymarket.RankIndustry,
+			Rank: 1, Market: 90, Code: "BK001", Name: "industry", QuoteAvailable: true,
+			ClosePrice: 100, Turnover: 1000, DarkMoney: 10, FetchedAt: closeAt},
+		{TradeDate: tradeDate, SnapshotAt: closeAt, RankType: graymarket.RankConcept,
+			Rank: 1, Market: 90, Code: "BK002", Name: "concept", QuoteAvailable: true,
+			ClosePrice: 200, Turnover: 2000, DarkMoney: 20, FetchedAt: closeAt},
+	} {
+		snapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: record.RankType,
+			SnapshotAt: closeAt, Records: []graymarket.RankRecord{record}}
+		if err := store.SaveBoardArchive(ctx, "board-"+string(record.RankType), snapshot, moneyPoints(snapshot)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stock := graymarket.RankRecord{TradeDate: tradeDate, SnapshotAt: closeAt,
+		RankType: graymarket.RankStock, Rank: 1, Market: 0, Code: "000001", Name: "stock",
+		QuoteAvailable: true, ClosePrice: 10, Turnover: 500, DarkMoney: 50,
+		DarkActivity: 0.1, FetchedAt: closeAt}
+	stockSnapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: graymarket.RankStock,
+		SnapshotAt: closeAt, Records: []graymarket.RankRecord{stock}}
+	if err := store.SaveStockArchive(ctx, "stock", stockSnapshot, moneyPoints(stockSnapshot)); err != nil {
+		t.Fatal(err)
+	}
+	klines := make([]graymarket.StockKlinePoint, 0, 48)
+	for _, session := range []struct{ start, end int }{{9*60 + 35, 11*60 + 30}, {13*60 + 5, 15 * 60}} {
+		for minute := session.start; minute <= session.end; minute += 5 {
+			at := time.Date(2026, 8, 14, minute/60, minute%60, 0, 0, location)
+			klines = append(klines, graymarket.StockKlinePoint{TradeDate: tradeDate, SnapshotAt: at,
+				Market: 0, Code: stock.Code, OpenPrice: 10, HighPrice: 11, LowPrice: 9, ClosePrice: 10})
+		}
+	}
+	if err := store.SaveStockKlines(ctx, "kline", klines); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SealArchiveRevision(ctx, tradeDate, "api-revision"); err != nil {
+		t.Fatal(err)
+	}
+	for target, expected := range map[string]string{
+		"/api/v1/research/revisions?trade_date=" + tradeDate:                                                       `"revision_id":"api-revision"`,
+		"/api/v1/research/features?trade_date=" + tradeDate + "&type=stock":                                        `"feature_version":"daily-features-v1"`,
+		"/api/v1/research/labels?trade_date=" + tradeDate + "&horizon=5":                                           `"data":[]`,
+		"/api/v1/ranks/daily-close?type=stock&trade_date=" + tradeDate + "&revision_id=api-revision":               `"revision_id":"api-revision"`,
+		"/api/v1/boards/industry/BK001/trend?from=" + tradeDate + "&to=" + tradeDate + "&revision_id=api-revision": `"revision_id":"api-revision"`,
+		"/api/v1/stocks/000001/research-5m?trade_date=" + tradeDate + "&revision_id=api-revision":                  `"money_points":48`,
+	} {
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), expected) {
+			t.Fatalf("%s: status=%d body=%s", target, response.Code, response.Body.String())
+		}
+	}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet,
+		"/api/v1/research/daily-close/export?trade_date="+tradeDate+"&revision_id=api-revision", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "revision_id,trade_date") ||
+		!strings.Contains(response.Body.String(), "api-revision,"+tradeDate) {
+		t.Fatalf("versioned export is incomplete: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -284,7 +365,9 @@ func TestMetricsAndStaticSPA(t *testing.T) {
 
 	response = httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Header().Get("Content-Type"), "text/plain") || !strings.Contains(response.Body.String(), "shadowflow_collector_runs_total") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Header().Get("Content-Type"), "text/plain") ||
+		!strings.Contains(response.Body.String(), "shadowflow_collector_runs_total") ||
+		!strings.Contains(response.Body.String(), "shadowflow_trading_calendar_days_remaining") {
 		t.Fatalf("unexpected metrics response: status=%d content-type=%q body=%q", response.Code, response.Header().Get("Content-Type"), response.Body.String())
 	}
 }
@@ -308,7 +391,8 @@ func TestLatestTradingDayUsesPreviousWeekdayOnWeekend(t *testing.T) {
 	}
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/system/status", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"latest_trading_day":`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"latest_trading_day":`) ||
+		!strings.Contains(response.Body.String(), `"trading_calendar":`) {
 		t.Fatalf("status response did not expose latest trading day: status=%d body=%s", response.Code, response.Body.String())
 	}
 }

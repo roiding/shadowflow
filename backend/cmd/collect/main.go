@@ -17,7 +17,7 @@ import (
 
 func main() {
 	var task, date, at string
-	flag.StringVar(&task, "task", "", "task: boards, end-of-day, stock-kline, daily-close, relations, or cleanup")
+	flag.StringVar(&task, "task", "", "task: boards, end-of-day, stock-kline, daily-close, relations, cleanup, maintenance, or analytics")
 	flag.StringVar(&date, "date", "", "trade date in YYYY-MM-DD")
 	flag.StringVar(&at, "at", "15:00", "snapshot time in HH:MM for boards")
 	flag.Parse()
@@ -88,6 +88,21 @@ func main() {
 		}
 	case "cleanup":
 		if err := service.CleanupArchivedIntraday(ctx, date); err != nil {
+			fatal(err)
+		}
+	case "maintenance":
+		if _, err := service.Maintain(ctx, tradeDate, cfg.SuccessRunRetentionDays, cfg.FailureRunRetentionDays); err != nil {
+			fatal(err)
+		}
+	case "analytics":
+		manifest, err := store.ArchiveManifest(ctx, date)
+		if err != nil {
+			fatal(err)
+		}
+		if manifest.CurrentRevisionID == "" {
+			fatal(fmt.Errorf("no current complete archive revision for %s", date))
+		}
+		if err := store.RebuildAnalytics(ctx, manifest.CurrentRevisionID); err != nil {
 			fatal(err)
 		}
 	default:

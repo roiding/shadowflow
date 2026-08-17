@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"net/http"
 	"os"
@@ -39,7 +40,10 @@ func main() {
 	client := eastmoney.NewClient(cfg.UpstreamBaseURL, &http.Client{Timeout: cfg.RequestTimeout}, cfg.PageSize).
 		WithQuoteBaseURLs(cfg.QuoteBaseURLs)
 	collectorService := collector.New(client, store, logger)
-	schedulerService, err := scheduler.New(collectorService, calendar, logger)
+	schedulerService, err := scheduler.New(collectorService, calendar, logger, scheduler.Options{
+		SuccessRunRetentionDays: cfg.SuccessRunRetentionDays,
+		FailureRunRetentionDays: cfg.FailureRunRetentionDays,
+	})
 	if err != nil {
 		logger.Error("create scheduler", "error", err)
 		os.Exit(1)
@@ -52,6 +56,11 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if cfg.CalendarAutoUpdate {
+		go runCalendarUpdater(ctx, calendar, cfg, logger)
+	} else {
+		logger.Info("trading calendar auto-update disabled")
+	}
 	if cfg.SchedulerEnabled {
 		go schedulerService.Run(ctx)
 	} else {
@@ -72,5 +81,38 @@ func main() {
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("server shutdown", "error", err)
+	}
+}
+
+func runCalendarUpdater(ctx context.Context, calendar *tradingcalendar.Calendar, cfg config.Config, logger *slog.Logger) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSHandshakeTimeout = 30 * time.Second
+	transport.ForceAttemptHTTP2 = false
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12}
+	client := &http.Client{Transport: transport, Timeout: 45 * time.Second}
+	refresh := func() {
+		refreshCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		updated, err := calendar.RefreshIfNeeded(refreshCtx, client,
+			cfg.CalendarPath, cfg.CalendarSourceURL, time.Now().In(time.FixedZone("Asia/Shanghai", 8*60*60)),
+			cfg.CalendarRefreshLeadDays)
+		if err != nil {
+			logger.Warn("refresh trading calendar", "error", err, "coverage", calendar.Coverage(time.Now()))
+			return
+		}
+		if updated {
+			logger.Info("trading calendar updated", "coverage", calendar.Coverage(time.Now()))
+		}
+	}
+	refresh()
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh()
+		}
 	}
 }

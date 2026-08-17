@@ -114,6 +114,17 @@ ORDER BY snapshot_at`, string(rankType), code, from.Format(timestampLayout), to.
 	return scanRecords(rows)
 }
 
+func (s *Store) BoardResearchRevisionSeries(ctx context.Context, revisionID string, rankType graymarket.RankType, code string) ([]graymarket.RankRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT snapshot_at,trade_date,rank_type,rank,market,code,name,
+dark_money,regular_money,main_money_inflow,source_time,fetched_at
+FROM board_money_revision WHERE revision_id=? AND rank_type=? AND code=?
+ORDER BY snapshot_at,rank`, revisionID, string(rankType), code)
+	if err != nil {
+		return nil, err
+	}
+	return scanBoardMoneyRecords(rows)
+}
+
 func (s *Store) StockResearchSeries(ctx context.Context, code, tradeDate string) ([]graymarket.StockResearchPoint, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,
 open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,amplitude_ppm,change_pct_ppm,
@@ -122,6 +133,25 @@ FROM stock_research_5m WHERE trade_date=? AND code=? ORDER BY minute_index`, tra
 	if err != nil {
 		return nil, err
 	}
+	return scanStockResearchRows(rows, tradeDate)
+}
+
+func (s *Store) StockResearchRevisionSeries(ctx context.Context, revisionID, code string) ([]graymarket.StockResearchPoint, error) {
+	var tradeDate string
+	if err := s.db.QueryRowContext(ctx, `SELECT trade_date FROM daily_archive_revision WHERE revision_id=?`, revisionID).Scan(&tradeDate); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,
+open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,amplitude_ppm,change_pct_ppm,
+change_value_e4,turnover_rate_ppm,kline_available
+FROM stock_research_revision WHERE revision_id=? AND code=? ORDER BY minute_index`, revisionID, code)
+	if err != nil {
+		return nil, err
+	}
+	return scanStockResearchRows(rows, tradeDate)
+}
+
+func scanStockResearchRows(rows *sql.Rows, tradeDate string) ([]graymarket.StockResearchPoint, error) {
 	defer rows.Close()
 	clocks := expectedResearchTimes()
 	location := time.FixedZone("Asia/Shanghai", 8*60*60)
@@ -139,10 +169,11 @@ FROM stock_research_5m WHERE trade_date=? AND code=? ORDER BY minute_index`, tra
 			return nil, fmt.Errorf("invalid stock research minute index %d", minuteIndex)
 		}
 		point.TradeDate = tradeDate
-		point.SnapshotAt, err = time.ParseInLocation("2006-01-02 15:04", tradeDate+" "+clocks[minuteIndex], location)
-		if err != nil {
-			return nil, err
+		snapshotAt, parseErr := time.ParseInLocation("2006-01-02 15:04", tradeDate+" "+clocks[minuteIndex], location)
+		if parseErr != nil {
+			return nil, parseErr
 		}
+		point.SnapshotAt = snapshotAt
 		point.OpenPrice, point.HighPrice, point.LowPrice, point.ClosePrice = unscaleE4(open), unscaleE4(high), unscaleE4(low), unscaleE4(close)
 		point.Amplitude, point.ChangePct = unscalePPM(amplitude), unscalePPM(changePct)
 		point.ChangeValue, point.TurnoverRate = unscaleE4(changeValue), unscalePPM(turnoverRate)
@@ -159,6 +190,10 @@ FROM board_money_5m WHERE `+where+` ORDER BY snapshot_at,rank`, args...)
 	if err != nil {
 		return nil, err
 	}
+	return scanBoardMoneyRecords(rows)
+}
+
+func scanBoardMoneyRecords(rows *sql.Rows) ([]graymarket.RankRecord, error) {
 	defer rows.Close()
 	result := make([]graymarket.RankRecord, 0)
 	for rows.Next() {
@@ -215,6 +250,43 @@ func (s *Store) DailyClosePage(ctx context.Context, rankType graymarket.RankType
 	return records, total, err
 }
 
+func (s *Store) DailyCloseRevisionPage(ctx context.Context, revisionID string, rankType graymarket.RankType, search, sort string, descending bool, limit, offset int) ([]graymarket.RankRecord, int, error) {
+	sortColumns := map[string]string{
+		"rank": "rank", "name": "name", "code": "code", "dark_money": "dark_money",
+		"main_money_inflow": "main_money_inflow", "change_pct": "change_pct", "dark_activity": "dark_activity",
+		"open_price": "open_price", "high_price": "high_price", "low_price": "low_price", "close_price": "close_price",
+		"previous_close": "previous_close", "volume": "volume", "turnover": "turnover", "turnover_rate": "turnover_rate", "amplitude": "amplitude",
+	}
+	column, ok := sortColumns[sort]
+	if !ok {
+		column = "rank"
+	}
+	direction := "ASC"
+	if descending {
+		direction = "DESC"
+	}
+	where := `revision_id=? AND snapshot_kind='daily_close' AND rank_type=?`
+	args := []any{revisionID, string(rankType)}
+	if search != "" {
+		where += ` AND (name LIKE ? ESCAPE '\' OR code LIKE ? ESCAPE '\')`
+		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(search)
+		pattern := "%" + escaped + "%"
+		args = append(args, pattern, pattern)
+	}
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM rank_snapshot_revision WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	args = append(args, limit, offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot_revision WHERE `+where+
+		` ORDER BY `+column+` `+direction+`,rank ASC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	records, err := scanRecords(rows)
+	return records, total, err
+}
+
 func (s *Store) DailyCloseStocks(ctx context.Context, tradeDate string, stockCodes []string) ([]graymarket.RankRecord, error) {
 	if len(stockCodes) == 0 {
 		return []graymarket.RankRecord{}, nil
@@ -261,6 +333,16 @@ func (s *Store) DailyCloseRecords(ctx context.Context, tradeDate string) ([]gray
 	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
 WHERE trade_date=? AND snapshot_kind='daily_close'
 ORDER BY CASE rank_type WHEN 'industry' THEN 1 WHEN 'concept' THEN 2 ELSE 3 END,rank`, tradeDate)
+	if err != nil {
+		return nil, err
+	}
+	return scanRecords(rows)
+}
+
+func (s *Store) DailyCloseRevisionRecords(ctx context.Context, revisionID string) ([]graymarket.RankRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot_revision
+WHERE revision_id=? AND snapshot_kind='daily_close'
+ORDER BY CASE rank_type WHEN 'industry' THEN 1 WHEN 'concept' THEN 2 ELSE 3 END,rank`, revisionID)
 	if err != nil {
 		return nil, err
 	}
@@ -534,7 +616,11 @@ FROM collection_run WHERE requested_date=? ORDER BY snapshot_at DESC LIMIT ?`, t
 func (s *Store) OperationalMetrics(ctx context.Context) (repository.OperationalMetrics, error) {
 	var result repository.OperationalMetrics
 
-	rows, err := s.db.QueryContext(ctx, `SELECT rank_type,status,count(*) FROM collection_run GROUP BY rank_type,status ORDER BY rank_type,status`)
+	rows, err := s.db.QueryContext(ctx, `SELECT rank_type,status,sum(run_count) FROM (
+SELECT rank_type,status,count(*) AS run_count FROM collection_run GROUP BY rank_type,status
+UNION ALL
+SELECT rank_type,status,run_count FROM collection_run_rollup
+) GROUP BY rank_type,status ORDER BY rank_type,status`)
 	if err != nil {
 		return result, err
 	}
@@ -551,8 +637,13 @@ func (s *Store) OperationalMetrics(ctx context.Context) (repository.OperationalM
 		return result, err
 	}
 
-	rows, err = s.db.QueryContext(ctx, `SELECT rank_type,COALESCE(sum(fetched_total),0),COALESCE(sum(duration_ms),0)/1000.0,count(*)
-FROM collection_run WHERE status='success' GROUP BY rank_type ORDER BY rank_type`)
+	rows, err = s.db.QueryContext(ctx, `SELECT rank_type,coalesce(sum(record_count),0),
+coalesce(sum(duration_ms),0)/1000.0,coalesce(sum(run_count),0) FROM (
+SELECT rank_type,sum(fetched_total) AS record_count,sum(duration_ms) AS duration_ms,count(*) AS run_count
+FROM collection_run WHERE status='success' GROUP BY rank_type
+UNION ALL
+SELECT rank_type,record_count,duration_ms,run_count FROM collection_run_rollup WHERE status='success'
+) GROUP BY rank_type ORDER BY rank_type`)
 	if err != nil {
 		return result, err
 	}
@@ -572,8 +663,12 @@ FROM collection_run WHERE status='success' GROUP BY rank_type ORDER BY rank_type
 		return result, err
 	}
 
-	rows, err = s.db.QueryContext(ctx, `SELECT rank_type,max(finished_at) FROM collection_run
-WHERE status='success' AND finished_at IS NOT NULL GROUP BY rank_type ORDER BY rank_type`)
+	rows, err = s.db.QueryContext(ctx, `SELECT rank_type,max(finished_at) FROM (
+SELECT rank_type,finished_at FROM collection_run WHERE status='success' AND finished_at IS NOT NULL
+UNION ALL
+SELECT rank_type,latest_success_at AS finished_at FROM collection_run_rollup
+WHERE status='success' AND latest_success_at IS NOT NULL
+) GROUP BY rank_type ORDER BY rank_type`)
 	if err != nil {
 		return result, err
 	}

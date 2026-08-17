@@ -45,3 +45,37 @@ func TestLoadQuoteBaseURLs(t *testing.T) {
 		t.Fatalf("unexpected quote base URLs: %#v", cfg.QuoteBaseURLs)
 	}
 }
+
+func TestLoadRunRetentionDefaultsAndValidation(t *testing.T) {
+	t.Setenv("SHADOWFLOW_SUCCESS_RUN_RETENTION_DAYS", "")
+	t.Setenv("SHADOWFLOW_FAILURE_RUN_RETENTION_DAYS", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SuccessRunRetentionDays != 30 || cfg.FailureRunRetentionDays != 180 {
+		t.Fatalf("unexpected retention defaults: %+v", cfg)
+	}
+	t.Setenv("SHADOWFLOW_SUCCESS_RUN_RETENTION_DAYS", "180")
+	t.Setenv("SHADOWFLOW_FAILURE_RUN_RETENTION_DAYS", "30")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid retention order to be rejected")
+	}
+}
+
+func TestLoadCalendarUpdateDefaultsAndValidation(t *testing.T) {
+	t.Setenv("SHADOWFLOW_CALENDAR_AUTO_UPDATE", "")
+	t.Setenv("SHADOWFLOW_CALENDAR_REFRESH_LEAD_DAYS", "")
+	t.Setenv("SHADOWFLOW_CALENDAR_SOURCE_URL", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.CalendarAutoUpdate || cfg.CalendarRefreshLeadDays != 45 || cfg.CalendarSourceURL == "" {
+		t.Fatalf("unexpected calendar update defaults: %+v", cfg)
+	}
+	t.Setenv("SHADOWFLOW_CALENDAR_REFRESH_LEAD_DAYS", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid calendar refresh lead days")
+	}
+}

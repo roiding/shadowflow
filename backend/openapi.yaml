@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: ShadowFlow API
-  version: 0.3.0
-  description: 行业、概念分钟榜单、盘后研究数据，以及可按截面日还原的个股行业/概念归属接口。
+  version: 0.4.0
+  description: 行业、概念分钟榜单、不可变盘后研究版本、日级特征、未来收益标签，以及可按截面日还原的个股行业/概念归属接口。
 servers:
   - url: http://localhost:8080
 paths:
@@ -57,6 +57,10 @@ paths:
           description: 行业和概念读取 15:00 日终快照；个股读取收盘后采集并归一到 15:00 的完整榜单。
           schema: { type: string, enum: [industry, concept, stock], default: stock }
         - $ref: "#/components/parameters/TradeDate"
+        - name: revision_id
+          in: query
+          description: 不填时读取该交易日当前有效归档版本。
+          schema: { type: string }
         - name: q
           in: query
           schema: { type: string, maxLength: 50 }
@@ -92,6 +96,10 @@ paths:
         - $ref: "#/components/parameters/Code"
         - $ref: "#/components/parameters/From"
         - $ref: "#/components/parameters/To"
+        - name: revision_id
+          in: query
+          description: 指定后忽略日期范围并返回该不可变版本的完整 48 点。
+          schema: { type: string }
         - name: interval
           in: query
           schema: { type: string, const: 5m, default: 5m }
@@ -139,6 +147,10 @@ paths:
           required: true
           schema: { type: string, pattern: "^[0-9]{6}$", example: "300308" }
         - $ref: "#/components/parameters/TradeDate"
+        - name: revision_id
+          in: query
+          description: 不填时读取当前个股五分钟联合数据。
+          schema: { type: string }
       responses:
         "200":
           description: 48 个五分钟资金点及对应行情 K
@@ -199,6 +211,10 @@ paths:
       summary: 联合导出指定交易日的行业、概念、个股三类日终榜
       parameters:
         - $ref: "#/components/parameters/TradeDate"
+        - name: revision_id
+          in: query
+          description: 不填时导出当前有效归档版本。
+          schema: { type: string }
       responses:
         "200":
           description: UTF-8 BOM CSV；snapshot_kind 固定为 daily_close，snapshot_at 统一为 15:00
@@ -218,6 +234,73 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/QualityEnvelope"
+  /api/v1/research/revisions:
+    get:
+      summary: 查询指定交易日的不可变归档版本链
+      parameters:
+        - $ref: "#/components/parameters/TradeDate"
+      responses:
+        "200":
+          description: 按 revision_no 倒序排列的版本和当前指针
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/ArchiveRevision" } }
+                  meta: { type: object }
+        "400": { $ref: "#/components/responses/Error" }
+  /api/v1/research/features:
+    get:
+      summary: 查询指定归档版本的日级分析特征
+      parameters:
+        - $ref: "#/components/parameters/TradeDate"
+        - name: revision_id
+          in: query
+          schema: { type: string }
+        - name: type
+          in: query
+          schema: { type: string, enum: [industry, concept, stock] }
+      responses:
+        "200":
+          description: 版本化日级特征和特征集元数据
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/DailyFeature" } }
+                  meta: { type: object }
+        "400": { $ref: "#/components/responses/Error" }
+  /api/v1/research/labels:
+    get:
+      summary: 查询指定归档版本可用的未来收益标签
+      parameters:
+        - $ref: "#/components/parameters/TradeDate"
+        - name: revision_id
+          in: query
+          schema: { type: string }
+        - name: target_revision_id
+          in: query
+          description: 指定时读取被后续重跑替代的目标版本标签。
+          schema: { type: string }
+        - name: type
+          in: query
+          schema: { type: string, enum: [industry, concept, stock] }
+        - name: horizon
+          in: query
+          schema: { type: integer, enum: [1, 3, 5, 10, 20] }
+      responses:
+        "200":
+          description: 未来收益、相对行业收益、最大有利/不利波动标签
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/FutureReturnLabel" } }
+                  meta: { type: object }
+        "400": { $ref: "#/components/responses/Error" }
   /api/v1/trading-days:
     get:
       summary: 查询交易日列表
@@ -431,6 +514,18 @@ components:
         request: { $ref: "#/components/schemas/FocusScanRequest" }
         concepts: { type: array, items: { type: object } }
         stocks: { type: array, items: { type: object } }
+        rejections:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string, enum: [concept, stock] }
+              code: { type: string }
+              name: { type: string }
+              reason: { type: string, enum: [condition_failed, non_main_board, st_excluded, missing_daily_close] }
+              failed_date: { type: string, format: date }
+              evaluation: { type: object }
+        rejections_truncated: { type: boolean }
         stats: { type: object }
     RankRecord:
       type: object
@@ -544,6 +639,14 @@ components:
         trading_day: { type: boolean }
         latest_trading_day: { type: string, format: date }
         uptime_seconds: { type: integer, format: int64 }
+        trading_calendar:
+          type: object
+          properties:
+            valid_through: { type: string, format: date }
+            updated_at: { type: string, format: date-time }
+            source: { type: string }
+            days_remaining: { type: integer }
+            expired: { type: boolean }
     StockResearchPoint:
       type: object
       properties:
@@ -566,6 +669,69 @@ components:
         change_value: { type: number }
         turnover_rate: { type: number }
         kline_available: { type: boolean }
+    ArchiveRevision:
+      type: object
+      properties:
+        revision_id: { type: string }
+        trade_date: { type: string, format: date }
+        revision_no: { type: integer }
+        previous_revision: { type: string }
+        content_sha256: { type: string }
+        created_at: { type: string, format: date-time }
+    DailyFeature:
+      type: object
+      properties:
+        revision_id: { type: string }
+        trade_date: { type: string, format: date }
+        rank_type: { type: string, enum: [industry, concept, stock] }
+        market: { type: integer, format: int64 }
+        code: { type: string }
+        name: { type: string }
+        primary_industry_code: { type: string }
+        signed_dark_activity: { type: number }
+        capital_intensity: { type: number }
+        control_coefficient: { type: number }
+        rank_percentile: { type: number }
+        turnover_percentile: { type: number }
+        dark_money_percentile: { type: number }
+        self_turnover_percentile_5: { type: number, nullable: true }
+        self_turnover_percentile_10: { type: number, nullable: true }
+        self_turnover_percentile_20: { type: number, nullable: true }
+        self_turnover_percentile_60: { type: number, nullable: true }
+        self_dark_money_percentile_5: { type: number, nullable: true }
+        self_dark_money_percentile_10: { type: number, nullable: true }
+        self_dark_money_percentile_20: { type: number, nullable: true }
+        self_dark_money_percentile_60: { type: number, nullable: true }
+        rank_change_1: { type: integer, format: int64 }
+        consecutive_inflow_days: { type: integer }
+        money_acceleration: { type: integer, format: int64 }
+        curve_available: { type: boolean }
+        morning_dark_share: { type: number }
+        afternoon_dark_share: { type: number }
+        late_dark_share: { type: number }
+        max_inflow_minute_index: { type: integer }
+        max_outflow_minute_index: { type: integer }
+        tail_acceleration: { type: integer, format: int64 }
+        max_dark_drawdown: { type: integer, format: int64 }
+        intraday_reversal: { type: boolean }
+        price_money_divergence: { type: boolean }
+    FutureReturnLabel:
+      type: object
+      properties:
+        signal_revision_id: { type: string }
+        target_revision_id: { type: string }
+        signal_date: { type: string, format: date }
+        target_date: { type: string, format: date }
+        horizon: { type: integer, enum: [1, 3, 5, 10, 20] }
+        rank_type: { type: string, enum: [industry, concept, stock] }
+        market: { type: integer, format: int64 }
+        code: { type: string }
+        return_rate: { type: number }
+        relative_industry_return: { type: number, nullable: true }
+        max_favorable_return: { type: number }
+        max_adverse_return: { type: number }
+        label_version: { type: string }
+        generated_at: { type: string, format: date-time }
     QualityEnvelope:
       type: object
       properties:
@@ -602,6 +768,33 @@ components:
                 daily_kline_rows: { type: integer }
                 money_archived_at: { type: string, format: date-time }
                 kline_archived_at: { type: string, format: date-time }
+            archive_manifest:
+              type: object
+              properties:
+                trade_date: { type: string, format: date }
+                status: { type: string, enum: [incomplete, complete] }
+                industry_close_rows: { type: integer }
+                industry_money_rows: { type: integer }
+                concept_close_rows: { type: integer }
+                concept_money_rows: { type: integer }
+                stock_close_rows: { type: integer }
+                stock_money_rows: { type: integer }
+                stock_kline_rows: { type: integer }
+                stock_daily_kline_rows: { type: integer }
+                expected_stock_rows: { type: integer }
+                expected_stock_kline_rows: { type: integer }
+                code_count: { type: integer }
+                code_set_sha256: { type: string }
+                kline_source_counts: { type: object, additionalProperties: { type: integer } }
+                darktrade_contract: { type: string }
+                darktradetick_contract: { type: string }
+                stock_kline_contract: { type: string }
+                parser_version: { type: string }
+                validation_errors: { type: array, items: { type: string } }
+                completed_at: { type: string, format: date-time }
+                updated_at: { type: string, format: date-time }
+                current_revision_id: { type: string }
+                revision_no: { type: integer }
     ErrorEnvelope:
       type: object
       properties:

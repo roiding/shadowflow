@@ -15,6 +15,7 @@ const (
 	minConsecutiveDays = 1
 	maxConsecutiveDays = 60
 	maxConditions      = 20
+	maxRejections      = 200
 )
 
 var ErrInvalidRequest = errors.New("invalid focus scan request")
@@ -23,6 +24,10 @@ type Source interface {
 	DailyCloseTradeDates(context.Context, string, int) ([]string, error)
 	DailyCloseRecords(context.Context, string) ([]graymarket.RankRecord, error)
 	BoardStockRelations(context.Context, graymarket.BoardType, string, string) ([]graymarket.StockBoardRelation, error)
+}
+
+type BatchRelationSource interface {
+	BoardStockRelationsBatch(context.Context, graymarket.BoardType, []string, string) ([]graymarket.StockBoardRelation, error)
 }
 
 type Service struct{ source Source }
@@ -139,17 +144,41 @@ type ConceptRef struct {
 }
 
 type ConceptCandidate struct {
-	Code string        `json:"code"`
-	Name string        `json:"name"`
-	Days []DailyMetric `json:"days"`
+	Code        string          `json:"code"`
+	Name        string          `json:"name"`
+	Days        []DailyMetric   `json:"days"`
+	Evaluations []DayEvaluation `json:"evaluations"`
 }
 
 type StockCandidate struct {
-	Market   int64         `json:"market"`
-	Code     string        `json:"code"`
-	Name     string        `json:"name"`
-	Concepts []ConceptRef  `json:"concepts"`
-	Days     []DailyMetric `json:"days"`
+	Market      int64           `json:"market"`
+	Code        string          `json:"code"`
+	Name        string          `json:"name"`
+	Concepts    []ConceptRef    `json:"concepts"`
+	Days        []DailyMetric   `json:"days"`
+	Evaluations []DayEvaluation `json:"evaluations"`
+}
+
+type ConditionEvaluation struct {
+	Condition   Condition `json:"condition"`
+	ActualValue float64   `json:"actual_value"`
+	Passed      bool      `json:"passed"`
+}
+
+type DayEvaluation struct {
+	TradeDate  string                `json:"trade_date"`
+	Matched    bool                  `json:"matched"`
+	Conditions []ConditionEvaluation `json:"conditions"`
+}
+
+type CandidateRejection struct {
+	Kind       string         `json:"kind"`
+	Market     int64          `json:"market,omitempty"`
+	Code       string         `json:"code"`
+	Name       string         `json:"name"`
+	Reason     string         `json:"reason"`
+	FailedDate string         `json:"failed_date,omitempty"`
+	Evaluation *DayEvaluation `json:"evaluation,omitempty"`
 }
 
 type Stats struct {
@@ -163,15 +192,30 @@ type Stats struct {
 }
 
 type Result struct {
-	RequestedAsOf string             `json:"requested_as_of"`
-	AsOf          string             `json:"as_of,omitempty"`
-	Ready         bool               `json:"ready"`
-	TradeDates    []string           `json:"trade_dates"`
-	RequiredDays  int                `json:"required_days"`
-	Request       ScanRequest        `json:"request"`
-	Concepts      []ConceptCandidate `json:"concepts"`
-	Stocks        []StockCandidate   `json:"stocks"`
-	Stats         Stats              `json:"stats"`
+	RequestedAsOf       string               `json:"requested_as_of"`
+	AsOf                string               `json:"as_of,omitempty"`
+	Ready               bool                 `json:"ready"`
+	TradeDates          []string             `json:"trade_dates"`
+	RequiredDays        int                  `json:"required_days"`
+	Request             ScanRequest          `json:"request"`
+	Concepts            []ConceptCandidate   `json:"concepts"`
+	Stocks              []StockCandidate     `json:"stocks"`
+	Rejections          []CandidateRejection `json:"rejections"`
+	RejectionsTruncated bool                 `json:"rejections_truncated"`
+	Stats               Stats                `json:"stats"`
+}
+
+type rejectionBuffer struct {
+	items     []CandidateRejection
+	truncated bool
+}
+
+func (buffer *rejectionBuffer) add(item CandidateRejection) {
+	if len(buffer.items) >= maxRejections {
+		buffer.truncated = true
+		return
+	}
+	buffer.items = append(buffer.items, item)
 }
 
 func New(source Source) *Service { return &Service{source: source} }
@@ -186,7 +230,8 @@ func (s *Service) ScanWith(ctx context.Context, request ScanRequest) (Result, er
 		return Result{}, err
 	}
 	result := Result{RequestedAsOf: request.AsOf, RequiredDays: request.ConsecutiveDays, Request: request,
-		Concepts: []ConceptCandidate{}, Stocks: []StockCandidate{}, TradeDates: []string{}}
+		Concepts: []ConceptCandidate{}, Stocks: []StockCandidate{}, TradeDates: []string{},
+		Rejections: []CandidateRejection{}}
 	dates, err := s.source.DailyCloseTradeDates(ctx, request.AsOf, request.ConsecutiveDays)
 	if err != nil {
 		return result, err
@@ -208,18 +253,35 @@ func (s *Service) ScanWith(ctx context.Context, request ScanRequest) (Result, er
 		stockRows[date] = indexRecords(records, graymarket.RankStock)
 	}
 
-	result.Concepts, result.Stats = evaluateConcepts(dates, conceptRows, request)
+	rejections := &rejectionBuffer{}
+	result.Concepts, result.Stats = evaluateConcepts(dates, conceptRows, request, rejections)
 	universe := make(map[string]graymarket.StockBoardRelation)
 	memberships := make(map[string][]ConceptRef)
 	if request.StockScope.RequireQualifiedConcepts {
+		conceptByCode := make(map[string]ConceptRef, len(result.Concepts))
+		conceptCodes := make([]string, 0, len(result.Concepts))
 		for _, concept := range result.Concepts {
-			relations, err := s.source.BoardStockRelations(ctx, graymarket.BoardConcept, concept.Code, result.AsOf)
+			conceptCodes = append(conceptCodes, concept.Code)
+			conceptByCode[concept.Code] = ConceptRef{Code: concept.Code, Name: concept.Name}
+		}
+		var relations []graymarket.StockBoardRelation
+		if batch, ok := s.source.(BatchRelationSource); ok {
+			relations, err = batch.BoardStockRelationsBatch(ctx, graymarket.BoardConcept, conceptCodes, result.AsOf)
 			if err != nil {
 				return result, err
 			}
-			ref := ConceptRef{Code: concept.Code, Name: concept.Name}
-			for _, relation := range relations {
-				universe[relation.StockCode] = relation
+		} else {
+			for _, conceptCode := range conceptCodes {
+				items, relationErr := s.source.BoardStockRelations(ctx, graymarket.BoardConcept, conceptCode, result.AsOf)
+				if relationErr != nil {
+					return result, relationErr
+				}
+				relations = append(relations, items...)
+			}
+		}
+		for _, relation := range relations {
+			universe[relation.StockCode] = relation
+			if ref, exists := conceptByCode[relation.BoardCode]; exists {
 				memberships[relation.StockCode] = append(memberships[relation.StockCode], ref)
 			}
 		}
@@ -228,7 +290,8 @@ func (s *Service) ScanWith(ctx context.Context, request ScanRequest) (Result, er
 			universe[code] = graymarket.StockBoardRelation{StockMarket: record.Market, StockCode: code, StockName: record.Name}
 		}
 	}
-	result.Stocks, result.Stats = evaluateStocks(dates, stockRows, universe, memberships, request, result.Stats)
+	result.Stocks, result.Stats = evaluateStocks(dates, stockRows, universe, memberships, request, result.Stats, rejections)
+	result.Rejections, result.RejectionsTruncated = rejections.items, rejections.truncated
 	return result, nil
 }
 
@@ -294,7 +357,7 @@ func validOperator(operator Operator) bool {
 	}
 }
 
-func evaluateConcepts(dates []string, records map[string]map[string]graymarket.RankRecord, request ScanRequest) ([]ConceptCandidate, Stats) {
+func evaluateConcepts(dates []string, records map[string]map[string]graymarket.RankRecord, request ScanRequest, rejections *rejectionBuffer) ([]ConceptCandidate, Stats) {
 	var stats Stats
 	codes := commonCodes(dates, records)
 	stats.ConceptsEvaluated = len(codes)
@@ -305,8 +368,13 @@ func evaluateConcepts(dates []string, records map[string]map[string]graymarket.R
 		for _, date := range dates {
 			metric := metricFor(records[date][code])
 			candidate.Days = append(candidate.Days, metric)
-			if !conditionsMatch(metric, request.ConceptConditions, request.ConceptMatch) {
+			evaluation := evaluateConditions(metric, request.ConceptConditions, request.ConceptMatch)
+			candidate.Evaluations = append(candidate.Evaluations, evaluation)
+			if !evaluation.Matched {
 				qualified = false
+				rejections.add(CandidateRejection{Kind: "concept", Code: code, Name: candidate.Name,
+					Reason: "condition_failed", FailedDate: date, Evaluation: &evaluation})
+				break
 			}
 		}
 		if qualified {
@@ -318,7 +386,7 @@ func evaluateConcepts(dates []string, records map[string]map[string]graymarket.R
 	return result, stats
 }
 
-func evaluateStocks(dates []string, records map[string]map[string]graymarket.RankRecord, universe map[string]graymarket.StockBoardRelation, memberships map[string][]ConceptRef, request ScanRequest, stats Stats) ([]StockCandidate, Stats) {
+func evaluateStocks(dates []string, records map[string]map[string]graymarket.RankRecord, universe map[string]graymarket.StockBoardRelation, memberships map[string][]ConceptRef, request ScanRequest, stats Stats, rejections *rejectionBuffer) ([]StockCandidate, Stats) {
 	codes := make([]string, 0, len(universe))
 	for code := range universe {
 		codes = append(codes, code)
@@ -330,10 +398,14 @@ func evaluateStocks(dates []string, records map[string]map[string]graymarket.Ran
 		relation := universe[code]
 		if request.StockScope.MainBoardOnly && !isMainBoard(relation.StockMarket, code) {
 			stats.NonMainBoardExcluded++
+			rejections.add(CandidateRejection{Kind: "stock", Market: relation.StockMarket, Code: code,
+				Name: relation.StockName, Reason: "non_main_board"})
 			continue
 		}
 		if request.StockScope.ExcludeST && isST(relation.StockName) {
 			stats.STExcluded++
+			rejections.add(CandidateRejection{Kind: "stock", Market: relation.StockMarket, Code: code,
+				Name: relation.StockName, Reason: "st_excluded"})
 			continue
 		}
 		candidate := StockCandidate{Market: relation.StockMarket, Code: code, Name: relation.StockName, Concepts: memberships[code]}
@@ -346,12 +418,20 @@ func evaluateStocks(dates []string, records map[string]map[string]graymarket.Ran
 			if !exists || !record.QuoteAvailable {
 				stats.MissingRecordExcluded++
 				qualified = false
+				rejections.add(CandidateRejection{Kind: "stock", Market: relation.StockMarket, Code: code,
+					Name: relation.StockName, Reason: "missing_daily_close", FailedDate: date})
 				break
 			}
 			metric := metricFor(record)
 			candidate.Days = append(candidate.Days, metric)
-			if !conditionsMatch(metric, request.StockConditions, request.StockMatch) {
+			evaluation := evaluateConditions(metric, request.StockConditions, request.StockMatch)
+			candidate.Evaluations = append(candidate.Evaluations, evaluation)
+			if !evaluation.Matched {
 				qualified = false
+				rejections.add(CandidateRejection{Kind: "stock", Market: relation.StockMarket, Code: code,
+					Name: relation.StockName, Reason: "condition_failed", FailedDate: date,
+					Evaluation: &evaluation})
+				break
 			}
 		}
 		if qualified {
@@ -404,19 +484,32 @@ func metricFor(record graymarket.RankRecord) DailyMetric {
 }
 
 func conditionsMatch(metric DailyMetric, conditions []Condition, mode MatchMode) bool {
+	return evaluateConditions(metric, conditions, mode).Matched
+}
+
+func evaluateConditions(metric DailyMetric, conditions []Condition, mode MatchMode) DayEvaluation {
+	evaluation := DayEvaluation{TradeDate: metric.TradeDate, Conditions: []ConditionEvaluation{}}
 	if len(conditions) == 0 {
-		return true
+		evaluation.Matched = true
+		return evaluation
 	}
+	matches := 0
 	for _, condition := range conditions {
-		matches := conditionMatches(metric, condition)
-		if mode == MatchAll && !matches {
-			return false
-		}
-		if mode == MatchAny && matches {
-			return true
+		actual := metricValue(metric, condition.Field)
+		passed := conditionMatches(metric, condition)
+		evaluation.Conditions = append(evaluation.Conditions, ConditionEvaluation{
+			Condition: condition, ActualValue: actual, Passed: passed,
+		})
+		if passed {
+			matches++
 		}
 	}
-	return mode == MatchAll
+	if mode == MatchAll {
+		evaluation.Matched = matches == len(conditions)
+	} else {
+		evaluation.Matched = matches > 0
+	}
+	return evaluation
 }
 
 func conditionMatches(metric DailyMetric, condition Condition) bool {
