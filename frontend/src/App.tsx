@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Activity, AlertTriangle, BarChart3, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Download, Gauge, Info, LineChart, RefreshCw, Search, Server, Table2, Wifi, WifiOff } from 'lucide-react'
 import { api } from './api/client'
 import type { BoardStockQuote, FocusResult, FocusScanRequest, RankRecord, RankType, SystemStatus } from './api/types'
@@ -137,7 +137,9 @@ function App() {
   })
   const qualityQuery = useQuery({ queryKey: ['quality', qualityDate], queryFn: async () => api.quality(qualityDate), enabled: view === 'quality' && Boolean(qualityDate) })
   const runsQuery = useQuery({ queryKey: ['runs', qualityDate], queryFn: async () => (await api.runs(qualityDate)).data ?? [], enabled: view === 'quality' && Boolean(qualityDate) })
-  const focusQuery = useQuery({ queryKey: ['focus-scan', focusRequest], queryFn: async () => (await api.focusScan(focusRequest)).data as FocusResult, enabled: view === 'focus' && Boolean(focusRequest.as_of) })
+  const focusScan = useMutation({
+    mutationFn: async (request: FocusScanRequest) => (await api.focusScan(request)).data as FocusResult,
+  })
 
   useEffect(() => {
     if (!latestTradingDay) return
@@ -199,7 +201,7 @@ function App() {
         <button className={view === 'quality' ? 'selected' : ''} onClick={() => setView('quality')}><Server size={16} />采集质量</button>
       </div>
       {view === 'monitor' && <MonitorView boardType={boardType} setBoardType={setBoardType} records={visibleRecords} allRecords={records} selected={selected} selectedCode={selectedId} setSelectedCode={setSelectedCode} query={query} setQuery={setQuery} onSort={onSort} sort={sort} metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} series={intradayQuery.data ?? []} loading={intradayQuery.isLoading} rankError={rankQuery.error} seriesError={intradayQuery.error} requestMs={rankQuery.data?.requestMs} status={statusQuery.data} tradeDate={monitorDate} staleSnapshot={staleSnapshot} mobilePane={mobilePane} setMobilePane={setMobilePane} stocks={boardQuotesQuery.data?.data ?? []} stocksLoading={boardQuotesQuery.isLoading || boardQuotesQuery.isFetching} stocksError={boardQuotesQuery.error} quoteMeta={boardQuotesQuery.data?.meta} />}
-      {view === 'focus' && <FocusView request={focusRequest} onScan={(value) => { if (JSON.stringify(value) === JSON.stringify(focusRequest)) void focusQuery.refetch(); else setFocusRequest(value) }} result={focusQuery.data} loading={focusQuery.isLoading || focusQuery.isFetching} error={focusQuery.error} />}
+      {view === 'focus' && <FocusView request={focusRequest} onScan={(value) => { setFocusRequest(value); focusScan.mutate(value) }} result={focusScan.data} loading={focusScan.isPending} error={focusScan.error} />}
       {view === 'history' && <HistoryView boardType={boardType} setBoardType={setBoardType} selected={historicalSelected} historyRanks={historyRanksQuery.data ?? []} historyCode={historyCode} setHistoryCode={setHistoryCode} historyDate={historyDate} setHistoryDate={setHistoryDate} historyAt={historyAt} setHistoryAt={setHistoryAt} metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} series={trendQuery.data ?? []} loading={trendQuery.isLoading || historyRanksQuery.isLoading} error={trendQuery.error ?? historyRanksQuery.error} from={historyFrom} to={historyTo} setFrom={setHistoryFrom} setTo={setHistoryTo} />}
       {view === 'stocks' && <StockView date={stockDate} setDate={(value) => { setStockDate(value); setStockPage(1) }} records={stockRecords} total={stockMeta?.total ?? 0} query={stockQuery} setQuery={setStockQuery} sort={stockSort} onSort={onStockSort} page={stockPage} pages={stockMeta?.pages ?? 0} setPage={setStockPage} loading={stocksQuery.isLoading || stocksQuery.isFetching} error={stocksQuery.error} />}
       {view === 'quality' && <QualityView date={qualityDate} setDate={setQualityDate} quality={(qualityQuery.data?.data ?? []).filter((item): item is NonNullable<typeof item> & { rank_type: BoardType } => item.rank_type !== 'stock')} stockQuality={qualityQuery.data?.meta?.stock_archive} manifest={qualityQuery.data?.meta?.archive_manifest} runs={runsQuery.data ?? []} loading={qualityQuery.isLoading || runsQuery.isLoading} error={qualityQuery.error ?? runsQuery.error} />}

@@ -9,13 +9,17 @@ import (
 )
 
 type fakeSource struct {
-	dates      []string
-	records    map[string][]graymarket.RankRecord
-	relations  map[string][]graymarket.StockBoardRelation
-	batchCalls int
+	dates          []string
+	records        map[string][]graymarket.RankRecord
+	relations      map[string][]graymarket.StockBoardRelation
+	batchCalls     int
+	requestedAsOf  string
+	requestedLimit int
 }
 
-func (f *fakeSource) DailyCloseTradeDates(context.Context, string, int) ([]string, error) {
+func (f *fakeSource) DailyCloseTradeDates(_ context.Context, asOf string, limit int) ([]string, error) {
+	f.requestedAsOf = asOf
+	f.requestedLimit = limit
 	return append([]string(nil), f.dates...), nil
 }
 
@@ -139,6 +143,50 @@ func TestScanWithSupportsDynamicDaysConditionsAndStockUniverse(t *testing.T) {
 	}
 	if result.Stocks[0].Code != "300001" || len(result.Stocks[0].Concepts) != 0 {
 		t.Fatalf("unexpected unrestricted stock result: %+v", result.Stocks)
+	}
+	if source.requestedAsOf != request.AsOf || source.requestedLimit != request.ConsecutiveDays {
+		t.Fatalf("daily close request=(%q, %d), want=(%q, %d)", source.requestedAsOf, source.requestedLimit, request.AsOf, request.ConsecutiveDays)
+	}
+}
+
+func TestScanWithEvaluatesAllConditionsWithinEachDay(t *testing.T) {
+	dates := []string{"2026-08-12", "2026-08-13", "2026-08-14"}
+	source := &fakeSource{dates: dates, records: map[string][]graymarket.RankRecord{
+		"2026-08-12": {
+			focusRecord("2026-08-12", graymarket.RankConcept, 90, "BK001", "跨日拼接", 100, 0.01, -0.01, 0),
+			focusRecord("2026-08-12", graymarket.RankConcept, 90, "BK002", "逐日通过", 100, 0.01, -0.01, 0),
+		},
+		"2026-08-13": {
+			focusRecord("2026-08-13", graymarket.RankConcept, 90, "BK001", "跨日拼接", 10, 0.01, -0.01, 0),
+			focusRecord("2026-08-13", graymarket.RankConcept, 90, "BK002", "逐日通过", 100, 0.01, -0.01, 0),
+		},
+		"2026-08-14": {
+			focusRecord("2026-08-14", graymarket.RankConcept, 90, "BK001", "跨日拼接", 100, 0.01, 0.01, 0),
+			focusRecord("2026-08-14", graymarket.RankConcept, 90, "BK002", "逐日通过", 100, 0.01, -0.01, 0),
+		},
+	}}
+	request := ScanRequest{
+		AsOf: "2026-08-14", ConsecutiveDays: 2,
+		ConceptMatch: MatchAll, ConceptConditions: []Condition{
+			{Field: FieldTurnover, Operator: OperatorGT, Value: 50},
+			{Field: FieldChangePct, Operator: OperatorLT, Value: 0},
+		},
+		StockMatch: MatchAll,
+		StockScope: StockScope{MainBoardOnly: false, ExcludeST: false, RequireQualifiedConcepts: false},
+	}
+
+	result, err := New(source).ScanWith(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.TradeDates) != 2 || result.TradeDates[0] != "2026-08-13" || result.TradeDates[1] != "2026-08-14" {
+		t.Fatalf("trade dates=%v, want last 2 dates", result.TradeDates)
+	}
+	if len(result.Concepts) != 1 || result.Concepts[0].Code != "BK002" || len(result.Concepts[0].Days) != 2 {
+		t.Fatalf("conditions were not evaluated per day: %+v", result.Concepts)
+	}
+	if source.requestedLimit != 2 {
+		t.Fatalf("daily close limit=%d, want 2", source.requestedLimit)
 	}
 }
 

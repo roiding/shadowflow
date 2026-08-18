@@ -236,6 +236,9 @@ func (s *Service) ScanWith(ctx context.Context, request ScanRequest) (Result, er
 	if err != nil {
 		return result, err
 	}
+	if len(dates) > request.ConsecutiveDays {
+		dates = dates[len(dates)-request.ConsecutiveDays:]
+	}
 	result.TradeDates = dates
 	if len(dates) < request.ConsecutiveDays {
 		return result, nil
