@@ -168,7 +168,7 @@ function FocusRejections({ rejections, truncated }: { rejections: FocusRejection
   const reasonLabels: Record<FocusRejection['reason'], string> = {
     condition_failed: '条件未通过', non_main_board: '非主板', st_excluded: 'ST', missing_daily_close: '缺少日终行情',
   }
-  return <details className="focus-rejections"><summary>未入选解释 <span>{rejections.length}{truncated ? '+' : ''}</span></summary><div className="focus-rejection-table-wrap"><table><thead><tr><th>标的</th><th>原因</th><th>失败日</th><th>条件</th><th>实际值</th></tr></thead><tbody>{rejections.map((item) => { const failed = item.evaluation?.conditions.find((condition) => !condition.passed); return <tr key={`${item.kind}-${item.code}`}><td><strong>{item.name}</strong><small>{item.code}</small></td><td>{reasonLabels[item.reason]}</td><td>{item.failed_date ?? '--'}</td><td>{failed ? focusField(failed.condition.field).label : '--'}</td><td>{failed ? formatFocusActual(failed.condition.field, failed.actual_value) : '--'}</td></tr> })}</tbody></table></div></details>
+  return <details className="focus-rejections"><summary>未入选解释 <span>{rejections.length}{truncated ? '+' : ''}</span></summary><div className="focus-rejection-table-wrap"><table><thead><tr><th>标的</th><th>原因</th><th>失败日</th><th>条件</th><th>实际值</th></tr></thead><tbody>{rejections.map((item) => { const failed = item.evaluation?.conditions.find((condition) => !condition.passed); return <tr key={`${item.kind}-${item.code}`}><td><strong>{item.name}</strong><small>{item.code}</small></td><td>{reasonLabels[item.reason]}</td><td>{item.failed_date ?? '--'}</td><td>{failed ? focusField(failed.condition.field).label : '--'}</td><td>{failed ? failed.available ? formatFocusActual(failed.condition.field, failed.actual_value) : '数据不可用' : '--'}</td></tr> })}</tbody></table></div></details>
 }
 
 function RulePanel({ title, match, conditions, setMatch, setConditions }: {
@@ -194,6 +194,7 @@ function displayConditionValue(value: number, factor: number) {
 }
 
 function formatFocusMetric(day: FocusDailyMetric, field: FocusField) {
+  if (!focusMetricAvailable(day, field)) return '--'
   const value = day[field]
   const meta = focusField(field)
   if (['turnover', 'dark_money', 'regular_money', 'main_money_inflow'].includes(field)) return formatMoney(value)
@@ -201,6 +202,12 @@ function formatFocusMetric(day: FocusDailyMetric, field: FocusField) {
   if (field === 'control_coefficient') return `${formatNumber(value, 2)}%`
   if (field === 'close_price') return `${formatNumber(value, 2)}元`
   return `${formatNumber(value)}${meta.unit}`
+}
+
+function focusMetricAvailable(day: FocusDailyMetric, field: FocusField) {
+  if (['control_coefficient', 'dark_money', 'regular_money', 'main_money_inflow'].includes(field)) return day.money_available
+  if (['dark_activity', 'dark_inflow_ratio', 'rank', 'up_count', 'flat_count', 'down_count'].includes(field)) return day.rank_available
+  return true
 }
 
 function formatFocusActual(field: FocusField, value: number) {

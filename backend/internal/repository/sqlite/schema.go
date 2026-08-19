@@ -26,13 +26,13 @@ CREATE TABLE IF NOT EXISTS rank_intraday_work (
 	change_pct REAL NOT NULL,
 	volume INTEGER NOT NULL DEFAULT 0,
 	turnover INTEGER NOT NULL DEFAULT 0,
-	turnover_rate REAL NOT NULL DEFAULT 0,
-	amplitude REAL NOT NULL DEFAULT 0,
-	quote_available INTEGER NOT NULL DEFAULT 0,
+    turnover_rate REAL NOT NULL DEFAULT 0,
+    amplitude REAL NOT NULL DEFAULT 0,
+    quote_available INTEGER NOT NULL DEFAULT 0,
+    money_available INTEGER NOT NULL DEFAULT 0,
     dark_money INTEGER NOT NULL,
     regular_money INTEGER NOT NULL,
     main_money_inflow INTEGER NOT NULL,
-    money_available INTEGER NOT NULL DEFAULT 0,
     dark_activity REAL NOT NULL,
     dark_inflow_ratio REAL NOT NULL,
     up_count INTEGER NOT NULL,
@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS rank_snapshot (
 	turnover_rate REAL NOT NULL DEFAULT 0,
 	amplitude REAL NOT NULL DEFAULT 0,
 	quote_available INTEGER NOT NULL DEFAULT 0,
+    money_available INTEGER NOT NULL DEFAULT 0,
     dark_money INTEGER NOT NULL,
     regular_money INTEGER NOT NULL,
     main_money_inflow INTEGER NOT NULL,
@@ -113,6 +114,7 @@ CREATE TABLE IF NOT EXISTS board_money_5m (
     dark_money INTEGER NOT NULL,
     regular_money INTEGER NOT NULL,
     main_money_inflow INTEGER NOT NULL,
+    money_available INTEGER NOT NULL DEFAULT 0,
     source_time INTEGER NOT NULL,
     fetched_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -252,6 +254,7 @@ CREATE TABLE IF NOT EXISTS rank_snapshot_revision (
     turnover_rate REAL NOT NULL,
     amplitude REAL NOT NULL,
     quote_available INTEGER NOT NULL,
+    money_available INTEGER NOT NULL DEFAULT 0,
     dark_money INTEGER NOT NULL,
     regular_money INTEGER NOT NULL,
     main_money_inflow INTEGER NOT NULL,
@@ -285,6 +288,7 @@ CREATE TABLE IF NOT EXISTS board_money_revision (
     dark_money INTEGER NOT NULL,
     regular_money INTEGER NOT NULL,
     main_money_inflow INTEGER NOT NULL,
+    money_available INTEGER NOT NULL DEFAULT 0,
     source_time INTEGER NOT NULL,
     fetched_at TEXT NOT NULL,
     PRIMARY KEY (revision_id, snapshot_at, rank_type, code)
@@ -300,6 +304,7 @@ CREATE TABLE IF NOT EXISTS stock_research_revision (
     dark_money INTEGER NOT NULL,
     regular_money INTEGER NOT NULL,
     main_money_inflow INTEGER NOT NULL,
+    money_available INTEGER NOT NULL DEFAULT 0,
     open_price_e4 INTEGER NOT NULL,
     high_price_e4 INTEGER NOT NULL,
     low_price_e4 INTEGER NOT NULL,
@@ -576,4 +581,20 @@ CREATE TABLE IF NOT EXISTS relation_sync_run (
 
 CREATE INDEX IF NOT EXISTS idx_relation_sync_run_date
     ON relation_sync_run (trade_date, started_at DESC);
+
+-- The morning full catalog is the universe contract for that trading day.
+-- End-of-day archive collection must reuse it instead of silently switching
+-- to whatever the live catalog looks like later in the session.
+CREATE TABLE IF NOT EXISTS board_catalog_snapshot (
+    trade_date TEXT NOT NULL,
+    board_type TEXT NOT NULL CHECK (board_type IN ('industry', 'concept')),
+    board_code TEXT NOT NULL,
+    board_name TEXT NOT NULL,
+    source_order INTEGER NOT NULL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (trade_date, board_type, board_code)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_board_catalog_snapshot_date
+    ON board_catalog_snapshot (trade_date, board_type, source_order);
 `

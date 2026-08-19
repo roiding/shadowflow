@@ -153,27 +153,27 @@ func copyArchiveRevision(ctx context.Context, tx *sql.Tx, tradeDate, revisionID 
 		{`INSERT INTO rank_snapshot_revision
 (revision_id,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,
 quote_time,latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,
-change_pct,volume,turnover,turnover_rate,amplitude,quote_available,dark_money,regular_money,
+change_pct,volume,turnover,turnover_rate,amplitude,quote_available,money_available,dark_money,regular_money,
 main_money_inflow,dark_activity,dark_inflow_ratio,up_count,flat_count,down_count,leader_name,
 leader_code,source_version,source_sort_flag,source_descending,fetched_at)
 SELECT ?,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,
 quote_time,latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,
-change_pct,volume,turnover,turnover_rate,amplitude,quote_available,dark_money,regular_money,
+change_pct,volume,turnover,turnover_rate,amplitude,quote_available,money_available,dark_money,regular_money,
 main_money_inflow,dark_activity,dark_inflow_ratio,up_count,flat_count,down_count,leader_name,
 leader_code,source_version,source_sort_flag,source_descending,fetched_at
 FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close'`, []any{revisionID, tradeDate}},
 		{`INSERT INTO board_money_revision
 (revision_id,run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,
-regular_money,main_money_inflow,source_time,fetched_at)
+regular_money,main_money_inflow,money_available,source_time,fetched_at)
 SELECT ?,run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,
-regular_money,main_money_inflow,source_time,fetched_at
+regular_money,main_money_inflow,money_available,source_time,fetched_at
 FROM board_money_5m WHERE trade_date=?`, []any{revisionID, tradeDate}},
 		{`INSERT INTO stock_research_revision
 (revision_id,trade_date,minute_index,market,code,money_rank,dark_money,regular_money,
-main_money_inflow,open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,
+main_money_inflow,money_available,open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,
 amplitude_ppm,change_pct_ppm,change_value_e4,turnover_rate_ppm,kline_available)
 SELECT ?,trade_date,minute_index,market,code,money_rank,dark_money,regular_money,
-main_money_inflow,open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,
+main_money_inflow,money_available,open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,
 amplitude_ppm,change_pct_ppm,change_value_e4,turnover_rate_ppm,kline_available
 FROM stock_research_5m WHERE trade_date=?`, []any{revisionID, tradeDate}},
 		{`INSERT INTO stock_kline_source_revision
@@ -201,15 +201,15 @@ func hashArchiveRevision(ctx context.Context, tx *sql.Tx, revisionID string) (st
 	}{
 		{"rank_snapshot", `SELECT snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,
 quote_time,latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,
-change_pct,volume,turnover,turnover_rate,amplitude,quote_available,dark_money,regular_money,
+change_pct,volume,turnover,turnover_rate,amplitude,quote_available,money_available,dark_money,regular_money,
 main_money_inflow,dark_activity,dark_inflow_ratio,up_count,flat_count,down_count,leader_name,
 leader_code,source_version,source_sort_flag,source_descending
 FROM rank_snapshot_revision WHERE revision_id=? ORDER BY rank_type,market,code`},
 		{"board_money", `SELECT snapshot_at,trade_date,rank_type,rank,market,code,name,
-dark_money,regular_money,main_money_inflow,source_time
+dark_money,regular_money,main_money_inflow,money_available,source_time
 FROM board_money_revision WHERE revision_id=? ORDER BY rank_type,snapshot_at,market,code`},
 		{"stock_research", `SELECT trade_date,minute_index,market,code,money_rank,dark_money,
-regular_money,main_money_inflow,open_price_e4,high_price_e4,low_price_e4,close_price_e4,
+regular_money,main_money_inflow,money_available,open_price_e4,high_price_e4,low_price_e4,close_price_e4,
 volume,turnover,amplitude_ppm,change_pct_ppm,change_value_e4,turnover_rate_ppm,kline_available
 FROM stock_research_revision WHERE revision_id=? ORDER BY market,code,minute_index`},
 		{"stock_kline_source", `SELECT trade_date,market,code,source,point_count,parser_version

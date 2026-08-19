@@ -427,7 +427,7 @@ func TestMergeBoardArchiveUniverseUsesFullCatalog(t *testing.T) {
 	if merged.Records[1].Code != "BK1013" || merged.Records[1].Name != "华为欧拉" {
 		t.Fatalf("catalog-only board was not retained: %+v", merged.Records[1])
 	}
-	if merged.Records[1].DarkMoney != 0 || merged.Records[1].Market != 90 {
+	if merged.Records[1].DarkMoney != 0 || merged.Records[1].Market != 90 || merged.Records[1].Rank != 0 || merged.Records[1].MoneyAvailable {
 		t.Fatalf("catalog-only board should retain no fabricated dark rank fields: %+v", merged.Records[1])
 	}
 }
@@ -443,6 +443,9 @@ func TestMergeStockArchiveUniverseUsesFullMarketQuotes(t *testing.T) {
 	}
 	if len(merged.Records) != 2 || merged.Records[1].Code != "688836" || merged.Records[1].Name != "榜外" {
 		t.Fatalf("full-market stock was not retained: %+v", merged.Records)
+	}
+	if merged.Records[1].Rank != 0 || merged.Records[1].MoneyAvailable {
+		t.Fatalf("catalog-only stock should not receive fabricated ranking or money availability: %+v", merged.Records[1])
 	}
 }
 

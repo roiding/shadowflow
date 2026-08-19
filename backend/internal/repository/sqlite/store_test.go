@@ -424,6 +424,33 @@ func TestSaveBoardArchivePersists48MoneyPointsAndOneClose(t *testing.T) {
 	}
 }
 
+func TestSaveBoardArchiveMaterializesUnavailableMoneyPoints(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+	record := graymarket.RankRecord{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankConcept,
+		Rank: 0, Market: 90, Code: "BK-MISSING", Name: "缺资金", FetchedAt: closeAt}
+	snapshot := graymarket.RankSnapshot{TradeDate: record.TradeDate, RankType: record.RankType,
+		SnapshotAt: closeAt, Records: []graymarket.RankRecord{record}}
+	points := testMoneyPoints(snapshot)[:24]
+	if err := store.SaveBoardArchive(ctx, "board-partial", snapshot, points); err != nil {
+		t.Fatal(err)
+	}
+	var total, available int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*),coalesce(sum(money_available),0)
+FROM board_money_5m WHERE trade_date=? AND rank_type='concept'`, record.TradeDate).Scan(&total, &available); err != nil {
+		t.Fatal(err)
+	}
+	if total != 48 || available != 24 {
+		t.Fatalf("unavailable board money was not materialized explicitly: total=%d available=%d", total, available)
+	}
+}
+
 func TestSaveStockArchivePersists48MoneyBarsAndDailyK(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {
@@ -486,12 +513,15 @@ func TestSaveStockArchivePersists48MoneyBarsAndDailyK(t *testing.T) {
 		t.Fatal(err)
 	}
 	series, err = store.StockResearchSeries(ctx, "000001", snapshot.TradeDate)
-	if err != nil || len(series) != 48 || !series[0].KlineAvailable || series[0].OpenPrice != 10.1234 || series[0].DarkMoney != 999 {
-		t.Fatalf("stock archive rerun did not preserve klines while updating money: series=%+v err=%v", series, err)
+	if err != nil || len(series) != 48 || series[0].KlineAvailable || series[0].OpenPrice != 0 || series[0].DarkMoney != 999 {
+		t.Fatalf("stock archive rerun did not invalidate stale klines while updating money: series=%+v err=%v", series, err)
 	}
 	quality, err = store.StockArchiveQuality(ctx, snapshot.TradeDate)
-	if err != nil || quality.KlineRows != 48 || quality.KlineArchivedAt == nil {
-		t.Fatalf("stock archive rerun reset completed kline quality: quality=%+v err=%v", quality, err)
+	if err != nil || quality.KlineRows != 0 || quality.KlineArchivedAt != nil {
+		t.Fatalf("stock archive rerun retained stale kline quality: quality=%+v err=%v", quality, err)
+	}
+	if err := store.SaveStockKlines(ctx, "stock-kline-rerun", klines); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -702,6 +732,9 @@ func TestArchiveRevisionPreservesSupersededDailyData(t *testing.T) {
 	if err := store.SaveStockArchive(ctx, "stock-v2", snapshot, points); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SaveStockKlines(ctx, "kline-v2", testStockKlines(tradeDate, location, stock)); err != nil {
+		t.Fatal(err)
+	}
 	second, err := store.SealArchiveRevision(ctx, tradeDate, "revision-two")
 	if err != nil {
 		t.Fatal(err)
@@ -753,6 +786,9 @@ WHERE revision_id='revision-two' AND code='000001' AND minute_index=0`).Scan(&se
 		}
 	}
 	if err := store.SaveStockArchive(ctx, "stock-v3", snapshot, points); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveStockKlines(ctx, "kline-v3", testStockKlines(tradeDate, location, stock)); err != nil {
 		t.Fatal(err)
 	}
 	third, err := store.SealArchiveRevision(ctx, tradeDate, "revision-three")
@@ -890,6 +926,9 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, dates[0], "000001", 0, "stock", "BK-IND", "in
 	rerunSnapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: graymarket.RankStock,
 		SnapshotAt: closeAt, Records: []graymarket.RankRecord{rerunStock}}
 	if err := store.SaveStockArchive(ctx, "rerun-stock", rerunSnapshot, testMoneyPoints(rerunSnapshot)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveStockKlines(ctx, "rerun-kline", testStockKlines(tradeDate, location, rerunStock)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SealArchiveRevision(ctx, tradeDate, "revision-5b"); err != nil {

@@ -52,6 +52,7 @@ export interface RankRecord {
   turnover_rate: number
   amplitude: number
   quote_available: boolean
+  money_available: boolean
   dark_money: number
   regular_money: number
   main_money_inflow: number
@@ -242,6 +243,7 @@ export interface StockResearchPoint {
   change_pct: number
   change_value: number
   turnover_rate: number
+  money_available: boolean
   kline_available: boolean
 }
 
@@ -284,6 +286,8 @@ export interface FocusDailyMetric {
   flat_count: number
   down_count: number
   control_coefficient: number
+  money_available: boolean
+  rank_available: boolean
 }
 
 export type FocusField = 'turnover' | 'turnover_rate' | 'change_pct' | 'control_coefficient' | 'dark_money' | 'regular_money' | 'main_money_inflow' | 'dark_activity' | 'dark_inflow_ratio' | 'rank' | 'close_price' | 'amplitude' | 'volume' | 'up_count' | 'flat_count' | 'down_count'
@@ -335,6 +339,7 @@ export interface FocusStockCandidate {
 export interface FocusConditionEvaluation {
   condition: FocusCondition
   actual_value: number
+  available: boolean
   passed: boolean
 }
 

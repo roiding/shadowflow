@@ -136,6 +136,8 @@ type DailyMetric struct {
 	FlatCount          int64   `json:"flat_count"`
 	DownCount          int64   `json:"down_count"`
 	ControlCoefficient float64 `json:"control_coefficient"`
+	MoneyAvailable     bool    `json:"money_available"`
+	RankAvailable      bool    `json:"rank_available"`
 }
 
 type ConceptRef struct {
@@ -162,6 +164,7 @@ type StockCandidate struct {
 type ConditionEvaluation struct {
 	Condition   Condition `json:"condition"`
 	ActualValue float64   `json:"actual_value"`
+	Available   bool      `json:"available"`
 	Passed      bool      `json:"passed"`
 }
 
@@ -483,7 +486,8 @@ func metricFor(record graymarket.RankRecord) DailyMetric {
 		ChangePct: record.ChangePct, DarkMoney: record.DarkMoney, RegularMoney: record.RegularMoney,
 		MainMoneyInflow: record.MainMoneyInflow, DarkActivity: record.DarkActivity, DarkInflowRatio: record.DarkInflowRatio,
 		Rank: record.Rank, ClosePrice: record.ClosePrice, Amplitude: record.Amplitude, Volume: record.Volume,
-		UpCount: record.UpCount, FlatCount: record.FlatCount, DownCount: record.DownCount, ControlCoefficient: control}
+		UpCount: record.UpCount, FlatCount: record.FlatCount, DownCount: record.DownCount, ControlCoefficient: control,
+		MoneyAvailable: record.MoneyAvailable, RankAvailable: record.Rank > 0}
 }
 
 func conditionsMatch(metric DailyMetric, conditions []Condition, mode MatchMode) bool {
@@ -499,9 +503,10 @@ func evaluateConditions(metric DailyMetric, conditions []Condition, mode MatchMo
 	matches := 0
 	for _, condition := range conditions {
 		actual := metricValue(metric, condition.Field)
+		available := metricFieldAvailable(metric, condition.Field)
 		passed := conditionMatches(metric, condition)
 		evaluation.Conditions = append(evaluation.Conditions, ConditionEvaluation{
-			Condition: condition, ActualValue: actual, Passed: passed,
+			Condition: condition, ActualValue: actual, Available: available, Passed: passed,
 		})
 		if passed {
 			matches++
@@ -516,6 +521,9 @@ func evaluateConditions(metric DailyMetric, conditions []Condition, mode MatchMo
 }
 
 func conditionMatches(metric DailyMetric, condition Condition) bool {
+	if !metricFieldAvailable(metric, condition.Field) {
+		return false
+	}
 	actual := metricValue(metric, condition.Field)
 	switch condition.Operator {
 	case OperatorGT:
@@ -532,6 +540,17 @@ func conditionMatches(metric DailyMetric, condition Condition) bool {
 		return condition.MaxValue != nil && actual >= condition.Value && actual <= *condition.MaxValue
 	default:
 		return false
+	}
+}
+
+func metricFieldAvailable(metric DailyMetric, field Field) bool {
+	switch field {
+	case FieldControlCoefficient, FieldDarkMoney, FieldRegularMoney, FieldMainMoneyInflow:
+		return metric.MoneyAvailable
+	case FieldDarkActivity, FieldDarkInflowRatio, FieldRank, FieldUpCount, FieldFlatCount, FieldDownCount:
+		return metric.RankAvailable
+	default:
+		return true
 	}
 }
 

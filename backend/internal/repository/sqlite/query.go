@@ -16,7 +16,7 @@ import (
 
 const recordColumns = `snapshot_at,trade_date,rank_type,rank,market,code,name,quote_time,
 	latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,change_pct,
-	volume,turnover,turnover_rate,amplitude,quote_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+	volume,turnover,turnover_rate,amplitude,quote_available,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at`
 
 func (s *Store) LatestRank(ctx context.Context, rankType graymarket.RankType) ([]graymarket.RankRecord, error) {
@@ -116,7 +116,7 @@ ORDER BY snapshot_at`, string(rankType), code, from.Format(timestampLayout), to.
 
 func (s *Store) BoardResearchRevisionSeries(ctx context.Context, revisionID string, rankType graymarket.RankType, code string) ([]graymarket.RankRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT snapshot_at,trade_date,rank_type,rank,market,code,name,
-dark_money,regular_money,main_money_inflow,source_time,fetched_at
+dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at
 FROM board_money_revision WHERE revision_id=? AND rank_type=? AND code=?
 ORDER BY snapshot_at,rank`, revisionID, string(rankType), code)
 	if err != nil {
@@ -186,7 +186,7 @@ func scanStockResearchRows(rows *sql.Rows, tradeDate string) ([]graymarket.Stock
 
 func (s *Store) boardMoneyRecords(ctx context.Context, where string, args ...any) ([]graymarket.RankRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT snapshot_at,trade_date,rank_type,rank,market,code,name,
-dark_money,regular_money,main_money_inflow,source_time,fetched_at
+dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at
 FROM board_money_5m WHERE `+where+` ORDER BY snapshot_at,rank`, args...)
 	if err != nil {
 		return nil, err
@@ -201,10 +201,12 @@ func scanBoardMoneyRecords(rows *sql.Rows) ([]graymarket.RankRecord, error) {
 		var record graymarket.RankRecord
 		var snapshotAt, rankType, fetchedAt string
 		var sourceTime int64
+		var moneyAvailable int
 		if err := rows.Scan(&snapshotAt, &record.TradeDate, &rankType, &record.Rank, &record.Market, &record.Code, &record.Name,
-			&record.DarkMoney, &record.RegularMoney, &record.MainMoneyInflow, &sourceTime, &fetchedAt); err != nil {
+			&record.DarkMoney, &record.RegularMoney, &record.MainMoneyInflow, &moneyAvailable, &sourceTime, &fetchedAt); err != nil {
 			return nil, err
 		}
+		record.MoneyAvailable = moneyAvailable != 0
 		record.RankType = graymarket.RankType(rankType)
 		record.QuoteTime = fmt.Sprintf("%010d", sourceTime)
 		record.SnapshotAt, _ = time.Parse(timestampLayout, snapshotAt)
@@ -396,8 +398,9 @@ func (s *Store) HasEndOfDayArchive(ctx context.Context, tradeDate string) (bool,
 (SELECT EXISTS(SELECT 1 FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock')),
 (SELECT count(DISTINCT rank_type) FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type IN ('industry','concept')),
 (SELECT count(*) FROM (SELECT rank_type FROM board_money_5m WHERE trade_date=? GROUP BY rank_type HAVING count(DISTINCT snapshot_at)=48)),
-(SELECT EXISTS(SELECT 1 FROM stock_archive_quality WHERE trade_date=? AND money_rows=expected_stocks*expected_points
-AND daily_close_rows=expected_stocks AND daily_kline_rows=expected_kline_stocks))`,
+(SELECT EXISTS(SELECT 1 FROM stock_archive_quality AS quality WHERE trade_date=?
+AND daily_close_rows=expected_stocks AND daily_kline_rows=expected_kline_stocks
+AND (SELECT count(*) FROM stock_research_5m WHERE trade_date=quality.trade_date)=expected_stocks*expected_points))`,
 		tradeDate, tradeDate, tradeDate, tradeDate).Scan(&stockClose, &boardCloses, &curveTypes, &stockMoney); err != nil {
 		return false, err
 	}
@@ -455,11 +458,12 @@ func scanRecord(row scanner) (graymarket.RankRecord, error) {
 	var record graymarket.RankRecord
 	var snapshotAt, fetchedAt string
 	var rankType string
-	var descending, quoteAvailable int
+	var descending, quoteAvailable, moneyAvailable int
 	err := row.Scan(
 		&snapshotAt, &record.TradeDate, &rankType, &record.Rank, &record.Market, &record.Code, &record.Name, &record.QuoteTime,
 		&record.LatestPriceRaw, &record.OpenPrice, &record.HighPrice, &record.LowPrice, &record.ClosePrice, &record.PreviousClose,
-		&record.ChangeValue, &record.ChangePct, &record.Volume, &record.Turnover, &record.TurnoverRate, &record.Amplitude, &quoteAvailable,
+		&record.ChangeValue, &record.ChangePct, &record.Volume, &record.Turnover, &record.TurnoverRate, &record.Amplitude,
+		&quoteAvailable, &moneyAvailable,
 		&record.DarkMoney, &record.RegularMoney, &record.MainMoneyInflow,
 		&record.DarkActivity, &record.DarkInflowRatio, &record.UpCount, &record.FlatCount, &record.DownCount,
 		&record.LeaderName, &record.LeaderCode, &record.SourceVersion, &record.SourceSortFlag, &descending, &fetchedAt,
@@ -470,6 +474,7 @@ func scanRecord(row scanner) (graymarket.RankRecord, error) {
 	record.RankType = graymarket.RankType(rankType)
 	record.SourceDescending = descending != 0
 	record.QuoteAvailable = quoteAvailable != 0
+	record.MoneyAvailable = moneyAvailable != 0
 	record.SnapshotAt, err = time.Parse(timestampLayout, snapshotAt)
 	if err != nil {
 		return record, fmt.Errorf("parse snapshot_at: %w", err)

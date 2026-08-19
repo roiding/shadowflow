@@ -13,7 +13,7 @@ export function isCumulativeMetric(metric: string): metric is CumulativeMetric {
 export function continuousMetricValues(
   points: TimelinePoint[],
   metric: ChartMetric,
-  valueFor: (record: RankRecord, metric: ChartMetric) => number,
+  valueFor: (record: RankRecord, metric: ChartMetric) => number | null,
 ): Array<number | null> {
   if (!isCumulativeMetric(metric) || new Set(points.flatMap((point) => point.record ? [point.record.trade_date] : [])).size <= 1) {
     return points.map((point) => point.record ? valueFor(point.record, metric) : null)
@@ -28,7 +28,9 @@ export function continuousMetricValues(
       if (activeDate && lastAdjusted !== null) dayOffset = lastAdjusted
       activeDate = point.record.trade_date
     }
-    const adjusted = dayOffset + valueFor(point.record, metric)
+    const value = valueFor(point.record, metric)
+    if (value === null) return null
+    const adjusted = dayOffset + value
     lastAdjusted = adjusted
     return adjusted
   })

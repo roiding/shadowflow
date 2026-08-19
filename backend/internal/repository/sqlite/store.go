@@ -47,13 +47,13 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate daily quote columns: %w", err)
 	}
-	if err := migrateResearchCloseModel(db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("migrate 15:00 close snapshots: %w", err)
-	}
 	if err := migrateStockArchiveQuality(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate stock archive quality: %w", err)
+	}
+	if err := migrateResearchCloseModel(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate 15:00 close snapshots: %w", err)
 	}
 	if err := migrateArchiveMetadata(db); err != nil {
 		_ = db.Close()
@@ -91,11 +91,17 @@ WHERE status='running'`, time.Now().UTC().Format(timestampLayout)); err != nil {
 func (s *Store) Close() error { return s.db.Close() }
 
 func migrateStockArchiveQuality(db *sql.DB) error {
-	if _, err := db.Exec(`ALTER TABLE stock_research_5m ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return err
-	}
-	if _, err := db.Exec(`ALTER TABLE stock_research_revision ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column") && !strings.Contains(err.Error(), "no such table") {
-		return err
+	for _, statement := range []string{
+		`ALTER TABLE rank_snapshot ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE board_money_5m ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stock_research_5m ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE rank_snapshot_revision ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE board_money_revision ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stock_research_revision ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := db.Exec(statement); err != nil && !strings.Contains(err.Error(), "duplicate column") && !strings.Contains(err.Error(), "no such table") {
+			return err
+		}
 	}
 	columns := map[string]bool{}
 	rows, err := db.Query(`PRAGMA table_info(stock_archive_quality)`)
@@ -218,10 +224,10 @@ func migrateResearchCloseModel(db *sql.DB) error {
 	defer tx.Rollback()
 	_, err = tx.Exec(`INSERT OR IGNORE INTO rank_snapshot (
 run_id,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,quote_time,
-latest_price_raw,change_pct,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+latest_price_raw,change_pct,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at,created_at)
 SELECT run_id,snapshot_at,trade_date,requested_date,'daily_close',rank_type,rank,market,code,name,quote_time,
-latest_price_raw,change_pct,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+latest_price_raw,change_pct,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at,created_at
 FROM rank_snapshot WHERE snapshot_kind='research_5m' AND rank_type IN ('industry','concept')
 AND substr(snapshot_at,12,5)='15:00'`)
@@ -348,7 +354,7 @@ func (s *Store) SaveBoardArchive(ctx context.Context, runID string, snapshot gra
 	if snapshot.SnapshotAt.Format("15:04") != "15:00" {
 		return fmt.Errorf("board close snapshot_at must be 15:00, got %s", snapshot.SnapshotAt.Format("15:04"))
 	}
-	if len(snapshot.Records) == 0 || len(points) != len(snapshot.Records)*48 {
+	if len(snapshot.Records) == 0 {
 		return fmt.Errorf("incomplete %s board archive: records=%d points=%d", snapshot.RankType, len(snapshot.Records), len(points))
 	}
 
@@ -382,11 +388,24 @@ func (s *Store) SaveBoardArchive(ctx context.Context, runID string, snapshot gra
 			return fmt.Errorf("invalid %s board money point %s %s", snapshot.RankType, point.Code, point.SnapshotAt)
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO board_money_5m
-(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,source_time,fetched_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, runID, point.SnapshotAt.Format(timestampLayout), point.TradeDate, string(point.RankType), point.Rank,
-			point.Market, point.Code, point.Name, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, point.SourceTime, point.FetchedAt.Format(timestampLayout))
+(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, runID, point.SnapshotAt.Format(timestampLayout), point.TradeDate, string(point.RankType), point.Rank,
+			point.Market, point.Code, point.Name, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1, point.SourceTime, point.FetchedAt.Format(timestampLayout))
 		if err != nil {
 			return err
+		}
+	}
+	// Preserve a stable 48-point shape for every catalog board while keeping
+	// unavailable funding distinguishable from a real zero.
+	for _, record := range snapshot.Records {
+		for _, clock := range expectedResearchTimes() {
+			at, _ := time.ParseInLocation("2006-01-02 15:04", snapshot.TradeDate+" "+clock, snapshot.SnapshotAt.Location())
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO board_money_5m
+(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
+VALUES (?,?,?,?,?,?,?,?,0,0,0,0,0,?)`, runID, at.Format(timestampLayout), snapshot.TradeDate, string(snapshot.RankType),
+				0, record.Market, record.Code, record.Name, snapshot.SnapshotAt.UTC().Format(timestampLayout)); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -429,6 +448,17 @@ func (s *Store) SaveStockArchive(ctx context.Context, runID string, snapshot gra
 		return err
 	}
 	defer tx.Rollback()
+	// A rerun starts a fresh K-line attempt. Keeping rows from a prior run can
+	// make a failed refetch look complete, so clear both values and provenance.
+	if _, err := tx.ExecContext(ctx, `UPDATE stock_research_5m SET
+open_price_e4=0,high_price_e4=0,low_price_e4=0,close_price_e4=0,volume=0,turnover=0,
+amplitude_ppm=0,change_pct_ppm=0,change_value_e4=0,turnover_rate_ppm=0,kline_available=0
+WHERE trade_date=?`, snapshot.TradeDate); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_kline_source WHERE trade_date=?`, snapshot.TradeDate); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE stock_research_5m SET money_rank=-1 WHERE trade_date=?`, snapshot.TradeDate); err != nil {
 		return err
 	}
@@ -442,11 +472,6 @@ func (s *Store) SaveStockArchive(ctx context.Context, runID string, snapshot gra
 	for _, record := range snapshot.Records {
 		if record.QuoteAvailable {
 			expectedKlineStocks++
-		} else if _, err := tx.ExecContext(ctx, `UPDATE stock_research_5m SET
-open_price_e4=0,high_price_e4=0,low_price_e4=0,close_price_e4=0,volume=0,turnover=0,
-amplitude_ppm=0,change_pct_ppm=0,change_value_e4=0,turnover_rate_ppm=0,kline_available=0
-WHERE trade_date=? AND market=? AND code=?`, snapshot.TradeDate, record.Market, record.Code); err != nil {
-			return err
 		}
 		if err := insertRecord(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), record); err != nil {
 			return err
@@ -489,13 +514,6 @@ VALUES (?,?,?,?,?,?,?,?,0)`, snapshot.TradeDate, minuteIndex, record.Market, rec
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_research_5m WHERE trade_date=? AND money_rank=-1`, snapshot.TradeDate); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_kline_source AS source WHERE trade_date=?
-AND NOT EXISTS (SELECT 1 FROM rank_snapshot AS close
-WHERE close.trade_date=source.trade_date AND close.snapshot_kind='daily_close'
-AND close.rank_type='stock' AND close.market=source.market AND close.code=source.code
-AND close.quote_available=1)`, snapshot.TradeDate); err != nil {
 		return err
 	}
 	var klineRows, moneyRows int
@@ -648,7 +666,8 @@ func insertRecord(ctx context.Context, tx *sql.Tx, table, runID, requestedDate, 
 	commonArgs = append(commonArgs,
 		string(record.RankType), record.Rank, record.Market, record.Code, record.Name, record.QuoteTime,
 		record.LatestPriceRaw, record.OpenPrice, record.HighPrice, record.LowPrice, record.ClosePrice, record.PreviousClose,
-		record.ChangeValue, record.ChangePct, record.Volume, record.Turnover, record.TurnoverRate, record.Amplitude, boolInt(record.QuoteAvailable),
+		record.ChangeValue, record.ChangePct, record.Volume, record.Turnover, record.TurnoverRate, record.Amplitude,
+		boolInt(record.QuoteAvailable), boolInt(record.MoneyAvailable),
 		record.DarkMoney, record.RegularMoney, record.MainMoneyInflow,
 		record.DarkActivity, record.DarkInflowRatio, record.UpCount, record.FlatCount, record.DownCount,
 		record.LeaderName, record.LeaderCode, record.SourceVersion, record.SourceSortFlag, boolInt(record.SourceDescending),
@@ -656,12 +675,12 @@ func insertRecord(ctx context.Context, tx *sql.Tx, table, runID, requestedDate, 
 	)
 	columns := `run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,quote_time,
 	latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,change_pct,
-	volume,turnover,turnover_rate,amplitude,quote_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+	volume,turnover,turnover_rate,amplitude,quote_available,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at`
 	if table == "rank_snapshot" {
 		columns = `run_id,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,quote_time,
 	latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,change_pct,
-	volume,turnover,turnover_rate,amplitude,quote_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+	volume,turnover,turnover_rate,amplitude,quote_available,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at`
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(commonArgs)), ",")
@@ -731,10 +750,10 @@ func (s *Store) CompactResearch(ctx context.Context, tradeDate string) ([]reposi
 
 		_, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO rank_snapshot (
 run_id,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,quote_time,
-latest_price_raw,change_pct,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+latest_price_raw,change_pct,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at)
 SELECT run_id,snapshot_at,trade_date,trade_date,'research_5m',rank_type,rank,market,code,name,quote_time,
-latest_price_raw,change_pct,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+latest_price_raw,change_pct,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at
 FROM rank_intraday_work
 WHERE trade_date=? AND rank_type=? AND substr(snapshot_at,15,2) IN ('00','05','10','15','20','25','30','35','40','45','50','55')
@@ -746,10 +765,10 @@ OR (substr(snapshot_at,12,5) BETWEEN '13:05' AND '15:00'))`, tradeDate, string(r
 
 		_, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO rank_snapshot (
 run_id,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,quote_time,
-latest_price_raw,change_pct,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+latest_price_raw,change_pct,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at)
 SELECT run_id,snapshot_at,trade_date,trade_date,'daily_close',rank_type,rank,market,code,name,quote_time,
-latest_price_raw,change_pct,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+latest_price_raw,change_pct,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at
 FROM rank_intraday_work
 WHERE trade_date=? AND rank_type=? AND substr(snapshot_at,12,5)='15:00'`, tradeDate, string(rankType))

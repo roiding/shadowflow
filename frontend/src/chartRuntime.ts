@@ -27,10 +27,17 @@ function formatMoney(value: number) {
 }
 
 function metricDisplay(record: RankRecord, metric: Metric) {
+  if (!metricAvailable(record, metric)) return '数据不可用'
   const value = record[metric]
   if (metric === 'dark_money' || metric === 'regular_money' || metric === 'main_money_inflow') return formatMoney(value)
   if (metric === 'change_pct' || metric === 'dark_inflow_ratio' || metric === 'dark_activity') return `${formatNumber(value * 100, 2)}%`
   return formatNumber(value)
+}
+
+function metricAvailable(record: RankRecord, metric: Metric) {
+  if (['dark_money', 'regular_money', 'main_money_inflow'].includes(metric)) return record.money_available
+  if (['dark_activity', 'dark_inflow_ratio', 'rank', 'up_count'].includes(metric)) return record.rank > 0
+  return true
 }
 
 function metricDisplayValue(value: number, metric: Metric) {

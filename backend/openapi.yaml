@@ -552,6 +552,7 @@ components:
         turnover_rate: { type: number, description: 原始小数，展示时乘 100 }
         amplitude: { type: number, description: 原始小数，展示时乘 100 }
         quote_available: { type: boolean }
+        money_available: { type: boolean, description: 暗盘、明盘及主力净流入字段是否来自有效上游数据 }
         dark_money: { type: integer, format: int64 }
         regular_money: { type: integer, format: int64 }
         main_money_inflow: { type: integer, format: int64 }
@@ -668,6 +669,7 @@ components:
         change_pct: { type: number }
         change_value: { type: number }
         turnover_rate: { type: number }
+        money_available: { type: boolean }
         kline_available: { type: boolean }
     ArchiveRevision:
       type: object

@@ -100,6 +100,9 @@ func (c *Client) FetchMoney5m(ctx context.Context, snapshot graymarket.RankSnaps
 	if len(points) == 0 && firstErr != nil {
 		return nil, firstErr
 	}
+	if firstErr != nil {
+		return points, fmt.Errorf("completed %d/%d money curves: %w", len(points)/pointsPerCode, len(snapshot.Records), firstErr)
+	}
 	return points, nil
 }
 

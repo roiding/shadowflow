@@ -190,6 +190,39 @@ func TestScanWithEvaluatesAllConditionsWithinEachDay(t *testing.T) {
 	}
 }
 
+func TestScanDoesNotTreatUnavailableFundingOrRankAsZero(t *testing.T) {
+	date := "2026-08-14"
+	source := &fakeSource{
+		dates: []string{date},
+		records: map[string][]graymarket.RankRecord{
+			date: {{
+				TradeDate: date, RankType: graymarket.RankConcept, Market: 90, Code: "BK-MISSING",
+				Name: "缺失数据", Rank: 0, QuoteAvailable: true, Turnover: 100,
+			}},
+		},
+	}
+	request := ScanRequest{
+		AsOf: date, ConsecutiveDays: 1,
+		ConceptMatch: MatchAll,
+		ConceptConditions: []Condition{
+			{Field: FieldMainMoneyInflow, Operator: OperatorGTE, Value: 0},
+			{Field: FieldRank, Operator: OperatorGTE, Value: 0},
+		},
+		StockMatch: MatchAll,
+		StockScope: StockScope{MainBoardOnly: false, ExcludeST: false},
+	}
+	result, err := New(source).ScanWith(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Concepts) != 0 || len(result.Rejections) == 0 {
+		t.Fatalf("unavailable funding/rank was treated as a real zero: %+v", result)
+	}
+	if result.Rejections[0].Evaluation == nil || result.Rejections[0].Evaluation.Conditions[0].Available {
+		t.Fatalf("missing funding was not marked unavailable: %+v", result.Rejections[0])
+	}
+}
+
 func TestScanWithRejectsInvalidDynamicRequest(t *testing.T) {
 	max := 1.0
 	tests := []ScanRequest{
@@ -208,5 +241,5 @@ func TestScanWithRejectsInvalidDynamicRequest(t *testing.T) {
 func focusRecord(date string, rankType graymarket.RankType, market int64, code, name string, turnover int64, turnoverRate, changePct float64, mainMoney int64) graymarket.RankRecord {
 	return graymarket.RankRecord{TradeDate: date, RankType: rankType, Market: market, Code: code, Name: name,
 		Turnover: turnover, TurnoverRate: turnoverRate, ChangePct: changePct, RegularMoney: mainMoney / 2,
-		DarkMoney: mainMoney / 2, QuoteAvailable: true}
+		DarkMoney: mainMoney / 2, QuoteAvailable: true, MoneyAvailable: true, Rank: 1}
 }

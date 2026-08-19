@@ -31,6 +31,7 @@ func mapRecord(rankType graymarket.RankType, tradeDate string, snapshotAt, fetch
 		DarkMoney:        intValue(row, "6"),
 		RegularMoney:     intValue(row, "7"),
 		MainMoneyInflow:  intValue(row, "8"),
+		MoneyAvailable:   true,
 		DarkActivity:     floatValue(row, "11"),
 		DarkInflowRatio:  floatValue(row, "12"),
 		SourceVersion:    101,

@@ -11,6 +11,82 @@ import (
 	"github.com/roiding/shadowflow/internal/repository"
 )
 
+// SaveBoardCatalogSnapshot persists the complete morning board directory used
+// as the day's universe contract by the end-of-day archive.
+func (s *Store) SaveBoardCatalogSnapshot(ctx context.Context, tradeDate string, boardType graymarket.BoardType, boards []graymarket.Board) error {
+	return s.SaveBoardCatalogSnapshots(ctx, tradeDate, map[graymarket.BoardType][]graymarket.Board{boardType: boards})
+}
+
+func (s *Store) SaveBoardCatalogSnapshots(ctx context.Context, tradeDate string, catalogs map[graymarket.BoardType][]graymarket.Board) error {
+	if tradeDate == "" {
+		return fmt.Errorf("invalid board catalog snapshot arguments")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for boardType, boards := range catalogs {
+		if boardType != graymarket.BoardIndustry && boardType != graymarket.BoardConcept {
+			return fmt.Errorf("invalid board catalog type %q", boardType)
+		}
+		if len(boards) == 0 {
+			return fmt.Errorf("empty %s board catalog snapshot", boardType)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM board_catalog_snapshot WHERE trade_date=? AND board_type=?`,
+			tradeDate, string(boardType)); err != nil {
+			return err
+		}
+	}
+	now := time.Now().UTC().Format(timestampLayout)
+	for boardType, boards := range catalogs {
+		for index, board := range boards {
+			if board.Code == "" {
+				return fmt.Errorf("%s board catalog snapshot contains an empty code", boardType)
+			}
+			order := board.SourceRank
+			if order <= 0 {
+				order = index + 1
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO board_catalog_snapshot
+(trade_date,board_type,board_code,board_name,source_order,fetched_at)
+VALUES (?,?,?,?,?,?)`, tradeDate, string(boardType), board.Code, board.Name, order, now); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) BoardCatalogSnapshot(ctx context.Context, tradeDate string, boardType graymarket.BoardType) ([]graymarket.Board, error) {
+	if tradeDate == "" || (boardType != graymarket.BoardIndustry && boardType != graymarket.BoardConcept) {
+		return nil, fmt.Errorf("invalid board catalog snapshot arguments")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT board_code,board_name,source_order
+FROM board_catalog_snapshot WHERE trade_date=? AND board_type=? ORDER BY source_order,board_code`,
+		tradeDate, string(boardType))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]graymarket.Board, 0)
+	for rows.Next() {
+		var board graymarket.Board
+		if err := rows.Scan(&board.Code, &board.Name, &board.SourceRank); err != nil {
+			return nil, err
+		}
+		board.Type = boardType
+		result = append(result, board)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("%w: board catalog snapshot %s %s", graymarket.ErrNoData, tradeDate, boardType)
+	}
+	return result, nil
+}
+
 func (s *Store) StartRelationSync(ctx context.Context, run repository.RelationSyncRun) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO relation_sync_run
 (run_id,trade_date,status,board_count,relation_count,added_count,removed_count,baseline_built,
