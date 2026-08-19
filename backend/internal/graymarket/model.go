@@ -87,6 +87,7 @@ type RankRecord struct {
 	TurnoverRate     float64   `json:"turnover_rate"`
 	Amplitude        float64   `json:"amplitude"`
 	QuoteAvailable   bool      `json:"quote_available"`
+	MoneyAvailable   bool      `json:"money_available"`
 	DarkMoney        int64     `json:"dark_money"`
 	RegularMoney     int64     `json:"regular_money"`
 	MainMoneyInflow  int64     `json:"main_money_inflow"`
@@ -185,6 +186,7 @@ type StockResearchPoint struct {
 	ChangePct       float64   `json:"change_pct"`
 	ChangeValue     float64   `json:"change_value"`
 	TurnoverRate    float64   `json:"turnover_rate"`
+	MoneyAvailable  bool      `json:"money_available"`
 	KlineAvailable  bool      `json:"kline_available"`
 }
 

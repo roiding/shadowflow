@@ -91,6 +91,12 @@ WHERE status='running'`, time.Now().UTC().Format(timestampLayout)); err != nil {
 func (s *Store) Close() error { return s.db.Close() }
 
 func migrateStockArchiveQuality(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE stock_research_5m ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE stock_research_revision ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column") && !strings.Contains(err.Error(), "no such table") {
+		return err
+	}
 	columns := map[string]bool{}
 	rows, err := db.Query(`PRAGMA table_info(stock_archive_quality)`)
 	if err != nil {
@@ -412,7 +418,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, runID, point.SnapshotAt.Format(timestampLay
 }
 
 func (s *Store) SaveStockArchive(ctx context.Context, runID string, snapshot graymarket.RankSnapshot, points []graymarket.MoneyPoint) error {
-	if snapshot.RankType != graymarket.RankStock || len(snapshot.Records) == 0 || len(points) != len(snapshot.Records)*48 {
+	if snapshot.RankType != graymarket.RankStock || len(snapshot.Records) == 0 {
 		return fmt.Errorf("incomplete stock archive: records=%d points=%d", len(snapshot.Records), len(points))
 	}
 	if snapshot.SnapshotAt.Format("15:04") != "15:00" {
@@ -457,14 +463,29 @@ WHERE trade_date=? AND market=? AND code=?`, snapshot.TradeDate, record.Market, 
 			return fmt.Errorf("invalid stock money point %s %s", point.Code, point.SnapshotAt)
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO stock_research_5m
-(trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow)
-VALUES (?,?,?,?,?,?,?,?)
+(trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available)
+VALUES (?,?,?,?,?,?,?,?,?)
 ON CONFLICT(trade_date,minute_index,market,code) DO UPDATE SET
 money_rank=excluded.money_rank,dark_money=excluded.dark_money,
-regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow`, point.TradeDate, minuteIndex, point.Market, point.Code, point.Rank,
-			point.DarkMoney, point.RegularMoney, point.MainMoneyInflow)
+	regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow,money_available=1`, point.TradeDate, minuteIndex, point.Market, point.Code, point.Rank,
+			point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1)
 		if err != nil {
 			return err
+		}
+	}
+	// Materialize unavailable curves as explicit rows so a full-market archive
+	// keeps a stable 48-point shape without treating missing money as zero.
+	for _, record := range snapshot.Records {
+		for index, clock := range expectedResearchTimes() {
+			at, _ := time.ParseInLocation("2006-01-02 15:04", snapshot.TradeDate+" "+clock, snapshot.SnapshotAt.Location())
+			minuteIndex, _ := researchMinuteIndex(at)
+			_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO stock_research_5m
+(trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available)
+VALUES (?,?,?,?,?,?,?,?,0)`, snapshot.TradeDate, minuteIndex, record.Market, record.Code, 0, 0, 0, 0)
+			if err != nil {
+				return err
+			}
+			_ = index
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_research_5m WHERE trade_date=? AND money_rank=-1`, snapshot.TradeDate); err != nil {
@@ -477,7 +498,10 @@ AND close.rank_type='stock' AND close.market=source.market AND close.code=source
 AND close.quote_available=1)`, snapshot.TradeDate); err != nil {
 		return err
 	}
-	var klineRows int
+	var klineRows, moneyRows int
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(sum(money_available),0) FROM stock_research_5m WHERE trade_date=?`, snapshot.TradeDate).Scan(&moneyRows); err != nil {
+		return err
+	}
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM stock_research_5m WHERE trade_date=? AND kline_available=1`, snapshot.TradeDate).Scan(&klineRows); err != nil {
 		return err
 	}
@@ -492,7 +516,7 @@ money_archived_at=excluded.money_archived_at,
 kline_archived_at=CASE WHEN excluded.kline_rows=excluded.expected_kline_stocks*excluded.expected_points
 THEN coalesce(stock_archive_quality.kline_archived_at,excluded.updated_at) ELSE NULL END,
 updated_at=excluded.updated_at`,
-		snapshot.TradeDate, len(snapshot.Records), expectedKlineStocks, len(points), klineRows, len(snapshot.Records), expectedKlineStocks, now, now)
+		snapshot.TradeDate, len(snapshot.Records), expectedKlineStocks, moneyRows, klineRows, len(snapshot.Records), expectedKlineStocks, now, now)
 	if err != nil {
 		return err
 	}

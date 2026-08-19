@@ -28,6 +28,59 @@ type quoteResponse struct {
 
 const stockQuoteBatchSize = 100
 
+// FetchAllStockQuotes reads the complete active stock universe from the quote
+// service. This is deliberately separate from darktrade: darktrade is a
+// ranked intraday view and can omit valid securities.
+func (c *Client) FetchAllStockQuotes(ctx context.Context) ([]graymarket.StockQuote, error) {
+	result := make([]graymarket.StockQuote, 0, 6000)
+	expectedTotal := 0
+	seen := make(map[string]struct{})
+	for page := 1; ; page++ {
+		params := url.Values{
+			"pn": {strconv.Itoa(page)}, "pz": {strconv.Itoa(c.pageSize)}, "po": {"1"}, "np": {"1"},
+			"fltt": {"2"}, "invt": {"2"}, "fid": {"f3"},
+			"fields": {"f2,f3,f4,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f124"},
+			// Shanghai/Shenzhen main, ChiNext, STAR, BSE and other active
+			// listed-equity buckets. The quote endpoint excludes funds/bonds.
+			"fs": {"m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:1+t:80"},
+		}
+		payload, rows, err := c.fetchQuotePage(ctx, "/api/qt/clist/get", params)
+		if err != nil {
+			return nil, fmt.Errorf("fetch full stock universe page %d: %w", page, err)
+		}
+		if page == 1 {
+			expectedTotal = payload.Data.Total
+		}
+		fetchedAt := time.Now().UTC()
+		for _, row := range rows {
+			code := optionalString(row, "f12")
+			if code == "" {
+				return nil, errors.New("full stock universe contains an empty code")
+			}
+			if _, duplicate := seen[code]; duplicate {
+				return nil, fmt.Errorf("duplicate full stock code %s", code)
+			}
+			seen[code] = struct{}{}
+			latestPrice, available := optionalFloat(row, "f2")
+			result = append(result, graymarket.StockQuote{StockCode: code, StockMarket: intValue(row, "f13"), StockName: optionalString(row, "f14"),
+				LatestPrice: latestPrice, OpenPrice: floatValue(row, "f17"), HighPrice: floatValue(row, "f15"), LowPrice: floatValue(row, "f16"),
+				PreviousClose: floatValue(row, "f18"), ChangePct: floatValue(row, "f3") / 100, ChangeValue: floatValue(row, "f4"),
+				Volume: intValue(row, "f5"), Turnover: intValue(row, "f6"), TurnoverRate: floatValue(row, "f8") / 100,
+				Amplitude: floatValue(row, "f7") / 100, QuoteTime: formatQuoteUpdateTime(optionalString(row, "f124")), FetchedAt: fetchedAt, Available: available})
+		}
+		if len(rows) == 0 || (expectedTotal > 0 && len(result) >= expectedTotal) {
+			break
+		}
+	}
+	if len(result) == 0 {
+		return nil, graymarket.ErrNoData
+	}
+	if expectedTotal > 0 && len(result) != expectedTotal {
+		return nil, fmt.Errorf("incomplete full stock universe: expected %d records, got %d", expectedTotal, len(result))
+	}
+	return result, nil
+}
+
 // FetchBoardQuotes reads the authoritative quote list for industry or
 // concept boards. It deliberately uses clist/get rather than ulist.np/get:
 // BK board codes are not stock codes.

@@ -126,7 +126,7 @@ ORDER BY snapshot_at,rank`, revisionID, string(rankType), code)
 }
 
 func (s *Store) StockResearchSeries(ctx context.Context, code, tradeDate string) ([]graymarket.StockResearchPoint, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,
+	rows, err := s.db.QueryContext(ctx, `SELECT minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available,
 open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,amplitude_ppm,change_pct_ppm,
 change_value_e4,turnover_rate_ppm,kline_available
 FROM stock_research_5m WHERE trade_date=? AND code=? ORDER BY minute_index`, tradeDate, code)
@@ -141,7 +141,7 @@ func (s *Store) StockResearchRevisionSeries(ctx context.Context, revisionID, cod
 	if err := s.db.QueryRowContext(ctx, `SELECT trade_date FROM daily_archive_revision WHERE revision_id=?`, revisionID).Scan(&tradeDate); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,
+	rows, err := s.db.QueryContext(ctx, `SELECT minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available,
 open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,amplitude_ppm,change_pct_ppm,
 change_value_e4,turnover_rate_ppm,kline_available
 FROM stock_research_revision WHERE revision_id=? AND code=? ORDER BY minute_index`, revisionID, code)
@@ -158,10 +158,10 @@ func scanStockResearchRows(rows *sql.Rows, tradeDate string) ([]graymarket.Stock
 	result := make([]graymarket.StockResearchPoint, 0, 48)
 	for rows.Next() {
 		var point graymarket.StockResearchPoint
-		var minuteIndex, klineAvailable int
+		var minuteIndex, klineAvailable, moneyAvailable int
 		var open, high, low, close, amplitude, changePct, changeValue, turnoverRate int64
 		if err := rows.Scan(&minuteIndex, &point.Market, &point.Code, &point.MoneyRank, &point.DarkMoney,
-			&point.RegularMoney, &point.MainMoneyInflow, &open, &high, &low, &close, &point.Volume,
+			&point.RegularMoney, &point.MainMoneyInflow, &moneyAvailable, &open, &high, &low, &close, &point.Volume,
 			&point.Turnover, &amplitude, &changePct, &changeValue, &turnoverRate, &klineAvailable); err != nil {
 			return nil, err
 		}
@@ -178,6 +178,7 @@ func scanStockResearchRows(rows *sql.Rows, tradeDate string) ([]graymarket.Stock
 		point.Amplitude, point.ChangePct = unscalePPM(amplitude), unscalePPM(changePct)
 		point.ChangeValue, point.TurnoverRate = unscaleE4(changeValue), unscalePPM(turnoverRate)
 		point.KlineAvailable = klineAvailable != 0
+		point.MoneyAvailable = moneyAvailable != 0
 		result = append(result, point)
 	}
 	return result, rows.Err()

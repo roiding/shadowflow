@@ -85,19 +85,21 @@ func (c *Client) FetchMoney5m(ctx context.Context, snapshot graymarket.RankSnaps
 	points := make([]graymarket.MoneyPoint, 0, len(snapshot.Records)*pointsPerCode)
 	var firstErr error
 	for result := range results {
-		if result.err != nil && firstErr == nil {
-			firstErr = result.err
-			cancel()
+		if result.err != nil {
+			if firstErr == nil {
+				firstErr = result.err
+			}
+			// Some active securities (new/special/BSE instruments) do not
+			// expose darktradetick. Keep successful curves and let the archive
+			// mark the missing money rows explicitly instead of aborting all.
+			continue
 		}
 		points = append(points, result.points...)
 	}
-	if firstErr != nil {
+	assignMoneyRanks(points)
+	if len(points) == 0 && firstErr != nil {
 		return nil, firstErr
 	}
-	if len(points) != len(snapshot.Records)*pointsPerCode {
-		return nil, fmt.Errorf("incomplete %s money archive: expected %d points, got %d", snapshot.RankType, len(snapshot.Records)*pointsPerCode, len(points))
-	}
-	assignMoneyRanks(points)
 	return points, nil
 }
 

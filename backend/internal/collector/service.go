@@ -26,12 +26,26 @@ type StockDailyQuoteSource interface {
 	FetchStockQuotes(context.Context, []graymarket.StockBoardRelation) ([]graymarket.StockQuote, error)
 }
 
+// AllStockQuoteSource provides the complete active A-share quote universe used
+// by the end-of-day archive. The darktrade stock list remains an attribute
+// source only and must not define which securities are persisted.
+type AllStockQuoteSource interface {
+	FetchAllStockQuotes(context.Context) ([]graymarket.StockQuote, error)
+}
+
 type BoardDailyQuoteSource interface {
 	FetchBoardQuotes(context.Context, graymarket.RankType) ([]graymarket.BoardQuote, error)
 }
 
 type BoardMoneySource interface {
 	FetchMoney5m(context.Context, graymarket.RankSnapshot, bool) ([]graymarket.MoneyPoint, error)
+}
+
+// BoardCatalogSource provides the authoritative full board universe.  The
+// intraday darktrade snapshot is intentionally not used as the archive
+// universe because it is a ranked/filtered view and may omit valid boards.
+type BoardCatalogSource interface {
+	FetchBoardCatalog(context.Context, graymarket.BoardType) ([]graymarket.Board, error)
 }
 
 type StockKlineSource interface {
@@ -380,6 +394,22 @@ func (s *Service) collectBoardArchive(ctx context.Context, rankType graymarket.R
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, errorCode(err), err.Error()
 		return finish(err)
 	}
+	// The darktrade response is a useful source of dark-rank attributes, but
+	// it is not a complete board universe.  Rebuild the archive snapshot from
+	// the authoritative board catalog and merge the darktrade attributes onto
+	// those full-universe records before fetching the post-close curve.
+	if catalogSource, ok := s.source.(BoardCatalogSource); ok {
+		catalog, catalogErr := catalogSource.FetchBoardCatalog(ctx, boardTypeForRank(rankType))
+		if catalogErr != nil {
+			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "catalog_fetch", catalogErr.Error()
+			return finish(catalogErr)
+		}
+		snapshot, err = mergeBoardArchiveUniverse(snapshot, catalog)
+		if err != nil {
+			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "catalog_merge", err.Error()
+			return finish(err)
+		}
+	}
 	run.ActualTradeDate = snapshot.TradeDate
 	if snapshot.TradeDate != formatDate(requestedDate) {
 		err = fmt.Errorf("upstream trade date %s does not match requested date %s", snapshot.TradeDate, formatDate(requestedDate))
@@ -400,12 +430,94 @@ func (s *Service) collectBoardArchive(ctx context.Context, rankType graymarket.R
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, errorCode(err), err.Error()
 		return finish(err)
 	}
+	mergeCloseMoney(&snapshot, points)
 	if err := s.store.SaveBoardArchive(ctx, runID, snapshot, points); err != nil {
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
 		return finish(err)
 	}
 	run.Status = repository.RunSuccess
 	return finish(nil)
+}
+
+func boardTypeForRank(rankType graymarket.RankType) graymarket.BoardType {
+	if rankType == graymarket.RankIndustry {
+		return graymarket.BoardIndustry
+	}
+	return graymarket.BoardConcept
+}
+
+// mergeBoardArchiveUniverse combines the full board catalog with the
+// darktrade snapshot.  Quote fields are filled later by enrichBoardDailyClose;
+// the dark fields/ranks are retained only where the board was present in the
+// ranked snapshot.
+func mergeBoardArchiveUniverse(dark graymarket.RankSnapshot, catalog []graymarket.Board) (graymarket.RankSnapshot, error) {
+	if len(catalog) == 0 {
+		return graymarket.RankSnapshot{}, fmt.Errorf("empty %s board catalog", dark.RankType)
+	}
+	darkByCode := make(map[string]graymarket.RankRecord, len(dark.Records))
+	for _, record := range dark.Records {
+		darkByCode[record.Code] = record
+	}
+	records := make([]graymarket.RankRecord, 0, len(catalog))
+	seen := make(map[string]struct{}, len(catalog))
+	nextCatalogRank := int64(len(dark.Records) + 1)
+	for index, board := range catalog {
+		if board.Code == "" {
+			return graymarket.RankSnapshot{}, fmt.Errorf("%s board catalog contains an empty code", dark.RankType)
+		}
+		if _, duplicate := seen[board.Code]; duplicate {
+			return graymarket.RankSnapshot{}, fmt.Errorf("duplicate %s board catalog code %s", dark.RankType, board.Code)
+		}
+		seen[board.Code] = struct{}{}
+		record, present := darkByCode[board.Code]
+		if !present {
+			record = graymarket.RankRecord{
+				TradeDate: dark.TradeDate, SnapshotAt: dark.SnapshotAt, RankType: dark.RankType,
+				Market: 90, Code: board.Code, Name: board.Name,
+				Rank: nextCatalogRank, SourceVersion: 101, SourceSortFlag: 6, SourceDescending: true,
+				FetchedAt: dark.FetchedAt,
+			}
+			nextCatalogRank++
+		} else if record.Name == "" {
+			record.Name = board.Name
+		}
+		if record.Rank <= 0 {
+			record.Rank = int64(index + 1)
+		}
+		record.RankType = dark.RankType
+		record.TradeDate = dark.TradeDate
+		record.SnapshotAt = dark.SnapshotAt
+		record.Market = 90
+		record.Code = board.Code
+		if record.Name == "" {
+			record.Name = board.Name
+		}
+		record.QuoteAvailable = false
+		records = append(records, record)
+	}
+	dark.Records = records
+	dark.ExpectedTotal = len(records)
+	return dark, nil
+}
+
+// mergeCloseMoney makes the 15:00 darktradetick values authoritative for the
+// daily-close funding fields, including boards that were absent from the
+// darktrade ranked response.
+func mergeCloseMoney(snapshot *graymarket.RankSnapshot, points []graymarket.MoneyPoint) {
+	close := make(map[string]graymarket.MoneyPoint, len(snapshot.Records))
+	for _, point := range points {
+		if point.SnapshotAt.Format("15:04") == "15:00" {
+			close[point.Code] = point
+		}
+	}
+	for index := range snapshot.Records {
+		if point, ok := close[snapshot.Records[index].Code]; ok {
+			snapshot.Records[index].MoneyAvailable = true
+			snapshot.Records[index].DarkMoney = point.DarkMoney
+			snapshot.Records[index].RegularMoney = point.RegularMoney
+			snapshot.Records[index].MainMoneyInflow = point.MainMoneyInflow
+		}
+	}
 }
 
 func (s *Service) collectStockArchive(ctx context.Context, requestedDate string, closeAt, runAt time.Time) error {
@@ -439,23 +551,76 @@ func (s *Service) collectStockArchive(ctx context.Context, requestedDate string,
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "date_mismatch", err.Error()
 		return finish(err)
 	}
-	if err := s.enrichStockDailyClose(ctx, &snapshot); err != nil {
-		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
-		return finish(err)
+	if allQuotes, ok := s.source.(AllStockQuoteSource); ok {
+		quotes, quoteErr := allQuotes.FetchAllStockQuotes(ctx)
+		if quoteErr != nil {
+			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "catalog_fetch", quoteErr.Error()
+			return finish(quoteErr)
+		}
+		snapshot, err = mergeStockArchiveUniverse(snapshot, quotes, closeAt)
+		if err != nil {
+			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "catalog_merge", err.Error()
+			return finish(err)
+		}
 	}
 	points, err := moneySource.FetchMoney5m(ctx, snapshot, true)
 	run.ExpectedTotal, run.FetchedTotal = len(snapshot.Records)*48, len(points)
 	run.PageCount = len(snapshot.RawPages) + len(snapshot.Records)
-	if err != nil {
-		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, errorCode(err), err.Error()
+	moneyErr := err
+	if err := s.enrichStockDailyClose(ctx, &snapshot); err != nil {
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
 		return finish(err)
 	}
+	mergeCloseMoney(&snapshot, points)
 	if err := s.store.SaveStockArchive(ctx, runID, snapshot, points); err != nil {
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
 		return finish(err)
 	}
 	run.Status = repository.RunSuccess
-	return finish(nil)
+	if moneyErr != nil {
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunPartial, errorCode(moneyErr), moneyErr.Error()
+	}
+	return finish(moneyErr)
+}
+
+func mergeStockArchiveUniverse(dark graymarket.RankSnapshot, quotes []graymarket.StockQuote, closeAt time.Time) (graymarket.RankSnapshot, error) {
+	if len(quotes) == 0 {
+		return graymarket.RankSnapshot{}, errors.New("empty full-market stock quote universe")
+	}
+	darkByCode := make(map[string]graymarket.RankRecord, len(dark.Records))
+	for _, record := range dark.Records {
+		darkByCode[record.Code] = record
+	}
+	records := make([]graymarket.RankRecord, 0, len(quotes))
+	seen := make(map[string]struct{}, len(quotes))
+	for index, quote := range quotes {
+		if quote.StockCode == "" {
+			return graymarket.RankSnapshot{}, errors.New("full-market stock quote universe contains an empty code")
+		}
+		if _, duplicate := seen[quote.StockCode]; duplicate {
+			return graymarket.RankSnapshot{}, fmt.Errorf("duplicate full-market stock code %s", quote.StockCode)
+		}
+		seen[quote.StockCode] = struct{}{}
+		record, present := darkByCode[quote.StockCode]
+		if !present {
+			record = graymarket.RankRecord{TradeDate: dark.TradeDate, SnapshotAt: closeAt,
+				RankType: graymarket.RankStock, Rank: int64(index + 1), Market: quote.StockMarket,
+				Code: quote.StockCode, Name: quote.StockName, SourceVersion: 101,
+				SourceSortFlag: 6, SourceDescending: true, FetchedAt: quote.FetchedAt}
+		}
+		record.TradeDate, record.SnapshotAt, record.RankType = dark.TradeDate, closeAt, graymarket.RankStock
+		record.Market, record.Code = quote.StockMarket, quote.StockCode
+		if quote.StockName != "" {
+			record.Name = quote.StockName
+		}
+		if record.Rank <= 0 {
+			record.Rank = int64(index + 1)
+		}
+		records = append(records, record)
+	}
+	dark.Records, dark.ExpectedTotal = records, len(records)
+	dark.SnapshotAt = closeAt
+	return dark, nil
 }
 
 func (s *Service) enrichStockDailyClose(ctx context.Context, snapshot *graymarket.RankSnapshot) error {
