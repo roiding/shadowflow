@@ -132,6 +132,14 @@ type fakeStore struct {
 	dailyCloseRows  []graymarket.RankRecord
 }
 
+func (s *fakeStore) BoardCatalogSnapshot(_ context.Context, _ string, boardType graymarket.BoardType) ([]graymarket.Board, error) {
+	return []graymarket.Board{{Code: "BK001", Name: string(boardType), Type: boardType}}, nil
+}
+
+func (s *fakeStore) SaveBoardCatalogSnapshot(context.Context, string, graymarket.BoardType, []graymarket.Board) error {
+	return nil
+}
+
 func (s *fakeStore) SaveIntraday(_ context.Context, _ string, _ graymarket.RankSnapshot, _ bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
