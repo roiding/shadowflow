@@ -49,15 +49,15 @@ FROM daily_archive_manifest WHERE trade_date=?`, tradeDate))
 	if err := tx.QueryRowContext(ctx, `SELECT revision_id FROM daily_archive_current WHERE trade_date=?`, tradeDate).Scan(&previous); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return repository.ArchiveRevision{}, err
 	}
-	var revisionNo int
-	if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(revision_no),0)+1 FROM daily_archive_revision WHERE trade_date=?`, tradeDate).Scan(&revisionNo); err != nil {
-		return repository.ArchiveRevision{}, err
+	revisionNo := 1
+	if previous.Valid {
+		revisionID = previous.String
+		if err := tx.QueryRowContext(ctx, `SELECT revision_no FROM daily_archive_revision WHERE revision_id=?`, revisionID).Scan(&revisionNo); err != nil {
+			return repository.ArchiveRevision{}, err
+		}
 	}
 
-	if err := copyArchiveRevision(ctx, tx, tradeDate, revisionID); err != nil {
-		return repository.ArchiveRevision{}, err
-	}
-	contentSHA256, err := hashArchiveRevision(ctx, tx, revisionID)
+	contentSHA256, err := hashArchiveData(ctx, tx, tradeDate)
 	if err != nil {
 		return repository.ArchiveRevision{}, err
 	}
@@ -68,13 +68,12 @@ FROM daily_archive_manifest WHERE trade_date=?`, tradeDate))
 	if err != nil {
 		return repository.ArchiveRevision{}, err
 	}
-	var previousValue any
-	if previous.Valid {
-		previousValue = previous.String
-	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO daily_archive_revision
 (revision_id,trade_date,revision_no,previous_revision_id,content_sha256,manifest_json,created_at)
-VALUES (?,?,?,?,?,?,?)`, revisionID, tradeDate, revisionNo, previousValue, contentSHA256,
+VALUES (?,?,?,?,?,?,?)
+ON CONFLICT(revision_id) DO UPDATE SET
+content_sha256=excluded.content_sha256,manifest_json=excluded.manifest_json,created_at=excluded.created_at`,
+		revisionID, tradeDate, revisionNo, nil, contentSHA256,
 		string(manifestJSON), createdAt.Format(timestampLayout)); err != nil {
 		return repository.ArchiveRevision{}, err
 	}
@@ -93,9 +92,6 @@ revision_id=excluded.revision_id,updated_at=excluded.updated_at`,
 	result := repository.ArchiveRevision{
 		RevisionID: revisionID, TradeDate: tradeDate, RevisionNo: revisionNo,
 		ContentSHA256: contentSHA256, CreatedAt: createdAt,
-	}
-	if previous.Valid {
-		result.PreviousRevision = previous.String
 	}
 	return result, nil
 }
@@ -145,55 +141,17 @@ FROM daily_archive_revision WHERE revision_id=?`, revisionID).
 	return item, err == nil, err
 }
 
-func copyArchiveRevision(ctx context.Context, tx *sql.Tx, tradeDate, revisionID string) error {
-	statements := []struct {
-		query string
-		args  []any
-	}{
-		{`INSERT INTO rank_snapshot_revision
-(revision_id,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,
-quote_time,latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,
-change_pct,volume,turnover,turnover_rate,amplitude,quote_available,money_available,dark_money,regular_money,
-main_money_inflow,dark_activity,dark_inflow_ratio,up_count,flat_count,down_count,leader_name,
-leader_code,source_version,source_sort_flag,source_descending,fetched_at)
-SELECT ?,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,
-quote_time,latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,
-change_pct,volume,turnover,turnover_rate,amplitude,quote_available,money_available,dark_money,regular_money,
-main_money_inflow,dark_activity,dark_inflow_ratio,up_count,flat_count,down_count,leader_name,
-leader_code,source_version,source_sort_flag,source_descending,fetched_at
-FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close'`, []any{revisionID, tradeDate}},
-		{`INSERT INTO board_money_revision
-(revision_id,run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,
-regular_money,main_money_inflow,money_available,source_time,fetched_at)
-SELECT ?,run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,
-regular_money,main_money_inflow,money_available,source_time,fetched_at
-FROM board_money_5m WHERE trade_date=?`, []any{revisionID, tradeDate}},
-		{`INSERT INTO stock_research_revision
-(revision_id,trade_date,minute_index,market,code,money_rank,dark_money,regular_money,
-main_money_inflow,money_available,open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,
-amplitude_ppm,change_pct_ppm,change_value_e4,turnover_rate_ppm,kline_available)
-SELECT ?,trade_date,minute_index,market,code,money_rank,dark_money,regular_money,
-main_money_inflow,money_available,open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,
-amplitude_ppm,change_pct_ppm,change_value_e4,turnover_rate_ppm,kline_available
-FROM stock_research_5m WHERE trade_date=?`, []any{revisionID, tradeDate}},
-		{`INSERT INTO stock_kline_source_revision
-(revision_id,trade_date,market,code,source,point_count,parser_version,fetched_at,run_id)
-SELECT ?,trade_date,market,code,source,point_count,parser_version,fetched_at,run_id
-FROM stock_kline_source WHERE trade_date=?`, []any{revisionID, tradeDate}},
-		{`INSERT INTO raw_response_revision
-(revision_id,run_id,snapshot_at,snapshot_kind,rank_type,page,content_encoding,compression,body,fetched_at)
-SELECT ?,run_id,snapshot_at,snapshot_kind,rank_type,page,content_encoding,compression,body,fetched_at
-FROM raw_response WHERE substr(snapshot_at,1,10)=? AND snapshot_kind='daily_close'`, []any{revisionID, tradeDate}},
+func archiveTradeDateByRevision(ctx context.Context, queryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, revisionID string) (string, error) {
+	var tradeDate string
+	if err := queryer.QueryRowContext(ctx, `SELECT trade_date FROM daily_archive_revision WHERE revision_id=?`, revisionID).Scan(&tradeDate); err != nil {
+		return "", err
 	}
-	for _, statement := range statements {
-		if _, err := tx.ExecContext(ctx, statement.query, statement.args...); err != nil {
-			return err
-		}
-	}
-	return nil
+	return tradeDate, nil
 }
 
-func hashArchiveRevision(ctx context.Context, tx *sql.Tx, revisionID string) (string, error) {
+func hashArchiveData(ctx context.Context, tx *sql.Tx, tradeDate string) (string, error) {
 	digest := sha256.New()
 	queries := []struct {
 		name  string
@@ -204,22 +162,22 @@ quote_time,latest_price_raw,open_price,high_price,low_price,close_price,previous
 change_pct,volume,turnover,turnover_rate,amplitude,quote_available,money_available,dark_money,regular_money,
 main_money_inflow,dark_activity,dark_inflow_ratio,up_count,flat_count,down_count,leader_name,
 leader_code,source_version,source_sort_flag,source_descending
-FROM rank_snapshot_revision WHERE revision_id=? ORDER BY rank_type,market,code`},
+FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' ORDER BY rank_type,market,code`},
 		{"board_money", `SELECT snapshot_at,trade_date,rank_type,rank,market,code,name,
 dark_money,regular_money,main_money_inflow,money_available,source_time
-FROM board_money_revision WHERE revision_id=? ORDER BY rank_type,snapshot_at,market,code`},
+FROM board_money_5m WHERE trade_date=? ORDER BY rank_type,snapshot_at,market,code`},
 		{"stock_research", `SELECT trade_date,minute_index,market,code,money_rank,dark_money,
 regular_money,main_money_inflow,money_available,open_price_e4,high_price_e4,low_price_e4,close_price_e4,
 volume,turnover,amplitude_ppm,change_pct_ppm,change_value_e4,turnover_rate_ppm,kline_available
-FROM stock_research_revision WHERE revision_id=? ORDER BY market,code,minute_index`},
+FROM stock_research_5m WHERE trade_date=? ORDER BY market,code,minute_index`},
 		{"stock_kline_source", `SELECT trade_date,market,code,source,point_count,parser_version
-FROM stock_kline_source_revision WHERE revision_id=? ORDER BY market,code`},
+FROM stock_kline_source WHERE trade_date=? ORDER BY market,code`},
 		{"raw_response", `SELECT snapshot_at,snapshot_kind,rank_type,page,content_encoding,
-compression,body FROM raw_response_revision WHERE revision_id=?
+compression,body FROM raw_response WHERE substr(snapshot_at,1,10)=? AND snapshot_kind='daily_close'
 ORDER BY snapshot_kind,snapshot_at,rank_type,page`},
 	}
 	for _, item := range queries {
-		if err := hashRows(ctx, tx, digest, item.name, item.query, revisionID); err != nil {
+		if err := hashRows(ctx, tx, digest, item.name, item.query, tradeDate); err != nil {
 			return "", err
 		}
 	}
@@ -302,4 +260,38 @@ WHERE manifest.status='complete' AND current.revision_id IS NULL ORDER BY manife
 	_, err = store.db.Exec(`INSERT INTO database_maintenance(name,completed_at)
 VALUES ('archive_revisions_v1',?) ON CONFLICT(name) DO UPDATE SET completed_at=excluded.completed_at`, now)
 	return err
+}
+
+func migrateLightweightArchiveStorage(store *Store) error {
+	var migrated int
+	if err := store.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM database_maintenance
+WHERE name='lightweight_archive_storage_v1')`).Scan(&migrated); err != nil {
+		return err
+	}
+	if migrated == 1 {
+		return nil
+	}
+	tx, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, table := range []string{
+		"rank_snapshot_revision",
+		"board_money_revision",
+		"stock_research_revision",
+		"stock_kline_source_revision",
+		"raw_response_revision",
+		"board_catalog_snapshot",
+	} {
+		if _, err := tx.Exec(`DROP TABLE IF EXISTS ` + table); err != nil {
+			return err
+		}
+	}
+	now := time.Now().UTC().Format(timestampLayout)
+	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at)
+VALUES ('lightweight_archive_storage_v1',?)`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

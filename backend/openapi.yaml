@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: ShadowFlow API
   version: 0.4.0
-  description: 行业、概念分钟榜单、不可变盘后研究版本、日级特征、未来收益标签，以及可按截面日还原的个股行业/概念归属接口。
+  description: 行业、概念分钟榜单、按交易日累积的盘后研究归档、日级特征、未来收益标签，以及可按截面日还原的个股行业/概念归属接口。
 servers:
   - url: http://localhost:8080
 paths:
@@ -59,7 +59,7 @@ paths:
         - $ref: "#/components/parameters/TradeDate"
         - name: revision_id
           in: query
-          description: 不填时读取该交易日当前有效归档版本。
+          description: 不填时读取该交易日归档；revision_id 仅为兼容标识。
           schema: { type: string }
         - name: q
           in: query
@@ -98,7 +98,7 @@ paths:
         - $ref: "#/components/parameters/To"
         - name: revision_id
           in: query
-          description: 指定后忽略日期范围并返回该不可变版本的完整 48 点。
+          description: 指定后按该归档标识对应的交易日返回完整 48 点。
           schema: { type: string }
         - name: interval
           in: query
@@ -213,7 +213,7 @@ paths:
         - $ref: "#/components/parameters/TradeDate"
         - name: revision_id
           in: query
-          description: 不填时导出当前有效归档版本。
+          description: 不填时导出该交易日归档。
           schema: { type: string }
       responses:
         "200":
@@ -236,12 +236,12 @@ paths:
                 $ref: "#/components/schemas/QualityEnvelope"
   /api/v1/research/revisions:
     get:
-      summary: 查询指定交易日的不可变归档版本链
+      summary: 查询指定交易日的归档完整性摘要
       parameters:
         - $ref: "#/components/parameters/TradeDate"
       responses:
         "200":
-          description: 按 revision_no 倒序排列的版本和当前指针
+          description: 归档标识、内容摘要和当前指针；同一交易日通常只有一条记录
           content:
             application/json:
               schema:
@@ -252,7 +252,7 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
   /api/v1/research/features:
     get:
-      summary: 查询指定归档版本的日级分析特征
+      summary: 查询指定交易日的日级分析特征
       parameters:
         - $ref: "#/components/parameters/TradeDate"
         - name: revision_id
@@ -263,7 +263,7 @@ paths:
           schema: { type: string, enum: [industry, concept, stock] }
       responses:
         "200":
-          description: 版本化日级特征和特征集元数据
+          description: 交易日日级特征和特征集元数据
           content:
             application/json:
               schema:
@@ -274,7 +274,7 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
   /api/v1/research/labels:
     get:
-      summary: 查询指定归档版本可用的未来收益标签
+      summary: 查询指定交易日可用的未来收益标签
       parameters:
         - $ref: "#/components/parameters/TradeDate"
         - name: revision_id
@@ -282,7 +282,7 @@ paths:
           schema: { type: string }
         - name: target_revision_id
           in: query
-          description: 指定时读取被后续重跑替代的目标版本标签。
+          description: 兼容旧调用；目标数据按交易日主归档读取。
           schema: { type: string }
         - name: type
           in: query

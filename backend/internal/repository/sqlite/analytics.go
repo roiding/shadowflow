@@ -63,13 +63,13 @@ func buildAnalyticsForRevision(ctx context.Context, tx *sql.Tx, revisionID, trad
 	if len(refs) == 0 || refs[0].RevisionID != revisionID {
 		return fmt.Errorf("revision %s is not current for %s", revisionID, tradeDate)
 	}
-	current, err := loadRevisionRecordMap(ctx, tx, revisionID)
+	current, err := loadArchiveRecordMap(ctx, tx, tradeDate)
 	if err != nil {
 		return err
 	}
 	history := make([]map[featureKey]historicalRecord, 0, len(refs))
 	for _, ref := range refs {
-		records, err := loadRevisionHistoryMap(ctx, tx, ref.RevisionID)
+		records, err := loadArchiveHistoryMap(ctx, tx, ref.TradeDate)
 		if err != nil {
 			return err
 		}
@@ -79,7 +79,7 @@ func buildAnalyticsForRevision(ctx context.Context, tx *sql.Tx, revisionID, trad
 	if err != nil {
 		return err
 	}
-	curves, err := loadRevisionCurves(ctx, tx, revisionID)
+	curves, err := loadArchiveCurves(ctx, tx, tradeDate)
 	if err != nil {
 		return err
 	}
@@ -383,11 +383,11 @@ WHERE current.trade_date<=? ORDER BY current.trade_date DESC LIMIT ?`, throughDa
 	return result, rows.Err()
 }
 
-func loadRevisionRecordMap(ctx context.Context, queryer interface {
+func loadArchiveRecordMap(ctx context.Context, queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}, revisionID string) (map[featureKey]graymarket.RankRecord, error) {
+}, tradeDate string) (map[featureKey]graymarket.RankRecord, error) {
 	rows, err := queryer.QueryContext(ctx, `SELECT `+recordColumns+`
-FROM rank_snapshot_revision WHERE revision_id=? AND snapshot_kind='daily_close'`, revisionID)
+FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close'`, tradeDate)
 	if err != nil {
 		return nil, err
 	}
@@ -402,11 +402,11 @@ FROM rank_snapshot_revision WHERE revision_id=? AND snapshot_kind='daily_close'`
 	return result, nil
 }
 
-func loadRevisionHistoryMap(ctx context.Context, queryer interface {
+func loadArchiveHistoryMap(ctx context.Context, queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}, revisionID string) (map[featureKey]historicalRecord, error) {
+}, tradeDate string) (map[featureKey]historicalRecord, error) {
 	rows, err := queryer.QueryContext(ctx, `SELECT rank_type,market,code,rank,turnover,dark_money,main_money_inflow
-FROM rank_snapshot_revision WHERE revision_id=? AND snapshot_kind='daily_close'`, revisionID)
+FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close'`, tradeDate)
 	if err != nil {
 		return nil, err
 	}
@@ -465,10 +465,10 @@ SELECT stock_code,board_code FROM active WHERE source_rank=1 ORDER BY stock_code
 	return result, rows.Err()
 }
 
-func loadRevisionCurves(ctx context.Context, tx *sql.Tx, revisionID string) (map[featureKey]curveValues, error) {
+func loadArchiveCurves(ctx context.Context, tx *sql.Tx, tradeDate string) (map[featureKey]curveValues, error) {
 	result := make(map[featureKey]curveValues)
 	rows, err := tx.QueryContext(ctx, `SELECT rank_type,market,code,dark_money
-FROM board_money_revision WHERE revision_id=? ORDER BY rank_type,market,code,snapshot_at`, revisionID)
+FROM board_money_5m WHERE trade_date=? ORDER BY rank_type,market,code,snapshot_at`, tradeDate)
 	if err != nil {
 		return nil, err
 	}
@@ -488,7 +488,7 @@ FROM board_money_revision WHERE revision_id=? ORDER BY rank_type,market,code,sna
 		return nil, err
 	}
 	rows, err = tx.QueryContext(ctx, `SELECT market,code,dark_money
-FROM stock_research_revision WHERE revision_id=? ORDER BY market,code,minute_index`, revisionID)
+FROM stock_research_5m WHERE trade_date=? ORDER BY market,code,minute_index`, tradeDate)
 	if err != nil {
 		return nil, err
 	}
@@ -622,13 +622,13 @@ func rebuildFutureLabels(ctx context.Context, tx *sql.Tx, changedDate string) er
 	}
 	start := max(0, changedIndex-20)
 	recordCache := make(map[string]map[featureKey]float64)
-	loadRecords := func(revisionID string) (map[featureKey]float64, error) {
-		if records, ok := recordCache[revisionID]; ok {
+	loadRecords := func(ref revisionRef) (map[featureKey]float64, error) {
+		if records, ok := recordCache[ref.TradeDate]; ok {
 			return records, nil
 		}
-		records, err := loadRevisionCloseMap(ctx, tx, revisionID)
+		records, err := loadArchiveCloseMap(ctx, tx, ref.TradeDate)
 		if err == nil {
-			recordCache[revisionID] = records
+			recordCache[ref.TradeDate] = records
 		}
 		return records, err
 	}
@@ -648,7 +648,7 @@ label_version=excluded.label_version,generated_at=excluded.generated_at`)
 	defer statement.Close()
 	for signalIndex := start; signalIndex <= changedIndex; signalIndex++ {
 		signalRef := refs[signalIndex]
-		signalRecords, err := loadRecords(signalRef.RevisionID)
+		signalRecords, err := loadRecords(signalRef)
 		if err != nil {
 			return err
 		}
@@ -667,13 +667,13 @@ WHERE signal_revision_id=? AND target_revision_id=? AND horizon=?`,
 				signalRef.RevisionID, targetRef.RevisionID, horizon); err != nil {
 				return err
 			}
-			targetRecords, err := loadRecords(targetRef.RevisionID)
+			targetRecords, err := loadRecords(targetRef)
 			if err != nil {
 				return err
 			}
 			path := make([]map[featureKey]float64, 0, horizon)
 			for pathIndex := signalIndex + 1; pathIndex <= targetIndex; pathIndex++ {
-				records, err := loadRecords(refs[pathIndex].RevisionID)
+				records, err := loadRecords(refs[pathIndex])
 				if err != nil {
 					return err
 				}
@@ -761,11 +761,11 @@ WHERE revision_id=? AND rank_type='stock' AND primary_industry_code!=''`, revisi
 	return result, rows.Err()
 }
 
-func loadRevisionCloseMap(ctx context.Context, queryer interface {
+func loadArchiveCloseMap(ctx context.Context, queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}, revisionID string) (map[featureKey]float64, error) {
+}, tradeDate string) (map[featureKey]float64, error) {
 	rows, err := queryer.QueryContext(ctx, `SELECT rank_type,market,code,close_price
-FROM rank_snapshot_revision WHERE revision_id=? AND snapshot_kind='daily_close'`, revisionID)
+FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close'`, tradeDate)
 	if err != nil {
 		return nil, err
 	}

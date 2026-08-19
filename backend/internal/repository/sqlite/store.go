@@ -63,6 +63,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate archive revisions: %w", err)
 	}
+	if err := migrateLightweightArchiveStorage(store); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate lightweight archive storage: %w", err)
+	}
 	if err := migrateAnalytics(store); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate analytics: %w", err)
@@ -95,9 +99,6 @@ func migrateStockArchiveQuality(db *sql.DB) error {
 		`ALTER TABLE rank_snapshot ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE board_money_5m ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE stock_research_5m ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE rank_snapshot_revision ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE board_money_revision ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE stock_research_revision ADD COLUMN money_available INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(statement); err != nil && !strings.Contains(err.Error(), "duplicate column") && !strings.Contains(err.Error(), "no such table") {
 			return err

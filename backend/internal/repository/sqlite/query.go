@@ -115,10 +115,14 @@ ORDER BY snapshot_at`, string(rankType), code, from.Format(timestampLayout), to.
 }
 
 func (s *Store) BoardResearchRevisionSeries(ctx context.Context, revisionID string, rankType graymarket.RankType, code string) ([]graymarket.RankRecord, error) {
+	tradeDate, err := archiveTradeDateByRevision(ctx, s.db, revisionID)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT snapshot_at,trade_date,rank_type,rank,market,code,name,
 dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at
-FROM board_money_revision WHERE revision_id=? AND rank_type=? AND code=?
-ORDER BY snapshot_at,rank`, revisionID, string(rankType), code)
+FROM board_money_5m WHERE trade_date=? AND rank_type=? AND code=?
+ORDER BY snapshot_at,rank`, tradeDate, string(rankType), code)
 	if err != nil {
 		return nil, err
 	}
@@ -137,14 +141,14 @@ FROM stock_research_5m WHERE trade_date=? AND code=? ORDER BY minute_index`, tra
 }
 
 func (s *Store) StockResearchRevisionSeries(ctx context.Context, revisionID, code string) ([]graymarket.StockResearchPoint, error) {
-	var tradeDate string
-	if err := s.db.QueryRowContext(ctx, `SELECT trade_date FROM daily_archive_revision WHERE revision_id=?`, revisionID).Scan(&tradeDate); err != nil {
+	tradeDate, err := archiveTradeDateByRevision(ctx, s.db, revisionID)
+	if err != nil {
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available,
 open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,amplitude_ppm,change_pct_ppm,
 change_value_e4,turnover_rate_ppm,kline_available
-FROM stock_research_revision WHERE revision_id=? AND code=? ORDER BY minute_index`, revisionID, code)
+FROM stock_research_5m WHERE trade_date=? AND code=? ORDER BY minute_index`, tradeDate, code)
 	if err != nil {
 		return nil, err
 	}
@@ -254,6 +258,10 @@ func (s *Store) DailyClosePage(ctx context.Context, rankType graymarket.RankType
 }
 
 func (s *Store) DailyCloseRevisionPage(ctx context.Context, revisionID string, rankType graymarket.RankType, search, sort string, descending bool, limit, offset int) ([]graymarket.RankRecord, int, error) {
+	tradeDate, err := archiveTradeDateByRevision(ctx, s.db, revisionID)
+	if err != nil {
+		return nil, 0, err
+	}
 	sortColumns := map[string]string{
 		"rank": "rank", "name": "name", "code": "code", "dark_money": "dark_money",
 		"main_money_inflow": "main_money_inflow", "change_pct": "change_pct", "dark_activity": "dark_activity",
@@ -268,8 +276,8 @@ func (s *Store) DailyCloseRevisionPage(ctx context.Context, revisionID string, r
 	if descending {
 		direction = "DESC"
 	}
-	where := `revision_id=? AND snapshot_kind='daily_close' AND rank_type=?`
-	args := []any{revisionID, string(rankType)}
+	where := `trade_date=? AND snapshot_kind='daily_close' AND rank_type=?`
+	args := []any{tradeDate, string(rankType)}
 	if search != "" {
 		where += ` AND (name LIKE ? ESCAPE '\' OR code LIKE ? ESCAPE '\')`
 		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(search)
@@ -277,11 +285,11 @@ func (s *Store) DailyCloseRevisionPage(ctx context.Context, revisionID string, r
 		args = append(args, pattern, pattern)
 	}
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM rank_snapshot_revision WHERE `+where, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM rank_snapshot WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	args = append(args, limit, offset)
-	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot_revision WHERE `+where+
+	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot WHERE `+where+
 		` ORDER BY `+column+` `+direction+`,rank ASC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, 0, err
@@ -343,9 +351,13 @@ ORDER BY CASE rank_type WHEN 'industry' THEN 1 WHEN 'concept' THEN 2 ELSE 3 END,
 }
 
 func (s *Store) DailyCloseRevisionRecords(ctx context.Context, revisionID string) ([]graymarket.RankRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot_revision
-WHERE revision_id=? AND snapshot_kind='daily_close'
-ORDER BY CASE rank_type WHEN 'industry' THEN 1 WHEN 'concept' THEN 2 ELSE 3 END,rank`, revisionID)
+	tradeDate, err := archiveTradeDateByRevision(ctx, s.db, revisionID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
+WHERE trade_date=? AND snapshot_kind='daily_close'
+ORDER BY CASE rank_type WHEN 'industry' THEN 1 WHEN 'concept' THEN 2 ELSE 3 END,rank`, tradeDate)
 	if err != nil {
 		return nil, err
 	}

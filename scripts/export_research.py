@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export versioned ShadowFlow research datasets from SQLite."""
+"""Export ShadowFlow daily research datasets from SQLite."""
 
 from __future__ import annotations
 
@@ -23,12 +23,11 @@ DATASETS = {
         """,
     ),
     "daily_close": (
-        "rank_snapshot_revision",
+        "rank_snapshot",
         """
         SELECT snapshot.*
-        FROM daily_archive_current AS current
-        JOIN rank_snapshot_revision AS snapshot ON snapshot.revision_id=current.revision_id
-        WHERE current.trade_date BETWEEN ? AND ? AND snapshot.snapshot_kind='daily_close'
+        FROM rank_snapshot AS snapshot
+        WHERE snapshot.trade_date BETWEEN ? AND ? AND snapshot.snapshot_kind='daily_close'
         ORDER BY snapshot.trade_date,
           CASE snapshot.rank_type WHEN 'industry' THEN 1 WHEN 'concept' THEN 2 ELSE 3 END,
           snapshot.rank
@@ -67,22 +66,20 @@ DATASETS = {
         """,
     ),
     "board_money_5m": (
-        "board_money_revision",
+        "board_money_5m",
         """
         SELECT money.*
-        FROM daily_archive_current AS current
-        JOIN board_money_revision AS money ON money.revision_id=current.revision_id
-        WHERE current.trade_date BETWEEN ? AND ?
+        FROM board_money_5m AS money
+        WHERE money.trade_date BETWEEN ? AND ?
         ORDER BY money.trade_date,money.rank_type,money.code,money.snapshot_at
         """,
     ),
     "stock_research_5m": (
-        "stock_research_revision",
+        "stock_research_5m",
         """
         SELECT research.*
-        FROM daily_archive_current AS current
-        JOIN stock_research_revision AS research ON research.revision_id=current.revision_id
-        WHERE current.trade_date BETWEEN ? AND ?
+        FROM stock_research_5m AS research
+        WHERE research.trade_date BETWEEN ? AND ?
         ORDER BY research.trade_date,research.market,research.code,research.minute_index
         """,
     ),

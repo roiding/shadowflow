@@ -38,13 +38,11 @@ func (s *Service) CollectStockBoardRelations(ctx context.Context, tradeDate stri
 	}
 
 	seenBoards := make(map[string]graymarket.BoardType, 1024)
-	catalogs := make(map[graymarket.BoardType][]graymarket.Board, 2)
 	for _, boardType := range []graymarket.BoardType{graymarket.BoardIndustry, graymarket.BoardConcept} {
 		boards, err := s.fetchBoardCatalog(ctx, boardType)
 		if err != nil {
 			return fail(err)
 		}
-		catalogs[boardType] = append([]graymarket.Board(nil), boards...)
 		for _, board := range boards {
 			if previous, duplicate := seenBoards[board.Code]; duplicate {
 				return fail(fmt.Errorf("board code %s appears in both %s and %s catalogs", board.Code, previous, board.Type))
@@ -62,13 +60,6 @@ func (s *Service) CollectStockBoardRelations(ctx context.Context, tradeDate stri
 		}
 	}
 
-	if catalogStore, ok := s.relationStore.(interface {
-		SaveBoardCatalogSnapshots(context.Context, string, map[graymarket.BoardType][]graymarket.Board) error
-	}); ok {
-		if err := catalogStore.SaveBoardCatalogSnapshots(ctx, tradeDate, catalogs); err != nil {
-			return fail(fmt.Errorf("save board catalog snapshots: %w", err))
-		}
-	}
 	result, err := s.relationStore.ApplyRelationScan(ctx, runID, tradeDate, startedAt)
 	if err != nil {
 		return fail(fmt.Errorf("apply relation scan: %w", err))

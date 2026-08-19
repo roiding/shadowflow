@@ -81,6 +81,46 @@ func TestRelationBaselineChangesAndAsOfReconstruction(t *testing.T) {
 	}
 }
 
+func TestRelationHistoryTracksNewBoardsAndIndustryChanges(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	day1, day2 := "2026-08-18", "2026-08-19"
+	baseline := []graymarket.StockBoardRelation{
+		testRelation("000001", "平安银行", "BK001", "银行", graymarket.BoardIndustry, 1),
+		testRelation("000001", "平安银行", "BK101", "融资融券", graymarket.BoardConcept, 1),
+	}
+	applyTestRelationRun(t, store, ctx, "baseline-new-boards", day1, baseline)
+
+	changed := []graymarket.StockBoardRelation{
+		testRelation("000001", "平安银行", "BK003", "跨行业分类", graymarket.BoardIndustry, 1),
+		testRelation("000001", "平安银行", "BK101", "融资融券", graymarket.BoardConcept, 1),
+		testRelation("000001", "平安银行", "BK103", "新增概念", graymarket.BoardConcept, 2),
+	}
+	result := applyTestRelationRun(t, store, ctx, "new-boards", day2, changed)
+	if result.AddedCount != 2 || result.RemovedCount != 1 {
+		t.Fatalf("unexpected relation changes: %+v", result)
+	}
+	before, err := store.StockBoardRelations(ctx, "000001", day1)
+	if err != nil || len(before) != 2 {
+		t.Fatalf("original relations were not retained historically: records=%+v err=%v", before, err)
+	}
+	after, err := store.StockBoardRelations(ctx, "000001", day2)
+	if err != nil || len(after) != 3 {
+		t.Fatalf("updated relations were not reconstructed: records=%+v err=%v", after, err)
+	}
+	seen := make(map[string]bool)
+	for _, relation := range after {
+		seen[string(relation.BoardType)+":"+relation.BoardCode] = true
+	}
+	if seen["industry:BK001"] || !seen["industry:BK003"] || !seen["concept:BK103"] {
+		t.Fatalf("industry replacement or new concept was lost: records=%+v", after)
+	}
+}
+
 func TestFailedRelationRunDoesNotChangeCurrentState(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {

@@ -111,6 +111,10 @@ func (s *fakeSource) FetchBoardQuotes(_ context.Context, rankType graymarket.Ran
 		QuoteTime: "2026-08-14T07:00:00Z", Available: true}}, nil
 }
 
+func (s *fakeSource) FetchBoardCatalog(_ context.Context, boardType graymarket.BoardType) ([]graymarket.Board, error) {
+	return []graymarket.Board{{Code: "BK001", Name: string(boardType), Type: boardType}}, nil
+}
+
 type fakeStore struct {
 	mu              sync.Mutex
 	started         []repository.CollectionRun
@@ -130,14 +134,6 @@ type fakeStore struct {
 	compactErr      error
 	missingKlines   []string
 	dailyCloseRows  []graymarket.RankRecord
-}
-
-func (s *fakeStore) BoardCatalogSnapshot(_ context.Context, _ string, boardType graymarket.BoardType) ([]graymarket.Board, error) {
-	return []graymarket.Board{{Code: "BK001", Name: string(boardType), Type: boardType}}, nil
-}
-
-func (s *fakeStore) SaveBoardCatalogSnapshot(context.Context, string, graymarket.BoardType, []graymarket.Board) error {
-	return nil
 }
 
 func (s *fakeStore) SaveIntraday(_ context.Context, _ string, _ graymarket.RankSnapshot, _ bool) error {

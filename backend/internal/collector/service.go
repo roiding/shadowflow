@@ -48,11 +48,6 @@ type BoardCatalogSource interface {
 	FetchBoardCatalog(context.Context, graymarket.BoardType) ([]graymarket.Board, error)
 }
 
-type BoardCatalogSnapshotStore interface {
-	SaveBoardCatalogSnapshot(context.Context, string, graymarket.BoardType, []graymarket.Board) error
-	BoardCatalogSnapshot(context.Context, string, graymarket.BoardType) ([]graymarket.Board, error)
-}
-
 type StockKlineSource interface {
 	FetchStockKlines5m(context.Context, graymarket.RankSnapshot) ([]graymarket.StockKlinePoint, error)
 }
@@ -405,24 +400,8 @@ func (s *Service) collectBoardArchive(ctx context.Context, rankType graymarket.R
 	// those full-universe records before fetching the post-close curve.
 	var catalog []graymarket.Board
 	var catalogErr error
-	if catalogStore, ok := s.store.(BoardCatalogSnapshotStore); ok {
-		catalog, catalogErr = catalogStore.BoardCatalogSnapshot(ctx, formatDate(requestedDate), boardTypeForRank(rankType))
-	}
-	if errors.Is(catalogErr, graymarket.ErrNoData) || catalog == nil {
-		// A historical rerun must use the directory that was observed on that
-		// trading day. Falling back to today's live directory can silently add
-		// boards that did not exist then (or lose boards that were removed).
-		// Same-day collection may still use the live directory as an emergency
-		// fallback when the morning relation/catalog task was unavailable.
-		today := time.Now().In(runAt.Location()).Format("2006-01-02")
-		if formatDate(requestedDate) != today {
-			err = fmt.Errorf("historical board catalog snapshot is required for %s (%s)", formatDate(requestedDate), boardTypeForRank(rankType))
-			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "catalog_snapshot_required", err.Error()
-			return finish(err)
-		}
-		if catalogSource, ok := s.source.(BoardCatalogSource); ok {
-			catalog, catalogErr = catalogSource.FetchBoardCatalog(ctx, boardTypeForRank(rankType))
-		}
+	if catalogSource, ok := s.source.(BoardCatalogSource); ok {
+		catalog, catalogErr = catalogSource.FetchBoardCatalog(ctx, boardTypeForRank(rankType))
 	}
 	if catalogErr != nil {
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "catalog_fetch", catalogErr.Error()

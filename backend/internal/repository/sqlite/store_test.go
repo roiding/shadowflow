@@ -691,7 +691,7 @@ func TestArchiveManifestTracksCompletenessAndKlineSource(t *testing.T) {
 	}
 }
 
-func TestArchiveRevisionPreservesSupersededDailyData(t *testing.T) {
+func TestArchiveRevisionTracksPrimaryDailyDataWithoutCopyingIt(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -739,30 +739,23 @@ func TestArchiveRevisionPreservesSupersededDailyData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.RevisionNo != 1 || second.RevisionNo != 2 || second.PreviousRevision != first.RevisionID ||
+	if first.RevisionNo != 1 || second.RevisionNo != 1 || second.RevisionID != first.RevisionID ||
 		first.ContentSHA256 == second.ContentSHA256 {
-		t.Fatalf("unexpected revision chain: first=%+v second=%+v", first, second)
+		t.Fatalf("unexpected lightweight archive metadata: first=%+v second=%+v", first, second)
 	}
-	var firstCloseMoney, secondCloseMoney, firstPointMoney, secondPointMoney int64
-	if err := store.db.QueryRowContext(ctx, `SELECT dark_money FROM rank_snapshot_revision
-WHERE revision_id='revision-one' AND rank_type='stock' AND code='000001'`).Scan(&firstCloseMoney); err != nil {
-		t.Fatal(err)
+	closeRows, _, err := store.DailyCloseRevisionPage(ctx, first.RevisionID, graymarket.RankStock, "", "rank", false, 10, 0)
+	if err != nil || len(closeRows) != 1 || closeRows[0].DarkMoney != 999 {
+		t.Fatalf("revision query did not read primary close archive: rows=%+v err=%v", closeRows, err)
 	}
-	if err := store.db.QueryRowContext(ctx, `SELECT dark_money FROM rank_snapshot_revision
-WHERE revision_id='revision-two' AND rank_type='stock' AND code='000001'`).Scan(&secondCloseMoney); err != nil {
-		t.Fatal(err)
+	pointsAfterRerun, err := store.StockResearchRevisionSeries(ctx, first.RevisionID, "000001")
+	if err != nil || len(pointsAfterRerun) != 48 || pointsAfterRerun[0].DarkMoney != 777 {
+		t.Fatalf("revision query did not read primary research archive: points=%+v err=%v", pointsAfterRerun, err)
 	}
-	if err := store.db.QueryRowContext(ctx, `SELECT dark_money FROM stock_research_revision
-WHERE revision_id='revision-one' AND code='000001' AND minute_index=0`).Scan(&firstPointMoney); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.db.QueryRowContext(ctx, `SELECT dark_money FROM stock_research_revision
-WHERE revision_id='revision-two' AND code='000001' AND minute_index=0`).Scan(&secondPointMoney); err != nil {
-		t.Fatal(err)
-	}
-	if firstCloseMoney != 100 || secondCloseMoney != 999 || firstPointMoney != 0 || secondPointMoney != 777 {
-		t.Fatalf("superseded data changed: close=%d/%d point=%d/%d",
-			firstCloseMoney, secondCloseMoney, firstPointMoney, secondPointMoney)
+	for _, table := range []string{"rank_snapshot_revision", "board_money_revision", "stock_research_revision", "stock_kline_source_revision", "raw_response_revision"} {
+		var exists int
+		if err := store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)`, table).Scan(&exists); err != nil || exists != 0 {
+			t.Fatalf("duplicate archive table %s still exists: exists=%d err=%v", table, exists, err)
+		}
 	}
 	manifest, err := store.ArchiveManifest(ctx, tradeDate)
 	if err != nil {
@@ -772,8 +765,8 @@ WHERE revision_id='revision-two' AND code='000001' AND minute_index=0`).Scan(&se
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.CurrentRevisionID != second.RevisionID || manifest.RevisionNo != 2 ||
-		len(revisions) != 2 || revisions[0].RevisionID != second.RevisionID {
+	if manifest.CurrentRevisionID != second.RevisionID || manifest.RevisionNo != 1 ||
+		len(revisions) != 1 || revisions[0].RevisionID != second.RevisionID {
 		t.Fatalf("current revision pointer is incorrect: manifest=%+v revisions=%+v", manifest, revisions)
 	}
 	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept} {
@@ -795,8 +788,8 @@ WHERE revision_id='revision-two' AND code='000001' AND minute_index=0`).Scan(&se
 	if err != nil {
 		t.Fatal(err)
 	}
-	if third.RevisionNo != 3 || third.ContentSHA256 != second.ContentSHA256 {
-		t.Fatalf("identical rerun did not create a content-addressed revision: second=%+v third=%+v", second, third)
+	if third.RevisionNo != 1 || third.RevisionID != second.RevisionID || third.ContentSHA256 != second.ContentSHA256 {
+		t.Fatalf("identical rerun changed the daily archive identity: second=%+v third=%+v", second, third)
 	}
 }
 
@@ -944,24 +937,14 @@ WHERE signal_revision_id='revision-0' AND horizon=5 AND rank_type='stock' AND co
 	if err != nil {
 		t.Fatal(err)
 	}
-	if labelVersions != 2 || len(currentLabels) == 0 {
-		t.Fatalf("target revision labels were overwritten: versions=%d current=%+v", labelVersions, currentLabels)
+	if labelVersions != 1 || len(currentLabels) == 0 {
+		t.Fatalf("daily target labels were not refreshed in place: versions=%d current=%+v", labelVersions, currentLabels)
 	}
 	for _, label := range currentLabels {
 		if label.RankType == graymarket.RankStock && label.Code == "000001" {
-			if label.TargetRevisionID != "revision-5b" || math.Abs(label.ReturnRate-1) > 1e-9 {
+			if label.TargetRevisionID != "revision-5" || math.Abs(label.ReturnRate-1) > 1e-9 {
 				t.Fatalf("current target label is incorrect after rerun: %+v", label)
 			}
-		}
-	}
-	supersededLabels, err := store.FutureReturnLabels(ctx, dates[0], "revision-0", "revision-5", 5)
-	if err != nil || len(supersededLabels) == 0 {
-		t.Fatalf("superseded target labels are not queryable: labels=%+v err=%v", supersededLabels, err)
-	}
-	for _, label := range supersededLabels {
-		if label.RankType == graymarket.RankStock && label.Code == "000001" &&
-			(label.TargetRevisionID != "revision-5" || math.Abs(label.ReturnRate-0.5) > 1e-9) {
-			t.Fatalf("superseded target label changed: %+v", label)
 		}
 	}
 }

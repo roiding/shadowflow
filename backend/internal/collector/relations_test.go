@@ -62,11 +62,6 @@ func TestCollectStockBoardRelationsBuildsBaselineAndChanges(t *testing.T) {
 	if err != nil || len(relations) != 2 {
 		t.Fatalf("baseline was not queryable: records=%+v err=%v", relations, err)
 	}
-	catalog, err := store.BoardCatalogSnapshot(ctx, "2026-08-13", graymarket.BoardConcept)
-	if err != nil || len(catalog) != 1 || catalog[0].Code != "BK101" {
-		t.Fatalf("morning board catalog snapshot was not persisted: catalog=%+v err=%v", catalog, err)
-	}
-
 	source.constituents["BK101"] = nil
 	if err := service.CollectStockBoardRelations(ctx, "2026-08-14"); err != nil {
 		t.Fatal(err)
