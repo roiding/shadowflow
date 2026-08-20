@@ -26,13 +26,6 @@ type StockDailyQuoteSource interface {
 	FetchStockQuotes(context.Context, []graymarket.StockBoardRelation) ([]graymarket.StockQuote, error)
 }
 
-// AllStockQuoteSource provides the complete active A-share quote universe used
-// by the end-of-day archive. The darktrade stock list remains an attribute
-// source only and must not define which securities are persisted.
-type AllStockQuoteSource interface {
-	FetchAllStockQuotes(context.Context) ([]graymarket.StockQuote, error)
-}
-
 type BoardDailyQuoteSource interface {
 	FetchBoardQuotes(context.Context, graymarket.RankType) ([]graymarket.BoardQuote, error)
 }
@@ -512,18 +505,9 @@ func (s *Service) collectStockArchive(ctx context.Context, requestedDate string,
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "date_mismatch", err.Error()
 		return finish(err)
 	}
-	if allQuotes, ok := s.source.(AllStockQuoteSource); ok {
-		quotes, quoteErr := allQuotes.FetchAllStockQuotes(ctx)
-		if quoteErr != nil {
-			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "catalog_fetch", quoteErr.Error()
-			return finish(quoteErr)
-		}
-		snapshot, err = mergeStockArchiveUniverse(snapshot, quotes, closeAt)
-		if err != nil {
-			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "catalog_merge", err.Error()
-			return finish(err)
-		}
-	}
+	// The stock darktrade response is the authoritative end-of-day universe.
+	// Enrichment below supplies the official daily quote fields; records without
+	// a usable quote are excluded from the quantitative archive.
 	if err := s.enrichStockDailyClose(ctx, &snapshot); err != nil {
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
 		return finish(err)
@@ -531,7 +515,7 @@ func (s *Service) collectStockArchive(ctx context.Context, requestedDate string,
 	snapshot.Records = eligibleStockRecords(snapshot.Records)
 	snapshot.ExpectedTotal = len(snapshot.Records)
 	if len(snapshot.Records) == 0 {
-		err = errors.New("full-market stock archive has no eligible daily quotes")
+		err = errors.New("darktrade stock archive has no eligible daily quotes")
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "no_eligible_stocks", err.Error()
 		return finish(err)
 	}
@@ -559,43 +543,6 @@ func eligibleStockRecords(records []graymarket.RankRecord) []graymarket.RankReco
 		}
 	}
 	return eligible
-}
-
-func mergeStockArchiveUniverse(dark graymarket.RankSnapshot, quotes []graymarket.StockQuote, closeAt time.Time) (graymarket.RankSnapshot, error) {
-	if len(quotes) == 0 {
-		return graymarket.RankSnapshot{}, errors.New("empty full-market stock quote universe")
-	}
-	darkByCode := make(map[string]graymarket.RankRecord, len(dark.Records))
-	for _, record := range dark.Records {
-		darkByCode[record.Code] = record
-	}
-	records := make([]graymarket.RankRecord, 0, len(quotes))
-	seen := make(map[string]struct{}, len(quotes))
-	for _, quote := range quotes {
-		if quote.StockCode == "" {
-			return graymarket.RankSnapshot{}, errors.New("full-market stock quote universe contains an empty code")
-		}
-		if _, duplicate := seen[quote.StockCode]; duplicate {
-			return graymarket.RankSnapshot{}, fmt.Errorf("duplicate full-market stock code %s", quote.StockCode)
-		}
-		seen[quote.StockCode] = struct{}{}
-		record, present := darkByCode[quote.StockCode]
-		if !present {
-			record = graymarket.RankRecord{TradeDate: dark.TradeDate, SnapshotAt: closeAt,
-				RankType: graymarket.RankStock, Rank: 0, Market: quote.StockMarket,
-				Code: quote.StockCode, Name: quote.StockName, SourceVersion: 101,
-				SourceSortFlag: 6, SourceDescending: true, FetchedAt: quote.FetchedAt}
-		}
-		record.TradeDate, record.SnapshotAt, record.RankType = dark.TradeDate, closeAt, graymarket.RankStock
-		record.Market, record.Code = quote.StockMarket, quote.StockCode
-		if quote.StockName != "" {
-			record.Name = quote.StockName
-		}
-		records = append(records, record)
-	}
-	dark.Records, dark.ExpectedTotal = records, len(records)
-	dark.SnapshotAt = closeAt
-	return dark, nil
 }
 
 func (s *Service) enrichStockDailyClose(ctx context.Context, snapshot *graymarket.RankSnapshot) error {

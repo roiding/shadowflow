@@ -81,27 +81,6 @@ func TestFetchBoardCatalogRejectsInvalidTotal(t *testing.T) {
 	}
 }
 
-func TestFetchAllStockQuotesKeepsListedSTARAndExcludesUnlistedSecurities(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"rc":0,"data":{"total":5,"diff":[
-			{"f2":88.8,"f12":"688836","f13":1,"f14":"科创板股票","f18":80,"f292":5},
-			{"f12":"603448","f13":1,"f14":"待上市新股","f292":9},
-			{"f12":"000508","f13":0,"f14":"退市股票","f292":7},
-			{"f12":"600001","f13":1,"f14":"正常上市股","f18":10,"f292":5},
-			{"f12":"600984","f13":1,"f14":"停牌上市股","f292":6}
-		]}}`))
-	}))
-	defer server.Close()
-	client := NewClient("unused", server.Client(), 100).WithQuoteBaseURLs([]string{server.URL})
-	quotes, err := client.FetchAllStockQuotes(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(quotes) != 2 || quotes[0].StockCode != "688836" || !quotes[0].Available || quotes[1].StockCode != "600001" {
-		t.Fatalf("unexpected listed stock universe: %+v", quotes)
-	}
-}
-
 func TestQuoteRequestFallsBackAfterEmptyPrimaryResponse(t *testing.T) {
 	primaryCalls, fallbackCalls := 0, 0
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

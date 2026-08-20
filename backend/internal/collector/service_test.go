@@ -125,6 +125,7 @@ type fakeStore struct {
 	savedKlineRows  int
 	lastDailyClose  graymarket.RankSnapshot
 	lastBoardClose  graymarket.RankSnapshot
+	lastStockClose  graymarket.RankSnapshot
 	startErr        error
 	finishErr       error
 	saveErr         error
@@ -159,8 +160,11 @@ func (s *fakeStore) SaveBoardArchive(_ context.Context, _ string, snapshot graym
 	return s.saveErr
 }
 
-func (s *fakeStore) SaveStockArchive(_ context.Context, _ string, _ graymarket.RankSnapshot, _ []graymarket.MoneyPoint) error {
+func (s *fakeStore) SaveStockArchive(_ context.Context, _ string, snapshot graymarket.RankSnapshot, _ []graymarket.MoneyPoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.savedArchives++
+	s.lastStockClose = snapshot
 	return s.saveErr
 }
 
@@ -432,20 +436,25 @@ func TestCollectBoardArchivesPersistTurnoverAndTurnoverRate(t *testing.T) {
 	}
 }
 
-func TestMergeStockArchiveUniverseUsesFullMarketQuotes(t *testing.T) {
+func TestCollectStockArchiveUsesDarktradeUniverse(t *testing.T) {
 	location := time.FixedZone("Asia/Shanghai", 8*60*60)
-	at := time.Date(2026, 8, 18, 15, 0, 0, 0, location)
-	dark := graymarket.RankSnapshot{TradeDate: "2026-08-18", RankType: graymarket.RankStock, SnapshotAt: at,
-		Records: []graymarket.RankRecord{{TradeDate: "2026-08-18", SnapshotAt: at, RankType: graymarket.RankStock, Rank: 1, Market: 1, Code: "600001", Name: "榜内", DarkMoney: 8}}}
-	merged, err := mergeStockArchiveUniverse(dark, []graymarket.StockQuote{{StockCode: "600001", StockMarket: 1, StockName: "榜内"}, {StockCode: "688836", StockMarket: 1, StockName: "榜外"}}, at)
-	if err != nil {
+	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+	runAt := time.Date(2026, 8, 14, 16, 0, 0, 0, location)
+	snapshot := successfulSnapshot(closeAt)
+	snapshot.RankType = graymarket.RankStock
+	snapshot.ExpectedTotal = 2
+	snapshot.Records[0].RankType = graymarket.RankStock
+	snapshot.Records = append(snapshot.Records, graymarket.RankRecord{
+		TradeDate: snapshot.TradeDate, SnapshotAt: closeAt, RankType: graymarket.RankStock,
+		Rank: 2, Market: 1, Code: "600002", Name: "榜内无行情",
+	})
+	source := &fakeSource{results: []sourceResult{{snapshot: snapshot}}, unavailableQuote: map[string]bool{"600002": true}}
+	store := &fakeStore{}
+	if err := newTestService(source, store).collectStockArchive(context.Background(), "20260814", closeAt, runAt); err != nil {
 		t.Fatal(err)
 	}
-	if len(merged.Records) != 2 || merged.Records[1].Code != "688836" || merged.Records[1].Name != "榜外" {
-		t.Fatalf("full-market stock was not retained: %+v", merged.Records)
-	}
-	if merged.Records[1].Rank != 0 || merged.Records[1].MoneyAvailable {
-		t.Fatalf("catalog-only stock should not receive fabricated ranking or money availability: %+v", merged.Records[1])
+	if len(store.lastStockClose.Records) != 1 || store.lastStockClose.Records[0].Code != snapshot.Records[0].Code {
+		t.Fatalf("stock archive did not preserve the eligible darktrade universe: %+v", store.lastStockClose.Records)
 	}
 }
 
