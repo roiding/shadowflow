@@ -383,7 +383,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, tradeDate, rankType, 240, 240, 48, 48, 1, 1, 
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO stock_archive_quality
 (trade_date,expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,daily_close_rows,daily_kline_rows,money_archived_at,kline_archived_at,updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?)`, tradeDate, 2, 48, 1, 96, 48, 2, 1, now, now, now); err != nil {
+VALUES (?,?,?,?,?,?,?,?,?,?,?)`, tradeDate, 2, 48, 1, 48, 48, 2, 1, now, now, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO rank_intraday_work
@@ -398,7 +398,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "work", now, tradeD
 	}{
 		{"board money", `UPDATE research_quality SET collected_research=47 WHERE trade_date='2026-08-12' AND rank_type='industry'`, `UPDATE research_quality SET collected_research=48 WHERE trade_date='2026-08-12' AND rank_type='industry'`},
 		{"board close", `UPDATE research_quality SET collected_daily_close=0 WHERE trade_date='2026-08-12' AND rank_type='concept'`, `UPDATE research_quality SET collected_daily_close=1 WHERE trade_date='2026-08-12' AND rank_type='concept'`},
-		{"stock money", `UPDATE stock_archive_quality SET money_rows=95 WHERE trade_date='2026-08-12'`, `UPDATE stock_archive_quality SET money_rows=96 WHERE trade_date='2026-08-12'`},
+		{"stock money", `UPDATE stock_archive_quality SET money_rows=47 WHERE trade_date='2026-08-12'`, `UPDATE stock_archive_quality SET money_rows=48 WHERE trade_date='2026-08-12'`},
 		{"stock five-minute K", `UPDATE stock_archive_quality SET kline_rows=47 WHERE trade_date='2026-08-12'`, `UPDATE stock_archive_quality SET kline_rows=48 WHERE trade_date='2026-08-12'`},
 		{"stock close", `UPDATE stock_archive_quality SET daily_close_rows=1 WHERE trade_date='2026-08-12'`, `UPDATE stock_archive_quality SET daily_close_rows=2 WHERE trade_date='2026-08-12'`},
 		{"stock daily K", `UPDATE stock_archive_quality SET daily_kline_rows=0 WHERE trade_date='2026-08-12'`, `UPDATE stock_archive_quality SET daily_kline_rows=1 WHERE trade_date='2026-08-12'`},
@@ -515,8 +515,15 @@ func TestSaveStockArchivePersists48MoneyBarsAndDailyK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if quality.ExpectedStocks != 2 || quality.ExpectedKlineStocks != 1 || quality.MoneyRows != 96 || quality.DailyCloseRows != 2 || quality.DailyKlineRows != 1 || quality.KlineRows != 0 {
+	if quality.ExpectedStocks != 2 || quality.ExpectedKlineStocks != 1 || quality.MoneyRows != 48 || quality.DailyCloseRows != 2 || quality.DailyKlineRows != 1 || quality.KlineRows != 0 {
 		t.Fatalf("unexpected stock money/daily archive quality: %+v", quality)
+	}
+	var researchRows int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM stock_research_5m WHERE trade_date=? AND code='600001'`, snapshot.TradeDate).Scan(&researchRows); err != nil {
+		t.Fatal(err)
+	}
+	if researchRows != 0 {
+		t.Fatalf("suspended stock should not have five-minute research rows: %d", researchRows)
 	}
 
 	klines := make([]graymarket.StockKlinePoint, 0, 48)

@@ -51,6 +51,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate stock archive quality: %w", err)
 	}
+	if err := migrateStockResearchUniverse(store); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate stock research universe: %w", err)
+	}
 	if err := migrateResearchCloseModel(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate 15:00 close snapshots: %w", err)
@@ -201,6 +205,79 @@ daily_kline_rows=(SELECT count(*) FROM rank_snapshot WHERE trade_date=stock_arch
 AND snapshot_kind='daily_close' AND rank_type='stock' AND quote_available=1)
 WHERE expected_kline_stocks=0 AND daily_kline_rows=0`)
 	return err
+}
+
+// migrateStockResearchUniverse removes placeholder five-minute rows for
+// suspended or otherwise unavailable daily quotes. Daily identity snapshots
+// remain in rank_snapshot; stock_research_5m contains only archive-eligible
+// securities with a usable daily bar.
+func migrateStockResearchUniverse(store *Store) error {
+	var migrated int
+	if err := store.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM database_maintenance
+WHERE name='stock_research_universe_v1')`).Scan(&migrated); err != nil {
+		return err
+	}
+	if migrated == 1 {
+		return nil
+	}
+	tx, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT DISTINCT research.trade_date
+FROM stock_research_5m AS research
+WHERE NOT EXISTS (
+SELECT 1 FROM rank_snapshot AS close
+WHERE close.trade_date=research.trade_date AND close.snapshot_kind='daily_close'
+AND close.rank_type='stock' AND close.market=research.market AND close.code=research.code
+AND close.quote_available=1
+)`)
+	if err != nil {
+		return err
+	}
+	var dates []string
+	for rows.Next() {
+		var date string
+		if err := rows.Scan(&date); err != nil {
+			rows.Close()
+			return err
+		}
+		dates = append(dates, date)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM stock_research_5m AS research
+WHERE NOT EXISTS (
+SELECT 1 FROM rank_snapshot AS close
+WHERE close.trade_date=research.trade_date AND close.snapshot_kind='daily_close'
+AND close.rank_type='stock' AND close.market=research.market AND close.code=research.code
+AND close.quote_available=1
+)`); err != nil {
+		return err
+	}
+	for _, date := range dates {
+		var moneyRows, klineRows int
+		if err := tx.QueryRow(`SELECT coalesce(sum(money_available),0),coalesce(sum(kline_available),0)
+FROM stock_research_5m WHERE trade_date=?`, date).Scan(&moneyRows, &klineRows); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE stock_archive_quality SET money_rows=?,kline_rows=?,
+money_archived_at=CASE WHEN money_rows>0 THEN coalesce(money_archived_at,?) ELSE NULL END,
+kline_archived_at=CASE WHEN kline_rows=expected_kline_stocks*expected_points THEN coalesce(kline_archived_at,?) ELSE NULL END,
+updated_at=? WHERE trade_date=?`, moneyRows, klineRows, time.Now().UTC().Format(timestampLayout), time.Now().UTC().Format(timestampLayout), time.Now().UTC().Format(timestampLayout), date); err != nil {
+			return err
+		}
+		if err := refreshArchiveManifest(context.Background(), tx, date); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at)
+VALUES ('stock_research_universe_v1',?)`, time.Now().UTC().Format(timestampLayout)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func migrateDailyQuoteColumns(db *sql.DB) error {
@@ -510,12 +587,10 @@ func (s *Store) SaveStockArchive(ctx context.Context, runID string, snapshot gra
 		return err
 	}
 	defer tx.Rollback()
-	// A rerun starts a fresh K-line attempt. Keeping rows from a prior run can
-	// make a failed refetch look complete, so clear both values and provenance.
-	if _, err := tx.ExecContext(ctx, `UPDATE stock_research_5m SET
-open_price_e4=0,high_price_e4=0,low_price_e4=0,close_price_e4=0,volume=0,turnover=0,
-amplitude_ppm=0,change_pct_ppm=0,change_value_e4=0,turnover_rate_ppm=0,kline_available=0
-WHERE trade_date=?`, snapshot.TradeDate); err != nil {
+	// A rerun starts a fresh attempt. Only archive-eligible securities are
+	// represented in the five-minute table; suspended identities stay in the
+	// daily close snapshot without empty research rows.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_research_5m WHERE trade_date=?`, snapshot.TradeDate); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_kline_source WHERE trade_date=?`, snapshot.TradeDate); err != nil {
@@ -531,9 +606,15 @@ WHERE trade_date=?`, snapshot.TradeDate); err != nil {
 		return err
 	}
 	expectedKlineStocks := 0
+	type stockKey struct {
+		market int64
+		code   string
+	}
+	eligible := make(map[stockKey]struct{}, len(snapshot.Records))
 	for _, record := range snapshot.Records {
 		if record.QuoteAvailable {
 			expectedKlineStocks++
+			eligible[stockKey{market: record.Market, code: record.Code}] = struct{}{}
 		}
 		if err := insertRecord(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), record); err != nil {
 			return err
@@ -549,6 +630,9 @@ WHERE trade_date=?`, snapshot.TradeDate); err != nil {
 		if !ok || point.TradeDate != snapshot.TradeDate || point.RankType != graymarket.RankStock {
 			return fmt.Errorf("invalid stock money point %s %s", point.Code, point.SnapshotAt)
 		}
+		if _, ok := eligible[stockKey{market: point.Market, code: point.Code}]; !ok {
+			continue
+		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO stock_research_5m
 (trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available)
 VALUES (?,?,?,?,?,?,?,?,?)
@@ -560,9 +644,12 @@ money_rank=excluded.money_rank,dark_money=excluded.dark_money,
 			return err
 		}
 	}
-	// Materialize unavailable curves as explicit rows so a full-market archive
-	// keeps a stable 48-point shape without treating missing money as zero.
+	// Materialize missing money points only for archive-eligible securities so
+	// every stored eligible stock still has a stable 48-point shape.
 	for _, record := range snapshot.Records {
+		if !record.QuoteAvailable {
+			continue
+		}
 		for index, clock := range expectedResearchTimes() {
 			at, _ := time.ParseInLocation("2006-01-02 15:04", snapshot.TradeDate+" "+clock, snapshot.SnapshotAt.Location())
 			minuteIndex, _ := researchMinuteIndex(at)
@@ -574,9 +661,6 @@ VALUES (?,?,?,?,?,?,?,?,0)`, snapshot.TradeDate, minuteIndex, record.Market, rec
 			}
 			_ = index
 		}
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_research_5m WHERE trade_date=? AND money_rank=-1`, snapshot.TradeDate); err != nil {
-		return err
 	}
 	var klineRows, moneyRows int
 	if err := tx.QueryRowContext(ctx, `SELECT coalesce(sum(money_available),0) FROM stock_research_5m WHERE trade_date=?`, snapshot.TradeDate).Scan(&moneyRows); err != nil {
@@ -901,7 +985,7 @@ AND (SELECT count(*) FROM research_quality quality WHERE quality.trade_date=date
 AND quality.collected_research=quality.expected_research
 AND quality.collected_daily_close=quality.expected_daily_close)=2
 	AND EXISTS (SELECT 1 FROM stock_archive_quality stock WHERE stock.trade_date=date_value
-	AND stock.money_rows=stock.expected_stocks*stock.expected_points
+	AND stock.money_rows=stock.expected_kline_stocks*stock.expected_points
 	AND stock.kline_rows=stock.expected_kline_stocks*stock.expected_points
 	AND stock.daily_close_rows=stock.expected_stocks
 	AND stock.daily_kline_rows=stock.expected_kline_stocks)`

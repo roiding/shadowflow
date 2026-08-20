@@ -204,7 +204,7 @@ FROM stock_kline_source WHERE trade_date=? GROUP BY source ORDER BY source`, tra
 		manifest.ValidationErrors = append(manifest.ValidationErrors, "stock archive quality is missing")
 	} else {
 		validateCount("stock daily close rows", manifest.StockCloseRows, manifest.ExpectedStockRows)
-		validateCount("stock money rows", manifest.StockMoneyRows, manifest.ExpectedStockRows*48)
+		validateCount("stock money rows", manifest.StockMoneyRows, expectedStockKlineStocks*48)
 		validateCount("stock daily kline rows", manifest.StockDailyKlineRows, expectedStockKlineStocks)
 		validateCount("stock five-minute kline rows", manifest.StockKlineRows, manifest.ExpectedStockKlineRows)
 	}
