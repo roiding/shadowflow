@@ -55,6 +55,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate 15:00 close snapshots: %w", err)
 	}
+	if err := migrateLegacyBoardMoney(store); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate legacy board money: %w", err)
+	}
 	if err := migrateArchiveMetadata(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate archive metadata: %w", err)
@@ -90,6 +94,62 @@ WHERE status='running'`, time.Now().UTC().Format(timestampLayout)); err != nil {
 		return nil, fmt.Errorf("cleanup interrupted relation stage: %w", err)
 	}
 	return store, nil
+}
+
+// migrateLegacyBoardMoney folds the pre-board_money_5m board funding rows into
+// the current table once. The old rank_snapshot research rows are then removed
+// so there is one authoritative storage path for historical funding data.
+func migrateLegacyBoardMoney(store *Store) error {
+	var migrated int
+	if err := store.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM database_maintenance
+WHERE name='legacy_board_money_v1')`).Scan(&migrated); err != nil {
+		return err
+	}
+	if migrated == 1 {
+		return nil
+	}
+	tx, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO board_money_5m
+(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
+SELECT run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,
+money_available,CAST(CASE WHEN quote_time GLOB '[0-9]*' THEN quote_time ELSE '0' END AS INTEGER),fetched_at
+FROM rank_snapshot
+WHERE snapshot_kind='research_5m' AND rank_type IN ('industry','concept')`); err != nil {
+		return err
+	}
+	var legacyRows, migratedRows int
+	if err := tx.QueryRow(`SELECT count(*) FROM rank_snapshot
+WHERE snapshot_kind='research_5m' AND rank_type IN ('industry','concept')`).Scan(&legacyRows); err != nil {
+		return err
+	}
+	if err := tx.QueryRow(`SELECT count(*) FROM board_money_5m AS money
+WHERE EXISTS (SELECT 1 FROM rank_snapshot AS legacy
+WHERE legacy.snapshot_kind='research_5m' AND legacy.rank_type IN ('industry','concept')
+AND legacy.trade_date=money.trade_date AND legacy.snapshot_at=money.snapshot_at
+AND legacy.rank_type=money.rank_type AND legacy.market=money.market AND legacy.code=money.code)`).Scan(&migratedRows); err != nil {
+		return err
+	}
+	if legacyRows != migratedRows {
+		return fmt.Errorf("legacy board money migration incomplete: expected %d rows, migrated %d", legacyRows, migratedRows)
+	}
+	if _, err := tx.Exec(`DELETE FROM rank_snapshot
+WHERE snapshot_kind='research_5m' AND rank_type IN ('industry','concept')`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM raw_response
+WHERE snapshot_kind='research_5m' AND rank_type IN ('industry','concept')`); err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(timestampLayout)
+	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at)
+VALUES ('legacy_board_money_v1',?)`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -750,13 +810,11 @@ func (s *Store) CompactResearch(ctx context.Context, tradeDate string) ([]reposi
 		missingResearch := missing(expectedResearchTimes(), researchMinutes)
 		missingDailyClose := missing(expectedDailyCloseTimes(), closeMinutes)
 
-		_, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO rank_snapshot (
-run_id,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,quote_time,
-latest_price_raw,change_pct,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
-up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at)
-SELECT run_id,snapshot_at,trade_date,trade_date,'research_5m',rank_type,rank,market,code,name,quote_time,
-latest_price_raw,change_pct,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
-up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at
+		_, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO board_money_5m (
+run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,
+money_available,source_time,fetched_at)
+SELECT run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,
+money_available,CAST(CASE WHEN quote_time GLOB '[0-9]*' THEN quote_time ELSE '0' END AS INTEGER),fetched_at
 FROM rank_intraday_work
 WHERE trade_date=? AND rank_type=? AND substr(snapshot_at,15,2) IN ('00','05','10','15','20','25','30','35','40','45','50','55')
 AND ((substr(snapshot_at,12,5) BETWEEN '09:35' AND '11:30')

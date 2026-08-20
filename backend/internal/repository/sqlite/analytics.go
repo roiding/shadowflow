@@ -386,8 +386,11 @@ WHERE current.trade_date<=? ORDER BY current.trade_date DESC LIMIT ?`, throughDa
 func loadArchiveRecordMap(ctx context.Context, queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, tradeDate string) (map[featureKey]graymarket.RankRecord, error) {
+	// Suspended/abnormal securities remain in the daily identity snapshot, but
+	// without a usable daily bar they must not enter derived features.
 	rows, err := queryer.QueryContext(ctx, `SELECT `+recordColumns+`
-FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close'`, tradeDate)
+FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close'
+AND (rank_type!='stock' OR quote_available=1)`, tradeDate)
 	if err != nil {
 		return nil, err
 	}
@@ -406,7 +409,8 @@ func loadArchiveHistoryMap(ctx context.Context, queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, tradeDate string) (map[featureKey]historicalRecord, error) {
 	rows, err := queryer.QueryContext(ctx, `SELECT rank_type,market,code,rank,turnover,dark_money,main_money_inflow
-FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close'`, tradeDate)
+FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close'
+AND (rank_type!='stock' OR quote_available=1)`, tradeDate)
 	if err != nil {
 		return nil, err
 	}
@@ -765,7 +769,8 @@ func loadArchiveCloseMap(ctx context.Context, queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, tradeDate string) (map[featureKey]float64, error) {
 	rows, err := queryer.QueryContext(ctx, `SELECT rank_type,market,code,close_price
-FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close'`, tradeDate)
+FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close'
+AND (rank_type!='stock' OR quote_available=1)`, tradeDate)
 	if err != nil {
 		return nil, err
 	}

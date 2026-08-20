@@ -86,12 +86,20 @@ WHERE trade_date=? AND rank_type=? AND code=? ORDER BY snapshot_at`, tradeDate, 
 		return nil, err
 	}
 	if len(result) > 0 {
-		return result, nil
+		rows, closeErr := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
+WHERE trade_date=? AND rank_type=? AND code=? AND snapshot_kind='daily_close'
+ORDER BY snapshot_at`, tradeDate, string(rankType), code)
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		closeRecords, closeErr := scanRecords(rows)
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		return append(result, closeRecords...), nil
 	}
-	// Compatibility fallback for snapshots archived before the post-close
-	// money-curve model was introduced.
 	rows, err = s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
-WHERE trade_date=? AND rank_type=? AND code=? AND snapshot_kind IN ('research_5m','daily_close')
+WHERE trade_date=? AND rank_type=? AND code=? AND snapshot_kind='daily_close'
 ORDER BY snapshot_at`, tradeDate, string(rankType), code)
 	if err != nil {
 		return nil, err
@@ -102,16 +110,7 @@ ORDER BY snapshot_at`, tradeDate, string(rankType), code)
 func (s *Store) ResearchSeries(ctx context.Context, rankType graymarket.RankType, code string, from, to time.Time) ([]graymarket.RankRecord, error) {
 	result, err := s.boardMoneyRecords(ctx, `rank_type=? AND code=? AND snapshot_at>=? AND snapshot_at<=?`,
 		string(rankType), code, from.Format(timestampLayout), to.Format(timestampLayout))
-	if err != nil || len(result) > 0 {
-		return result, err
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
-WHERE snapshot_kind='research_5m' AND rank_type=? AND code=? AND snapshot_at>=? AND snapshot_at<=?
-ORDER BY snapshot_at`, string(rankType), code, from.Format(timestampLayout), to.Format(timestampLayout))
-	if err != nil {
-		return nil, err
-	}
-	return scanRecords(rows)
+	return result, err
 }
 
 func (s *Store) BoardResearchRevisionSeries(ctx context.Context, revisionID string, rankType graymarket.RankType, code string) ([]graymarket.RankRecord, error) {

@@ -51,6 +51,49 @@ func TestMigrateDailyQuoteColumnsAddsFieldsToLegacyTables(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyBoardMoneyUsesOneAuthoritativeTable(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	at := "2026-08-12T09:35:00+08:00"
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM database_maintenance WHERE name='legacy_board_money_v1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO rank_snapshot
+(run_id,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,quote_time,
+latest_price_raw,change_pct,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "legacy-run", at, "2026-08-12", "20260812",
+		"research_5m", "industry", 1, 90, "BK001", "legacy industry", "1660268100", 0, 0, 1,
+		42, 21, 63, 0, 0, 0, 0, 0, "", "", 101, 6, 1, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateLegacyBoardMoney(store); err != nil {
+		t.Fatal(err)
+	}
+	var currentRows, legacyRows int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM board_money_5m
+WHERE trade_date='2026-08-12' AND rank_type='industry' AND code='BK001'`).Scan(&currentRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM rank_snapshot
+WHERE snapshot_kind='research_5m'`).Scan(&legacyRows); err != nil {
+		t.Fatal(err)
+	}
+	if currentRows != 1 || legacyRows != 0 {
+		t.Fatalf("legacy funding was not normalized: current=%d legacy=%d", currentRows, legacyRows)
+	}
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	from := time.Date(2026, 8, 12, 0, 0, 0, 0, location)
+	series, err := store.ResearchSeries(ctx, graymarket.RankIndustry, "BK001", from, from.Add(24*time.Hour-time.Nanosecond))
+	if err != nil || len(series) != 1 || series[0].DarkMoney != 42 {
+		t.Fatalf("normalized funding is not queryable: series=%+v err=%v", series, err)
+	}
+}
+
 func TestIntradayCompactionAndCleanup(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {

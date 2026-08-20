@@ -281,6 +281,7 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 	var previousAt time.Time
 	var cumulativeVolume int64
 	var cumulativeTurnover int64
+	var closeAuctionVolume int64
 	for _, raw := range payload.Data.Trends {
 		fields, err := csv.NewReader(strings.NewReader(raw)).Read()
 		if err != nil || len(fields) < 12 {
@@ -313,6 +314,9 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 			return nil, fmt.Errorf("trend cumulative volume decreased at %s", fields[0])
 		}
 		minuteVolume := nextCumulativeVolume - cumulativeVolume
+		if at.Hour() == 15 && at.Minute() == 0 {
+			closeAuctionVolume = minuteVolume
+		}
 		bar.point.Volume += minuteVolume
 		cumulativeVolume = nextCumulativeVolume
 		nextCumulativeTurnover := integer(fields[11])
@@ -368,8 +372,14 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 		previousClose = bar.point.ClosePrice
 		points = append(points, bar.point)
 	}
+	// The closing auction can publish an official daily close without a
+	// matching trade. In that case the final one-minute row has zero volume,
+	// so the last traded five-minute close may legitimately differ from the
+	// daily close. The daily close remains authoritative for the daily bar.
+	closeMatches := samePrice(points[47].ClosePrice, stock.ClosePrice) ||
+		(closeAuctionVolume == 0 && math.Abs(points[47].ClosePrice-stock.ClosePrice) <= 0.0101)
 	if !samePrice(points[0].OpenPrice, stock.OpenPrice) || !samePrice(maxKlinePrice(points), stock.HighPrice) ||
-		!samePrice(minKlinePrice(points), stock.LowPrice) || !samePrice(points[47].ClosePrice, stock.ClosePrice) {
+		!samePrice(minKlinePrice(points), stock.LowPrice) || !closeMatches {
 		return nil, fmt.Errorf("aggregated trend OHLC does not match daily bar")
 	}
 	return points, nil
