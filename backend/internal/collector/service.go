@@ -45,6 +45,12 @@ type StockKlineSource interface {
 	FetchStockKlines5m(context.Context, graymarket.RankSnapshot) ([]graymarket.StockKlinePoint, error)
 }
 
+// IncrementalStockKlineSource emits each complete stock curve as soon as it
+// is fetched.  This keeps a large archive rerun observable and resumable.
+type IncrementalStockKlineSource interface {
+	FetchStockKlines5mIncremental(context.Context, graymarket.RankSnapshot, func([]graymarket.StockKlinePoint) error) (int, error)
+}
+
 type store interface {
 	SaveIntraday(context.Context, string, graymarket.RankSnapshot, bool) error
 	SaveDailyClose(context.Context, string, graymarket.RankSnapshot) error
@@ -192,27 +198,52 @@ func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error
 	}
 	snapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: graymarket.RankStock,
 		SnapshotAt: time.Date(runAt.Year(), runAt.Month(), runAt.Day(), 15, 0, 0, 0, runAt.Location()), Records: records}
-	points, fetchErr := klineSource.FetchStockKlines5m(ctx, snapshot)
-	run.ExpectedTotal, run.FetchedTotal = len(snapshot.Records)*48, len(points)
+	run.ExpectedTotal = len(snapshot.Records) * 48
 	run.PageCount = len(snapshot.Records)
-	if len(points) > 0 {
-		if err := s.store.SaveStockKlines(ctx, runID, points); err != nil {
+	if incremental, ok := s.source.(IncrementalStockKlineSource); ok {
+		completed, fetchErr := incremental.FetchStockKlines5mIncremental(ctx, snapshot, func(points []graymarket.StockKlinePoint) error {
+			if err := s.store.SaveStockKlines(ctx, runID, points); err != nil {
+				return err
+			}
+			run.FetchedTotal += len(points)
+			return nil
+		})
+		run.FetchedTotal = maxInt(run.FetchedTotal, completed*48)
+		if fetchErr != nil {
+			run.Status = repository.RunFailed
+			if run.FetchedTotal > 0 {
+				run.Status = repository.RunPartial
+			}
+			run.ErrorCode, run.ErrorMessage = errorCode(fetchErr), fetchErr.Error()
+			return finish(fetchErr)
+		}
+		if run.FetchedTotal != run.ExpectedTotal {
+			err = fmt.Errorf("incomplete stock kline fetch: expected %d rows, got %d", run.ExpectedTotal, run.FetchedTotal)
 			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
 			return finish(err)
 		}
-	}
-	if fetchErr != nil {
-		run.Status = repository.RunFailed
+	} else {
+		points, fetchErr := klineSource.FetchStockKlines5m(ctx, snapshot)
+		run.FetchedTotal = len(points)
 		if len(points) > 0 {
-			run.Status = repository.RunPartial
+			if err := s.store.SaveStockKlines(ctx, runID, points); err != nil {
+				run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
+				return finish(err)
+			}
 		}
-		run.ErrorCode, run.ErrorMessage = errorCode(fetchErr), fetchErr.Error()
-		return finish(fetchErr)
-	}
-	if len(points) != run.ExpectedTotal {
-		err = fmt.Errorf("incomplete stock kline fetch: expected %d rows, got %d", run.ExpectedTotal, len(points))
-		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
-		return finish(err)
+		if fetchErr != nil {
+			run.Status = repository.RunFailed
+			if len(points) > 0 {
+				run.Status = repository.RunPartial
+			}
+			run.ErrorCode, run.ErrorMessage = errorCode(fetchErr), fetchErr.Error()
+			return finish(fetchErr)
+		}
+		if len(points) != run.ExpectedTotal {
+			err = fmt.Errorf("incomplete stock kline fetch: expected %d rows, got %d", run.ExpectedTotal, len(points))
+			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
+			return finish(err)
+		}
 	}
 	complete, err := s.store.HasStockKlineArchive(ctx, tradeDate)
 	if err != nil {
@@ -230,6 +261,13 @@ func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error
 	}
 	run.Status = repository.RunSuccess
 	return finish(nil)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func (s *Service) HasStockKlineArchive(ctx context.Context, tradeDate string) bool {

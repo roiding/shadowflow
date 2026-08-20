@@ -38,8 +38,26 @@ type stockKlineResult struct {
 }
 
 func (c *Client) FetchStockKlines5m(ctx context.Context, snapshot graymarket.RankSnapshot) ([]graymarket.StockKlinePoint, error) {
+	points := make([]graymarket.StockKlinePoint, 0, len(snapshot.Records)*48)
+	_, err := c.FetchStockKlines5mIncremental(ctx, snapshot, func(batch []graymarket.StockKlinePoint) error {
+		points = append(points, batch...)
+		return nil
+	})
+	if err != nil {
+		return points, err
+	}
+	if len(points) != len(snapshot.Records)*48 {
+		return nil, fmt.Errorf("incomplete stock kline archive: expected %d points, got %d", len(snapshot.Records)*48, len(points))
+	}
+	return points, nil
+}
+
+// FetchStockKlines5mIncremental fetches one complete 48-point curve at a time
+// and invokes persist immediately. The callback is called serially, so callers
+// can safely write each batch in its own transaction.
+func (c *Client) FetchStockKlines5mIncremental(ctx context.Context, snapshot graymarket.RankSnapshot, persist func([]graymarket.StockKlinePoint) error) (int, error) {
 	if snapshot.RankType != graymarket.RankStock || snapshot.TradeDate == "" || len(snapshot.Records) == 0 {
-		return nil, fmt.Errorf("invalid stock kline snapshot")
+		return 0, fmt.Errorf("invalid stock kline snapshot")
 	}
 	c.stockKlineFailures.Store(0)
 	c.stockKlineDisabled.Store(false)
@@ -85,9 +103,9 @@ func (c *Client) FetchStockKlines5m(ctx context.Context, snapshot graymarket.Ran
 		workers.Wait()
 		close(results)
 	}()
-	points := make([]graymarket.StockKlinePoint, 0, len(snapshot.Records)*48)
 	var firstErr error
 	failedStocks := 0
+	completedStocks := 0
 	consecutiveFailures := 0
 	const maxConsecutiveFailures = 8
 	for result := range results {
@@ -102,20 +120,24 @@ func (c *Client) FetchStockKlines5m(ctx context.Context, snapshot graymarket.Ran
 			}
 		} else {
 			consecutiveFailures = 0
-			points = append(points, result.points...)
+			if err := persist(result.points); err != nil {
+				cancel()
+				return completedStocks, fmt.Errorf("persist stock kline batch: %w", err)
+			}
+			completedStocks++
 		}
 	}
 	if parentCtx.Err() != nil {
-		return points, parentCtx.Err()
+		return completedStocks, parentCtx.Err()
 	}
 	if firstErr != nil {
-		return points, fmt.Errorf("stock kline batch incomplete: completed %d/%d stocks, failed %d; first error: %w",
-			len(points)/48, len(snapshot.Records), failedStocks, firstErr)
+		return completedStocks, fmt.Errorf("stock kline batch incomplete: completed %d/%d stocks, failed %d; first error: %w",
+			completedStocks, len(snapshot.Records), failedStocks, firstErr)
 	}
-	if len(points) != len(snapshot.Records)*48 {
-		return nil, fmt.Errorf("incomplete stock kline archive: expected %d points, got %d", len(snapshot.Records)*48, len(points))
+	if completedStocks != len(snapshot.Records) {
+		return completedStocks, fmt.Errorf("incomplete stock kline archive: expected %d stocks, got %d", len(snapshot.Records), completedStocks)
 	}
-	return points, nil
+	return completedStocks, nil
 }
 
 func (c *Client) fetchStockKlineWithRetry(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
