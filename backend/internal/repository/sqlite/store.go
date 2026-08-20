@@ -156,6 +156,7 @@ func migrateDailyQuoteColumns(db *sql.DB) error {
 		{"turnover_rate", "REAL NOT NULL DEFAULT 0"},
 		{"amplitude", "REAL NOT NULL DEFAULT 0"},
 		{"quote_available", "INTEGER NOT NULL DEFAULT 0"},
+		{"money_available", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, table := range []string{"rank_intraday_work", "rank_snapshot"} {
 		columns := map[string]bool{}

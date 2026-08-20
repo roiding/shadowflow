@@ -43,7 +43,7 @@ func TestMigrateDailyQuoteColumnsAddsFieldsToLegacyTables(t *testing.T) {
 			columns[name] = true
 		}
 		rows.Close()
-		for _, expected := range []string{"open_price", "high_price", "low_price", "close_price", "previous_close", "change_value", "volume", "turnover", "turnover_rate", "amplitude", "quote_available"} {
+		for _, expected := range []string{"open_price", "high_price", "low_price", "close_price", "previous_close", "change_value", "volume", "turnover", "turnover_rate", "amplitude", "quote_available", "money_available"} {
 			if !columns[expected] {
 				t.Fatalf("%s migration did not add %s: %v", table, expected, columns)
 			}
