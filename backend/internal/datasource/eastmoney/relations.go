@@ -29,10 +29,11 @@ type quoteResponse struct {
 const stockQuoteBatchSize = 100
 
 func isCurrentListedSecurityStatus(status int64) bool {
-	// Eastmoney uses 5 for normally listed securities and 6 for listed but
-	// currently suspended/abnormal-trading securities. Both belong in the
-	// full-market archive; the latter simply has quote_available=false.
-	return status == 5 || status == 6
+	// Eastmoney uses 5 for normally listed securities. Status 6 represents
+	// suspended or otherwise abnormal-trading securities and is intentionally
+	// excluded from the daily quantitative sample together with pre-listing
+	// and delisted codes.
+	return status == 5
 }
 
 // FetchAllStockQuotes reads the complete active stock universe from the quote
@@ -71,7 +72,7 @@ func (c *Client) FetchAllStockQuotes(ctx context.Context) ([]graymarket.StockQuo
 			// clist includes securities that are not part of the current listed
 			// equity universe, notably pre-listing entries (f292=9) and delisted
 			// historical codes (f292=7). Suspended or abnormal-trading stocks use
-			// f292=6 and remain in the archive with quote_available=false.
+			// f292=6 and are outside the daily quantitative sample.
 			if !isCurrentListedSecurityStatus(intValue(row, "f292")) {
 				continue
 			}

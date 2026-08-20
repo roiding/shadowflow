@@ -22,6 +22,16 @@ import (
 
 const timestampLayout = time.RFC3339Nano
 
+func quoteAvailableRecords(records []graymarket.RankRecord) []graymarket.RankRecord {
+	result := make([]graymarket.RankRecord, 0, len(records))
+	for _, record := range records {
+		if record.QuoteAvailable {
+			result = append(result, record)
+		}
+	}
+	return result
+}
+
 type Store struct {
 	db *sql.DB
 }
@@ -473,7 +483,14 @@ func (s *Store) SaveDailyClose(ctx context.Context, runID string, snapshot graym
 		return err
 	}
 	defer tx.Rollback()
-	for _, record := range snapshot.Records {
+	records := snapshot.Records
+	if snapshot.RankType == graymarket.RankStock {
+		records = quoteAvailableRecords(snapshot.Records)
+	}
+	if len(records) == 0 {
+		return fmt.Errorf("daily close snapshot has no eligible records for %s", snapshot.RankType)
+	}
+	for _, record := range records {
 		if err := insertRecord(ctx, tx, "rank_snapshot", runID, snapshot.RequestedDate, string(graymarket.SnapshotDailyClose), record); err != nil {
 			return err
 		}
@@ -582,14 +599,17 @@ func (s *Store) SaveStockArchive(ctx context.Context, runID string, snapshot gra
 	if snapshot.SnapshotAt.Format("15:04") != "15:00" {
 		return fmt.Errorf("stock close snapshot_at must be 15:00, got %s", snapshot.SnapshotAt.Format("15:04"))
 	}
+	records := quoteAvailableRecords(snapshot.Records)
+	if len(records) == 0 {
+		return fmt.Errorf("incomplete stock archive: no eligible records from %d identities", len(snapshot.Records))
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	// A rerun starts a fresh attempt. Only archive-eligible securities are
-	// represented in the five-minute table; suspended identities stay in the
-	// daily close snapshot without empty research rows.
+	// A rerun starts a fresh attempt. Only securities with a valid daily quote
+	// belong to either the daily identity snapshot or the five-minute archive.
 	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_research_5m WHERE trade_date=?`, snapshot.TradeDate); err != nil {
 		return err
 	}
@@ -605,17 +625,14 @@ func (s *Store) SaveStockArchive(ctx context.Context, runID string, snapshot gra
 	if _, err := tx.ExecContext(ctx, `DELETE FROM raw_response WHERE substr(snapshot_at,1,10)=? AND snapshot_kind='daily_close' AND rank_type='stock'`, snapshot.TradeDate); err != nil {
 		return err
 	}
-	expectedKlineStocks := 0
+	expectedKlineStocks := len(records)
 	type stockKey struct {
 		market int64
 		code   string
 	}
 	eligible := make(map[stockKey]struct{}, len(snapshot.Records))
-	for _, record := range snapshot.Records {
-		if record.QuoteAvailable {
-			expectedKlineStocks++
-			eligible[stockKey{market: record.Market, code: record.Code}] = struct{}{}
-		}
+	for _, record := range records {
+		eligible[stockKey{market: record.Market, code: record.Code}] = struct{}{}
 		if err := insertRecord(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), record); err != nil {
 			return err
 		}
@@ -646,10 +663,7 @@ money_rank=excluded.money_rank,dark_money=excluded.dark_money,
 	}
 	// Materialize missing money points only for archive-eligible securities so
 	// every stored eligible stock still has a stable 48-point shape.
-	for _, record := range snapshot.Records {
-		if !record.QuoteAvailable {
-			continue
-		}
+	for _, record := range records {
 		for index, clock := range expectedResearchTimes() {
 			at, _ := time.ParseInLocation("2006-01-02 15:04", snapshot.TradeDate+" "+clock, snapshot.SnapshotAt.Location())
 			minuteIndex, _ := researchMinuteIndex(at)
@@ -680,7 +694,7 @@ money_archived_at=excluded.money_archived_at,
 kline_archived_at=CASE WHEN excluded.kline_rows=excluded.expected_kline_stocks*excluded.expected_points
 THEN coalesce(stock_archive_quality.kline_archived_at,excluded.updated_at) ELSE NULL END,
 updated_at=excluded.updated_at`,
-		snapshot.TradeDate, len(snapshot.Records), expectedKlineStocks, moneyRows, klineRows, len(snapshot.Records), expectedKlineStocks, now, now)
+		snapshot.TradeDate, len(records), expectedKlineStocks, moneyRows, klineRows, len(records), expectedKlineStocks, now, now)
 	if err != nil {
 		return err
 	}

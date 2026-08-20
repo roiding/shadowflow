@@ -515,8 +515,15 @@ func TestSaveStockArchivePersists48MoneyBarsAndDailyK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if quality.ExpectedStocks != 2 || quality.ExpectedKlineStocks != 1 || quality.MoneyRows != 48 || quality.DailyCloseRows != 2 || quality.DailyKlineRows != 1 || quality.KlineRows != 0 {
+	if quality.ExpectedStocks != 1 || quality.ExpectedKlineStocks != 1 || quality.MoneyRows != 48 || quality.DailyCloseRows != 1 || quality.DailyKlineRows != 1 || quality.KlineRows != 0 {
 		t.Fatalf("unexpected stock money/daily archive quality: %+v", quality)
+	}
+	var identityRows int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock'`, snapshot.TradeDate).Scan(&identityRows); err != nil {
+		t.Fatal(err)
+	}
+	if identityRows != 1 {
+		t.Fatalf("suspended stock should not have a daily identity row: %d", identityRows)
 	}
 	var researchRows int
 	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM stock_research_5m WHERE trade_date=? AND code='600001'`, snapshot.TradeDate).Scan(&researchRows); err != nil {
@@ -1163,8 +1170,8 @@ func TestDailyClosePaginationSearchAndSort(t *testing.T) {
 			OpenPrice: 10.1, HighPrice: 10.8, LowPrice: 9.9, ClosePrice: 10.5, PreviousClose: 10, ChangeValue: 0.5,
 			ChangePct: 0.05, Volume: 1234, Turnover: 5678900, TurnoverRate: 0.0123, Amplitude: 0.09, QuoteAvailable: true,
 			DarkMoney: 300, DarkActivity: 0.000052827, FetchedAt: snapshotAt},
-		{TradeDate: "2026-08-12", SnapshotAt: snapshotAt, RankType: graymarket.RankStock, Rank: 2, Code: "600000", Name: "浦发银行", DarkMoney: 100, FetchedAt: snapshotAt},
-		{TradeDate: "2026-08-12", SnapshotAt: snapshotAt, RankType: graymarket.RankStock, Rank: 3, Code: "000002", Name: "万科A", DarkMoney: 200, FetchedAt: snapshotAt},
+		{TradeDate: "2026-08-12", SnapshotAt: snapshotAt, RankType: graymarket.RankStock, Rank: 2, Code: "600000", Name: "浦发银行", DarkMoney: 100, QuoteAvailable: true, FetchedAt: snapshotAt},
+		{TradeDate: "2026-08-12", SnapshotAt: snapshotAt, RankType: graymarket.RankStock, Rank: 3, Code: "000002", Name: "万科A", DarkMoney: 200, QuoteAvailable: true, FetchedAt: snapshotAt},
 	}}
 	if err := store.SaveDailyClose(ctx, "daily", snapshot); err != nil {
 		t.Fatal(err)

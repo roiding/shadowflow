@@ -41,13 +41,6 @@ type BoardMoneySource interface {
 	FetchMoney5m(context.Context, graymarket.RankSnapshot, bool) ([]graymarket.MoneyPoint, error)
 }
 
-// BoardCatalogSource provides the authoritative full board universe.  The
-// intraday darktrade snapshot is intentionally not used as the archive
-// universe because it is a ranked/filtered view and may omit valid boards.
-type BoardCatalogSource interface {
-	FetchBoardCatalog(context.Context, graymarket.BoardType) ([]graymarket.Board, error)
-}
-
 type StockKlineSource interface {
 	FetchStockKlines5m(context.Context, graymarket.RankSnapshot) ([]graymarket.StockKlinePoint, error)
 }
@@ -394,26 +387,10 @@ func (s *Service) collectBoardArchive(ctx context.Context, rankType graymarket.R
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, errorCode(err), err.Error()
 		return finish(err)
 	}
-	// The darktrade response is a useful source of dark-rank attributes, but
-	// it is not a complete board universe.  Rebuild the archive snapshot from
-	// the authoritative board catalog and merge the darktrade attributes onto
-	// those full-universe records before fetching the post-close curve.
-	var catalog []graymarket.Board
-	var catalogErr error
-	if catalogSource, ok := s.source.(BoardCatalogSource); ok {
-		catalog, catalogErr = catalogSource.FetchBoardCatalog(ctx, boardTypeForRank(rankType))
-	}
-	if catalogErr != nil {
-		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "catalog_fetch", catalogErr.Error()
-		return finish(catalogErr)
-	}
-	if catalog != nil {
-		snapshot, err = mergeBoardArchiveUniverse(snapshot, catalog)
-		if err != nil {
-			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "catalog_merge", err.Error()
-			return finish(err)
-		}
-	}
+	// The end-of-day board archive uses the same board set returned by the
+	// darktrade ranking endpoint. The separate full catalog is reserved for
+	// stock-board relation maintenance; merging it here would silently turn a
+	// ranked board snapshot into a different universe.
 	run.ActualTradeDate = snapshot.TradeDate
 	if snapshot.TradeDate != formatDate(requestedDate) {
 		err = fmt.Errorf("upstream trade date %s does not match requested date %s", snapshot.TradeDate, formatDate(requestedDate))
@@ -444,62 +421,6 @@ func (s *Service) collectBoardArchive(ctx context.Context, rankType graymarket.R
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunPartial, errorCode(moneyErr), moneyErr.Error()
 	}
 	return finish(moneyErr)
-}
-
-func boardTypeForRank(rankType graymarket.RankType) graymarket.BoardType {
-	if rankType == graymarket.RankIndustry {
-		return graymarket.BoardIndustry
-	}
-	return graymarket.BoardConcept
-}
-
-// mergeBoardArchiveUniverse combines the full board catalog with the
-// darktrade snapshot.  Quote fields are filled later by enrichBoardDailyClose;
-// the dark fields/ranks are retained only where the board was present in the
-// ranked snapshot.
-func mergeBoardArchiveUniverse(dark graymarket.RankSnapshot, catalog []graymarket.Board) (graymarket.RankSnapshot, error) {
-	if len(catalog) == 0 {
-		return graymarket.RankSnapshot{}, fmt.Errorf("empty %s board catalog", dark.RankType)
-	}
-	darkByCode := make(map[string]graymarket.RankRecord, len(dark.Records))
-	for _, record := range dark.Records {
-		darkByCode[record.Code] = record
-	}
-	records := make([]graymarket.RankRecord, 0, len(catalog))
-	seen := make(map[string]struct{}, len(catalog))
-	for _, board := range catalog {
-		if board.Code == "" {
-			return graymarket.RankSnapshot{}, fmt.Errorf("%s board catalog contains an empty code", dark.RankType)
-		}
-		if _, duplicate := seen[board.Code]; duplicate {
-			return graymarket.RankSnapshot{}, fmt.Errorf("duplicate %s board catalog code %s", dark.RankType, board.Code)
-		}
-		seen[board.Code] = struct{}{}
-		record, present := darkByCode[board.Code]
-		if !present {
-			record = graymarket.RankRecord{
-				TradeDate: dark.TradeDate, SnapshotAt: dark.SnapshotAt, RankType: dark.RankType,
-				Market: 90, Code: board.Code, Name: board.Name,
-				Rank: 0, SourceVersion: 101, SourceSortFlag: 6, SourceDescending: true,
-				FetchedAt: dark.FetchedAt,
-			}
-		} else if record.Name == "" {
-			record.Name = board.Name
-		}
-		record.RankType = dark.RankType
-		record.TradeDate = dark.TradeDate
-		record.SnapshotAt = dark.SnapshotAt
-		record.Market = 90
-		record.Code = board.Code
-		if record.Name == "" {
-			record.Name = board.Name
-		}
-		record.QuoteAvailable = false
-		records = append(records, record)
-	}
-	dark.Records = records
-	dark.ExpectedTotal = len(records)
-	return dark, nil
 }
 
 // mergeCloseMoney makes the 15:00 darktradetick values authoritative for the
@@ -565,14 +486,21 @@ func (s *Service) collectStockArchive(ctx context.Context, requestedDate string,
 			return finish(err)
 		}
 	}
-	points, err := moneySource.FetchMoney5m(ctx, snapshot, true)
-	run.ExpectedTotal, run.FetchedTotal = len(snapshot.Records)*48, len(points)
-	run.PageCount = len(snapshot.RawPages) + len(snapshot.Records)
-	moneyErr := err
 	if err := s.enrichStockDailyClose(ctx, &snapshot); err != nil {
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
 		return finish(err)
 	}
+	snapshot.Records = eligibleStockRecords(snapshot.Records)
+	snapshot.ExpectedTotal = len(snapshot.Records)
+	if len(snapshot.Records) == 0 {
+		err = errors.New("full-market stock archive has no eligible daily quotes")
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "no_eligible_stocks", err.Error()
+		return finish(err)
+	}
+	points, err := moneySource.FetchMoney5m(ctx, snapshot, true)
+	run.ExpectedTotal, run.FetchedTotal = len(snapshot.Records)*48, len(points)
+	run.PageCount = len(snapshot.RawPages) + len(snapshot.Records)
+	moneyErr := err
 	mergeCloseMoney(&snapshot, points)
 	if err := s.store.SaveStockArchive(ctx, runID, snapshot, points); err != nil {
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
@@ -583,6 +511,16 @@ func (s *Service) collectStockArchive(ctx context.Context, requestedDate string,
 		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunPartial, errorCode(moneyErr), moneyErr.Error()
 	}
 	return finish(moneyErr)
+}
+
+func eligibleStockRecords(records []graymarket.RankRecord) []graymarket.RankRecord {
+	eligible := make([]graymarket.RankRecord, 0, len(records))
+	for _, record := range records {
+		if record.QuoteAvailable {
+			eligible = append(eligible, record)
+		}
+	}
+	return eligible
 }
 
 func mergeStockArchiveUniverse(dark graymarket.RankSnapshot, quotes []graymarket.StockQuote, closeAt time.Time) (graymarket.RankSnapshot, error) {

@@ -97,7 +97,7 @@ func TestFetchAllStockQuotesKeepsListedSTARAndExcludesUnlistedSecurities(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(quotes) != 3 || quotes[0].StockCode != "688836" || !quotes[0].Available || quotes[1].StockCode != "600001" || quotes[2].StockCode != "600984" || quotes[2].Available {
+	if len(quotes) != 2 || quotes[0].StockCode != "688836" || !quotes[0].Available || quotes[1].StockCode != "600001" {
 		t.Fatalf("unexpected listed stock universe: %+v", quotes)
 	}
 }

@@ -676,13 +676,18 @@ func (s *Server) tradingDays(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "range_too_large", "date range cannot exceed 366 days")
 		return
 	}
-	days := make([]string, 0)
-	for current := from; !current.After(to); current = current.AddDate(0, 0, 1) {
-		if s.calendar.IsTradingDay(current) {
-			days = append(days, current.Format("2006-01-02"))
+	archived, err := s.store.DailyCloseTradeDates(r.Context(), toRaw, 367)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	days := make([]string, 0, len(archived))
+	for _, day := range archived {
+		if day >= fromRaw {
+			days = append(days, day)
 		}
 	}
-	writeJSON(w, http.StatusOK, envelope{Data: days, Meta: map[string]any{"from": fromRaw, "to": toRaw, "count": len(days)}})
+	writeJSON(w, http.StatusOK, envelope{Data: days, Meta: map[string]any{"from": fromRaw, "to": toRaw, "count": len(days), "source": "daily_close_archive"}})
 }
 
 func (s *Server) quality(w http.ResponseWriter, r *http.Request) {

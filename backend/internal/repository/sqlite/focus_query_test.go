@@ -8,7 +8,7 @@ import (
 	"github.com/roiding/shadowflow/internal/graymarket"
 )
 
-func TestDailyCloseTradeDatesRequireCompleteConceptQuotesAndAllowSuspendedStocks(t *testing.T) {
+func TestDailyCloseTradeDatesRequireCompleteConceptQuotesAndUseEligibleStocks(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -23,8 +23,6 @@ func TestDailyCloseTradeDatesRequireCompleteConceptQuotesAndAllowSuspendedStocks
 				Market: 1, Code: "600001", Name: "测试", QuoteAvailable: true, FetchedAt: at}
 			if rankType == graymarket.RankConcept {
 				record.Market, record.Code, record.QuoteAvailable = 90, "BK001", available
-			} else if date == "2026-08-13" {
-				record.QuoteAvailable = false
 			}
 			if err := store.SaveDailyClose(ctx, date+string(rankType), graymarket.RankSnapshot{
 				RequestedDate: date, TradeDate: date, RankType: rankType, SnapshotAt: at, Records: []graymarket.RankRecord{record},

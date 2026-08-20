@@ -120,8 +120,8 @@ func TestDailyClosePaginationAndValidation(t *testing.T) {
 	at := time.Date(2026, 8, 12, 15, 0, 0, 0, location)
 	snapshot := graymarket.RankSnapshot{RequestedDate: "20260812", TradeDate: "2026-08-12", RankType: graymarket.RankStock, SnapshotAt: at,
 		Records: []graymarket.RankRecord{
-			{TradeDate: "2026-08-12", SnapshotAt: at, RankType: graymarket.RankStock, Rank: 1, Code: "000001", Name: "one", DarkMoney: 20, FetchedAt: at},
-			{TradeDate: "2026-08-12", SnapshotAt: at, RankType: graymarket.RankStock, Rank: 2, Code: "000002", Name: "two", DarkMoney: 10, FetchedAt: at},
+			{TradeDate: "2026-08-12", SnapshotAt: at, RankType: graymarket.RankStock, Rank: 1, Code: "000001", Name: "one", DarkMoney: 20, QuoteAvailable: true, FetchedAt: at},
+			{TradeDate: "2026-08-12", SnapshotAt: at, RankType: graymarket.RankStock, Rank: 2, Code: "000002", Name: "two", DarkMoney: 10, QuoteAvailable: true, FetchedAt: at},
 		}}
 	if err := store.SaveDailyClose(context.Background(), "daily", snapshot); err != nil {
 		t.Fatal(err)

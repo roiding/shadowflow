@@ -432,32 +432,6 @@ func TestCollectBoardArchivesPersistTurnoverAndTurnoverRate(t *testing.T) {
 	}
 }
 
-func TestMergeBoardArchiveUniverseUsesFullCatalog(t *testing.T) {
-	location := time.FixedZone("Asia/Shanghai", 8*60*60)
-	at := time.Date(2026, 8, 18, 15, 0, 0, 0, location)
-	dark := graymarket.RankSnapshot{
-		TradeDate: "2026-08-18", RankType: graymarket.RankConcept, SnapshotAt: at,
-		Records: []graymarket.RankRecord{{TradeDate: "2026-08-18", SnapshotAt: at, RankType: graymarket.RankConcept,
-			Rank: 1, Market: 90, Code: "BK0001", Name: "榜内概念", DarkMoney: 11}},
-	}
-	merged, err := mergeBoardArchiveUniverse(dark, []graymarket.Board{
-		{Code: "BK0001", Name: "榜内概念", Type: graymarket.BoardConcept},
-		{Code: "BK1013", Name: "华为欧拉", Type: graymarket.BoardConcept},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(merged.Records) != 2 {
-		t.Fatalf("expected full catalog records, got %d", len(merged.Records))
-	}
-	if merged.Records[1].Code != "BK1013" || merged.Records[1].Name != "华为欧拉" {
-		t.Fatalf("catalog-only board was not retained: %+v", merged.Records[1])
-	}
-	if merged.Records[1].DarkMoney != 0 || merged.Records[1].Market != 90 || merged.Records[1].Rank != 0 || merged.Records[1].MoneyAvailable {
-		t.Fatalf("catalog-only board should retain no fabricated dark rank fields: %+v", merged.Records[1])
-	}
-}
-
 func TestMergeStockArchiveUniverseUsesFullMarketQuotes(t *testing.T) {
 	location := time.FixedZone("Asia/Shanghai", 8*60*60)
 	at := time.Date(2026, 8, 18, 15, 0, 0, 0, location)
