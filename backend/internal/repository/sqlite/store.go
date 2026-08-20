@@ -225,48 +225,48 @@ WHERE name='stock_research_universe_v1')`).Scan(&migrated); err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	rows, err := tx.Query(`SELECT DISTINCT research.trade_date
-FROM stock_research_5m AS research
-WHERE NOT EXISTS (
-SELECT 1 FROM rank_snapshot AS close
-WHERE close.trade_date=research.trade_date AND close.snapshot_kind='daily_close'
-AND close.rank_type='stock' AND close.market=research.market AND close.code=research.code
-AND close.quote_available=1
-)`)
+	rows, err := tx.Query(`SELECT trade_date,market,code
+FROM rank_snapshot WHERE snapshot_kind='daily_close' AND rank_type='stock'
+AND quote_available=0 ORDER BY trade_date,market,code`)
 	if err != nil {
 		return err
 	}
-	var dates []string
+	type unavailableStock struct {
+		tradeDate string
+		market    int64
+		code      string
+	}
+	var stocks []unavailableStock
+	dates := make(map[string]struct{})
 	for rows.Next() {
-		var date string
-		if err := rows.Scan(&date); err != nil {
+		var stock unavailableStock
+		if err := rows.Scan(&stock.tradeDate, &stock.market, &stock.code); err != nil {
 			rows.Close()
 			return err
 		}
-		dates = append(dates, date)
+		stocks = append(stocks, stock)
+		dates[stock.tradeDate] = struct{}{}
 	}
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM stock_research_5m AS research
-WHERE NOT EXISTS (
-SELECT 1 FROM rank_snapshot AS close
-WHERE close.trade_date=research.trade_date AND close.snapshot_kind='daily_close'
-AND close.rank_type='stock' AND close.market=research.market AND close.code=research.code
-AND close.quote_available=1
-)`); err != nil {
-		return err
+	for _, stock := range stocks {
+		if _, err := tx.Exec(`DELETE FROM stock_research_5m
+WHERE trade_date=? AND market=? AND code=?`, stock.tradeDate, stock.market, stock.code); err != nil {
+			return err
+		}
 	}
-	for _, date := range dates {
+	now := time.Now().UTC().Format(timestampLayout)
+	for date := range dates {
 		var moneyRows, klineRows int
 		if err := tx.QueryRow(`SELECT coalesce(sum(money_available),0),coalesce(sum(kline_available),0)
 FROM stock_research_5m WHERE trade_date=?`, date).Scan(&moneyRows, &klineRows); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`UPDATE stock_archive_quality SET money_rows=?,kline_rows=?,
-money_archived_at=CASE WHEN money_rows>0 THEN coalesce(money_archived_at,?) ELSE NULL END,
-kline_archived_at=CASE WHEN kline_rows=expected_kline_stocks*expected_points THEN coalesce(kline_archived_at,?) ELSE NULL END,
-updated_at=? WHERE trade_date=?`, moneyRows, klineRows, time.Now().UTC().Format(timestampLayout), time.Now().UTC().Format(timestampLayout), time.Now().UTC().Format(timestampLayout), date); err != nil {
+money_archived_at=CASE WHEN ?>0 THEN coalesce(money_archived_at,?) ELSE NULL END,
+kline_archived_at=CASE WHEN ?=expected_kline_stocks*expected_points THEN coalesce(kline_archived_at,?) ELSE NULL END,
+updated_at=? WHERE trade_date=?`, moneyRows, klineRows, moneyRows, now, klineRows, now, now, date); err != nil {
 			return err
 		}
 		if err := refreshArchiveManifest(context.Background(), tx, date); err != nil {
@@ -274,7 +274,7 @@ updated_at=? WHERE trade_date=?`, moneyRows, klineRows, time.Now().UTC().Format(
 		}
 	}
 	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at)
-VALUES ('stock_research_universe_v1',?)`, time.Now().UTC().Format(timestampLayout)); err != nil {
+VALUES ('stock_research_universe_v1',?)`, now); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -575,6 +575,75 @@ func TestSaveStockArchivePersists48MoneyBarsAndDailyK(t *testing.T) {
 	}
 }
 
+func TestMigrateStockResearchUniverseRemovesUnavailablePlaceholders(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	tradeDate := "2026-08-20"
+	at := "2026-08-20T07:00:00Z"
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM database_maintenance WHERE name='stock_research_universe_v1'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, stock := range []struct {
+		market int
+		code   string
+		quote  int
+	}{{0, "000001", 1}, {1, "600001", 0}} {
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO rank_snapshot
+(run_id,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,quote_time,
+latest_price_raw,change_pct,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at,
+quote_available)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			"run", at, tradeDate, "20260820", "daily_close", "stock", stock.market+1, stock.market, stock.code,
+			"测试", "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", "", 0, 0, 0, at, stock.quote); err != nil {
+			t.Fatal(err)
+		}
+		for minute := 0; minute < 48; minute++ {
+			if _, err := store.db.ExecContext(ctx, `INSERT INTO stock_research_5m
+(trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available)
+VALUES (?,?,?,?,?,?,?,?,?)`, tradeDate, minute, stock.market, stock.code, 0, 0, 0, 0, 0); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO stock_archive_quality
+(trade_date,expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,daily_close_rows,daily_kline_rows,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?)`, tradeDate, 2, 48, 1, 48, 0, 2, 1, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateStockResearchUniverse(store); err != nil {
+		t.Fatal(err)
+	}
+	var kept, removed int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM stock_research_5m WHERE code='000001'`).Scan(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM stock_research_5m WHERE code='600001'`).Scan(&removed); err != nil {
+		t.Fatal(err)
+	}
+	if kept != 48 || removed != 0 {
+		t.Fatalf("unexpected placeholder migration result: kept=%d removed=%d", kept, removed)
+	}
+	var moneyRows, klineRows int
+	if err := store.db.QueryRowContext(ctx, `SELECT money_rows,kline_rows FROM stock_archive_quality WHERE trade_date=?`, tradeDate).Scan(&moneyRows, &klineRows); err != nil {
+		t.Fatal(err)
+	}
+	if moneyRows != 0 || klineRows != 0 {
+		t.Fatalf("quality was not recomputed after placeholder removal: money=%d kline=%d", moneyRows, klineRows)
+	}
+	var identityRows int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM rank_snapshot WHERE trade_date=? AND rank_type='stock'`, tradeDate).Scan(&identityRows); err != nil {
+		t.Fatal(err)
+	}
+	if identityRows != 2 {
+		t.Fatalf("daily identity snapshot was changed: rows=%d", identityRows)
+	}
+}
+
 func TestSaveStockKlinesCommitsCompleteStocksIncrementally(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {
