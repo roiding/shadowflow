@@ -54,6 +54,8 @@ relation_source,relation_scope,detected_at,raw_data) VALUES (?,?,?,?,?,?,?,?,?,?
 }
 
 func (s *Store) ApplyRelationScan(ctx context.Context, runID, tradeDate string, detectedAt time.Time) (repository.RelationApplyResult, error) {
+	const minimumRetainedPercent = 90
+
 	var result repository.RelationApplyResult
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -101,6 +103,75 @@ relation_source,relation_scope,?,detected_at,raw_data FROM stock_board_relation_
 	} else {
 		if currentCount == 0 {
 			return result, fmt.Errorf("relation baseline exists but current state is empty")
+		}
+		var currentOnly, stageOnly int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM stock_board_relation_current current
+LEFT JOIN stock_board_relation_stage stage ON stage.run_id=? AND stage.stock_code=current.stock_code
+AND stage.board_code=current.board_code AND stage.relation_source=current.relation_source
+AND stage.relation_scope=current.relation_scope WHERE stage.stock_code IS NULL`, runID).Scan(&currentOnly); err != nil {
+			return result, err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM stock_board_relation_stage stage
+LEFT JOIN stock_board_relation_current current ON current.stock_code=stage.stock_code
+AND current.board_code=stage.board_code AND current.relation_source=stage.relation_source
+AND current.relation_scope=stage.relation_scope WHERE stage.run_id=? AND current.stock_code IS NULL`, runID).Scan(&stageOnly); err != nil {
+			return result, err
+		}
+		if currentOnly == 0 && stageOnly == 0 {
+			finishedAt := time.Now().UTC()
+			if _, err := tx.ExecContext(ctx, `UPDATE relation_sync_run SET status='success',board_count=?,relation_count=?,
+added_count=0,removed_count=0,baseline_built=0,finished_at=?,duration_ms=?,error_code='',error_message=''
+WHERE run_id=?`, boardCount, result.RelationCount, finishedAt.Format(timestampLayout), finishedAt.Sub(detectedAt).Milliseconds(), runID); err != nil {
+				return result, err
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM stock_board_relation_stage WHERE run_id=?`, runID); err != nil {
+				return result, err
+			}
+			if err := tx.Commit(); err != nil {
+				return result, err
+			}
+			return result, nil
+		}
+		// A same-day retry must replace that day's net change set. Restore the
+		// state that existed before the earlier attempt, then compare the new
+		// complete scan against it.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM stock_board_relation_current
+WHERE EXISTS (SELECT 1 FROM stock_board_relation_change change
+WHERE change.effective_date=? AND change.change_type='added'
+AND change.stock_code=stock_board_relation_current.stock_code
+AND change.board_code=stock_board_relation_current.board_code
+AND change.relation_source=stock_board_relation_current.relation_source
+AND change.relation_scope=stock_board_relation_current.relation_scope)`, tradeDate); err != nil {
+			return result, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO stock_board_relation_current
+(stock_code,stock_market,stock_name,board_code,board_name,board_type,source_order,
+relation_source,relation_scope,since_date,detected_at,raw_data)
+SELECT stock_code,stock_market,stock_name,board_code,board_name,board_type,source_order,
+relation_source,relation_scope,effective_date,detected_at,raw_data
+FROM stock_board_relation_change WHERE effective_date=? AND change_type='removed'
+ON CONFLICT(stock_code,board_code,relation_source,relation_scope) DO UPDATE SET
+stock_market=excluded.stock_market,stock_name=excluded.stock_name,board_name=excluded.board_name,
+board_type=excluded.board_type,source_order=excluded.source_order,detected_at=excluded.detected_at,
+raw_data=excluded.raw_data`, tradeDate); err != nil {
+			return result, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM stock_board_relation_change WHERE effective_date=?`, tradeDate); err != nil {
+			return result, err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM stock_board_relation_current`).Scan(&currentCount); err != nil {
+			return result, err
+		}
+		var currentBoardCount int
+		if err := tx.QueryRowContext(ctx, `SELECT count(DISTINCT board_type || ':' || board_code)
+FROM stock_board_relation_current`).Scan(&currentBoardCount); err != nil {
+			return result, err
+		}
+		if currentCount >= 1000 && result.RelationCount*100 < currentCount*minimumRetainedPercent {
+			return result, fmt.Errorf("relation scan shrank unexpectedly: previous %d records, current %d", currentCount, result.RelationCount)
+		}
+		if currentBoardCount >= 100 && boardCount*100 < currentBoardCount*minimumRetainedPercent {
+			return result, fmt.Errorf("relation board catalog shrank unexpectedly: previous %d boards, current %d", currentBoardCount, boardCount)
 		}
 		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM stock_board_relation_stage stage
 LEFT JOIN stock_board_relation_current current ON current.stock_code=stage.stock_code

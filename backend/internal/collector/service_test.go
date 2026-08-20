@@ -382,6 +382,28 @@ func TestCollectDailyCloseFailsWhenQuoteEnrichmentFails(t *testing.T) {
 	}
 }
 
+func TestStockDailyQuoteEnrichmentRetainsUnavailableStocks(t *testing.T) {
+	at := time.Date(2026, 8, 14, 15, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	snapshot := successfulSnapshot(at)
+	snapshot.RankType = graymarket.RankStock
+	snapshot.Records[0].RankType = graymarket.RankStock
+	snapshot.Records = append(snapshot.Records, graymarket.RankRecord{
+		TradeDate: snapshot.TradeDate, SnapshotAt: at, RankType: graymarket.RankStock,
+		Rank: 0, Market: 1, Code: "603448", Name: "无行情新股",
+	})
+	source := &fakeSource{unavailableQuote: map[string]bool{"603448": true}}
+	service := newTestService(source, &fakeStore{})
+	if err := service.enrichStockDailyClose(context.Background(), &snapshot); err != nil {
+		t.Fatalf("unavailable stock quote should not fail archive: %v", err)
+	}
+	if !snapshot.Records[0].QuoteAvailable {
+		t.Fatalf("available quote state was not retained: %+v", snapshot.Records[0])
+	}
+	if snapshot.Records[1].QuoteAvailable {
+		t.Fatalf("unavailable quote was incorrectly marked available: %+v", snapshot.Records[1])
+	}
+}
+
 func TestCollectBoardArchivesPersistTurnoverAndTurnoverRate(t *testing.T) {
 	location := time.FixedZone("Asia/Shanghai", 8*60*60)
 	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept} {

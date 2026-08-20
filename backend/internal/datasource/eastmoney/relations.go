@@ -28,6 +28,13 @@ type quoteResponse struct {
 
 const stockQuoteBatchSize = 100
 
+func isCurrentListedSecurityStatus(status int64) bool {
+	// Eastmoney uses 5 for normally listed securities and 6 for listed but
+	// currently suspended/abnormal-trading securities. Both belong in the
+	// full-market archive; the latter simply has quote_available=false.
+	return status == 5 || status == 6
+}
+
 // FetchAllStockQuotes reads the complete active stock universe from the quote
 // service. This is deliberately separate from darktrade: darktrade is a
 // ranked intraday view and can omit valid securities.
@@ -39,9 +46,9 @@ func (c *Client) FetchAllStockQuotes(ctx context.Context) ([]graymarket.StockQuo
 		params := url.Values{
 			"pn": {strconv.Itoa(page)}, "pz": {strconv.Itoa(c.pageSize)}, "po": {"1"}, "np": {"1"},
 			"fltt": {"2"}, "invt": {"2"}, "fid": {"f3"},
-			"fields": {"f2,f3,f4,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f124"},
-			// Shanghai/Shenzhen main, ChiNext, STAR, BSE and other active
-			// listed-equity buckets. The quote endpoint excludes funds/bonds.
+			"fields": {"f2,f3,f4,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f124,f189,f292"},
+			// Shanghai/Shenzhen main boards, ChiNext and STAR. BSE is
+			// intentionally outside the configured archive universe.
 			"fs": {"m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:1+t:80"},
 		}
 		payload, rows, err := c.fetchQuotePage(ctx, "/api/qt/clist/get", params)
@@ -61,6 +68,13 @@ func (c *Client) FetchAllStockQuotes(ctx context.Context) ([]graymarket.StockQuo
 				return nil, fmt.Errorf("duplicate full stock code %s", code)
 			}
 			seen[code] = struct{}{}
+			// clist includes securities that are not part of the current listed
+			// equity universe, notably pre-listing entries (f292=9) and delisted
+			// historical codes (f292=7). Suspended or abnormal-trading stocks use
+			// f292=6 and remain in the archive with quote_available=false.
+			if !isCurrentListedSecurityStatus(intValue(row, "f292")) {
+				continue
+			}
 			latestPrice, available := optionalFloat(row, "f2")
 			result = append(result, graymarket.StockQuote{StockCode: code, StockMarket: intValue(row, "f13"), StockName: optionalString(row, "f14"),
 				LatestPrice: latestPrice, OpenPrice: floatValue(row, "f17"), HighPrice: floatValue(row, "f15"), LowPrice: floatValue(row, "f16"),
@@ -68,15 +82,18 @@ func (c *Client) FetchAllStockQuotes(ctx context.Context) ([]graymarket.StockQuo
 				Volume: intValue(row, "f5"), Turnover: intValue(row, "f6"), TurnoverRate: floatValue(row, "f8") / 100,
 				Amplitude: floatValue(row, "f7") / 100, QuoteTime: formatQuoteUpdateTime(optionalString(row, "f124")), FetchedAt: fetchedAt, Available: available})
 		}
-		if len(rows) == 0 || (expectedTotal > 0 && len(result) >= expectedTotal) {
+		if len(rows) < c.pageSize {
 			break
 		}
 	}
 	if len(result) == 0 {
 		return nil, graymarket.ErrNoData
 	}
-	if expectedTotal > 0 && len(result) != expectedTotal {
-		return nil, fmt.Errorf("incomplete full stock universe: expected %d records, got %d", expectedTotal, len(result))
+	if expectedTotal <= 0 {
+		return nil, errors.New("full stock universe returned an invalid total")
+	}
+	if len(seen) != expectedTotal {
+		return nil, fmt.Errorf("incomplete full stock universe: expected %d raw records, got %d", expectedTotal, len(seen))
 	}
 	return result, nil
 }
@@ -96,6 +113,7 @@ func (c *Client) FetchBoardQuotes(ctx context.Context, rankType graymarket.RankT
 	}
 	result := make([]graymarket.BoardQuote, 0, 512)
 	expectedTotal := 0
+	seen := make(map[string]struct{})
 	for page := 1; ; page++ {
 		params := url.Values{
 			"pn": {strconv.Itoa(page)}, "pz": {strconv.Itoa(c.pageSize)}, "po": {"1"}, "np": {"1"},
@@ -116,6 +134,10 @@ func (c *Client) FetchBoardQuotes(ctx context.Context, rankType graymarket.RankT
 			if code == "" {
 				return nil, fmt.Errorf("%s board quote contains an empty code", rankType)
 			}
+			if _, duplicate := seen[code]; duplicate {
+				return nil, fmt.Errorf("duplicate %s board quote code %s", rankType, code)
+			}
+			seen[code] = struct{}{}
 			latestPrice, available := optionalFloat(row, "f2")
 			result = append(result, graymarket.BoardQuote{
 				BoardCode: code, BoardMarket: intValue(row, "f13"), BoardName: optionalString(row, "f14"),
@@ -127,11 +149,17 @@ func (c *Client) FetchBoardQuotes(ctx context.Context, rankType graymarket.RankT
 				FetchedAt: fetchedAt, Available: available,
 			})
 		}
-		if len(rows) == 0 || len(result) >= expectedTotal {
+		if len(rows) < c.pageSize {
 			break
 		}
 	}
-	if expectedTotal > 0 && len(result) != expectedTotal {
+	if len(result) == 0 {
+		return nil, graymarket.ErrNoData
+	}
+	if expectedTotal <= 0 {
+		return nil, fmt.Errorf("%s board quotes returned an invalid total", rankType)
+	}
+	if len(result) != expectedTotal {
 		return nil, fmt.Errorf("incomplete %s board quotes: expected %d rows, got %d", rankType, expectedTotal, len(result))
 	}
 	return result, nil
@@ -280,14 +308,17 @@ func (c *Client) FetchBoardCatalog(ctx context.Context, boardType graymarket.Boa
 			seen[code] = struct{}{}
 			result = append(result, graymarket.Board{Code: code, Name: optionalString(row, "f14"), Type: boardType, SourceRank: len(result) + 1})
 		}
-		if len(rows) == 0 || len(result) >= expectedTotal {
+		if len(rows) < c.pageSize {
 			break
 		}
 	}
 	if len(result) == 0 {
 		return nil, fmt.Errorf("%s board catalog is empty", boardType)
 	}
-	if expectedTotal > 0 && len(result) != expectedTotal {
+	if expectedTotal <= 0 {
+		return nil, fmt.Errorf("%s board catalog returned an invalid total", boardType)
+	}
+	if len(result) != expectedTotal {
 		return nil, fmt.Errorf("incomplete %s board catalog: expected %d records, got %d", boardType, expectedTotal, len(result))
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Code < result[j].Code })
@@ -331,11 +362,17 @@ func (c *Client) FetchBoardConstituents(ctx context.Context, board graymarket.Bo
 				DetectedAt: fetchedAt, RawData: string(raw),
 			})
 		}
-		if len(rows) == 0 || len(result) >= expectedTotal {
+		if len(rows) < c.pageSize {
 			break
 		}
 	}
-	if expectedTotal > 0 && len(result) != expectedTotal {
+	if expectedTotal <= 0 {
+		return nil, fmt.Errorf("constituent list for %s returned an invalid total", board.Code)
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("constituent list for %s is empty", board.Code)
+	}
+	if len(result) != expectedTotal {
 		return nil, fmt.Errorf("incomplete constituent list for %s: expected %d records, got %d", board.Code, expectedTotal, len(result))
 	}
 	return result, nil

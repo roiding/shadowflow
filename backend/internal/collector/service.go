@@ -642,23 +642,17 @@ func (s *Service) enrichStockDailyQuotes(ctx context.Context, snapshot *graymark
 		return fmt.Errorf("fetch %s daily quotes: %w", snapshot.RankType, err)
 	}
 	byCode := make(map[string]graymarket.StockQuote, len(quotes))
-	usable := 0
 	wrongDate := 0
 	for _, quote := range quotes {
 		byCode[quote.StockCode] = quote
-		if quote.Available || quote.PreviousClose > 0 {
-			usable++
-		}
 		if quote.Available && quoteDate(quote.QuoteTime, snapshot.SnapshotAt.Location()) != snapshot.TradeDate {
 			wrongDate++
 		}
 	}
-	if usable != len(snapshot.Records) {
-		return fmt.Errorf("incomplete %s daily quotes: expected %d usable rows, got %d", snapshot.RankType, len(snapshot.Records), usable)
-	}
 	if wrongDate > 0 {
 		return fmt.Errorf("%s daily quotes contain %d rows outside trade date %s", snapshot.RankType, wrongDate, snapshot.TradeDate)
 	}
+	unavailable := make([]string, 0)
 	for index := range snapshot.Records {
 		record := &snapshot.Records[index]
 		quote := byCode[record.Code]
@@ -675,7 +669,17 @@ func (s *Service) enrichStockDailyQuotes(ctx context.Context, snapshot *graymark
 		record.QuoteAvailable = quote.Available
 		if quote.Available {
 			record.ChangePct = quote.ChangePct
+		} else if quote.PreviousClose <= 0 {
+			unavailable = append(unavailable, record.Code)
 		}
+	}
+	if len(unavailable) > 0 {
+		sample := unavailable
+		if len(sample) > 20 {
+			sample = sample[:20]
+		}
+		s.logger.Warn("some stock daily quotes are unavailable; retaining records without kline eligibility",
+			"trade_date", snapshot.TradeDate, "rank_type", snapshot.RankType, "count", len(unavailable), "sample_codes", sample)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -173,6 +174,61 @@ func TestRelationChangesOnBaselineDateAreReplayed(t *testing.T) {
 	relations, err := store.StockBoardRelations(ctx, "000001", tradeDate)
 	if err != nil || len(relations) != 1 || relations[0].BoardCode != "BK101" {
 		t.Fatalf("same-day events were not applied after baseline: records=%+v err=%v", relations, err)
+	}
+}
+
+func TestSameDayRelationRerunReplacesEarlierEvents(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	day1, day2 := "2026-08-18", "2026-08-19"
+	first := testRelation("000001", "平安银行", "BK001", "银行", graymarket.BoardIndustry, 1)
+	second := testRelation("000001", "平安银行", "BK101", "融资融券", graymarket.BoardConcept, 1)
+	applyTestRelationRun(t, store, ctx, "baseline-rerun", day1, []graymarket.StockBoardRelation{first})
+	applyTestRelationRun(t, store, ctx, "first-rerun", day2, []graymarket.StockBoardRelation{second})
+	result := applyTestRelationRun(t, store, ctx, "second-rerun", day2, []graymarket.StockBoardRelation{first})
+	if result.AddedCount != 0 || result.RemovedCount != 0 {
+		t.Fatalf("same-day correction should replace earlier events: %+v", result)
+	}
+	changes, err := store.RelationChanges(ctx, day2, "")
+	if err != nil || len(changes) != 0 {
+		t.Fatalf("stale same-day events remained: changes=%+v err=%v", changes, err)
+	}
+	relations, err := store.StockBoardRelations(ctx, "000001", day2)
+	if err != nil || len(relations) != 1 || relations[0].BoardCode != "BK001" {
+		t.Fatalf("corrected current state was not retained: records=%+v err=%v", relations, err)
+	}
+}
+
+func TestRelationScanRejectsLargeUnexpectedShrink(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	baseline := make([]graymarket.StockBoardRelation, 0, 1000)
+	for index := 0; index < 1000; index++ {
+		baseline = append(baseline, testRelation(fmt.Sprintf("%06d", index), "stock", fmt.Sprintf("BK%04d", index%100), "board", graymarket.BoardConcept, index%100))
+	}
+	applyTestRelationRun(t, store, ctx, "baseline-shrink", "2026-08-18", baseline)
+	startedAt := time.Now().UTC()
+	run := repository.RelationSyncRun{RunID: "unexpected-shrink", TradeDate: "2026-08-19", Status: repository.RunRunning, StartedAt: startedAt}
+	if err := store.StartRelationSync(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StageRelations(ctx, run.RunID, baseline[:899]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyRelationScan(ctx, run.RunID, run.TradeDate, startedAt); err == nil {
+		t.Fatal("unexpected relation shrink was accepted")
+	}
+	var current int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM stock_board_relation_current`).Scan(&current); err != nil || current != 1000 {
+		t.Fatalf("rejected shrink changed current state: count=%d err=%v", current, err)
 	}
 }
 
