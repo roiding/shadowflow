@@ -135,6 +135,17 @@ function App() {
     queryFn: async () => (await api.rankAt(boardType, historyDate, historyAt)).data ?? [],
     enabled: view === 'history' && Boolean(historyDate),
   })
+  const historyTradingDaysQuery = useQuery({
+    queryKey: ['history-trading-days', historyFrom, historyTo],
+    queryFn: async () => (await api.tradingDays(historyFrom, historyTo)).data ?? [],
+    enabled: view === 'history' && Boolean(historyFrom && historyTo),
+  })
+  const historyStartDate = historyTradingDaysQuery.data?.[0] ?? ''
+  const historyStartRanksQuery = useQuery({
+    queryKey: ['history-start-ranks', boardType, historyStartDate, historyAt],
+    queryFn: async () => (await api.rankAt(boardType, historyStartDate, historyAt)).data ?? [],
+    enabled: view === 'history' && Boolean(historyStartDate),
+  })
   const stocksQuery = useQuery({
     queryKey: ['daily-close', stockDate, debouncedStockQuery, stockSort.key, stockSort.direction, stockPage],
     queryFn: async () => api.dailyClose('stock', stockDate, debouncedStockQuery, stockSort.key, stockSort.direction, stockPage, 100),
@@ -161,8 +172,12 @@ function App() {
 
   useEffect(() => {
     const available = historyRanksQuery.data ?? []
-    if (available.length && !available.some((item) => item.code === historyCode)) setHistoryCode(available[0].code)
-  }, [historyRanksQuery.data, historyCode])
+    if (!available.length || !historyStartDate || !historyStartRanksQuery.data) return
+    if (historyCode && available.some((item) => item.code === historyCode)) return
+    const startCodes = new Set((historyStartRanksQuery.data ?? []).map((item) => item.code))
+    const common = available.find((item) => startCodes.has(item.code))
+    setHistoryCode((common ?? available[0]).code)
+  }, [historyRanksQuery.data, historyStartDate, historyStartRanksQuery.data, historyCode])
 
   useEffect(() => {
     const timer = window.setTimeout(() => { setDebouncedStockQuery(stockQuery.trim()); setStockPage(1) }, 300)
