@@ -7,8 +7,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/go-chi/chi/v5/middleware"
 )
 
 func bearerMiddleware(token string) func(http.Handler) http.Handler {
@@ -21,9 +19,9 @@ func bearerAuth(token string, next http.Handler) http.Handler {
 	expected := []byte(token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authorization := r.Header.Get("Authorization")
-		const prefix = "Bearer "
-		if !strings.HasPrefix(authorization, prefix) ||
-			subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(authorization, prefix)), expected) != 1 {
+		parts := strings.Fields(authorization)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") ||
+			subtle.ConstantTimeCompare([]byte(parts[1]), expected) != 1 {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "a valid bearer token is required")
 			return
 		}
@@ -99,4 +97,11 @@ func requestTimeout(duration time.Duration) func(http.Handler) http.Handler {
 	}
 }
 
-var _ = middleware.RequestID
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/metrics" {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
+}

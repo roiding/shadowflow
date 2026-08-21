@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
@@ -87,66 +86,53 @@ func (s *Store) ClaimScheduledJob(ctx context.Context, job scheduler.ScheduledJo
 		return scheduler.ScheduledJob{}, false, err
 	}
 	defer tx.Rollback()
-	current, err := scanScheduledJob(tx.QueryRowContext(ctx, `SELECT `+scheduledJobColumns+`
-FROM scheduled_job WHERE job_key=?`, job.JobKey))
-	if errors.Is(err, sql.ErrNoRows) {
+
+	claimedAt := now.UTC().Format(timestampLayout)
+	result, err := tx.ExecContext(ctx, `UPDATE scheduled_job SET status=?,attempt_count=attempt_count+1,
+lease_owner=?,lease_until=?,started_at=COALESCE(started_at,?)
+WHERE job_key=? AND attempt_count<max_attempts AND (
+    (status='queued' AND (retry_at IS NULL OR julianday(retry_at)<=julianday(?))) OR
+    (status='failed' AND retry_at IS NOT NULL AND julianday(retry_at)<=julianday(?)) OR
+    (status='running' AND (lease_until IS NULL OR julianday(lease_until)<=julianday(?)))
+)`, string(scheduler.JobRunning), owner, leaseUntil.UTC().Format(timestampLayout), claimedAt, job.JobKey,
+		claimedAt, claimedAt, claimedAt)
+	if err != nil {
+		return scheduler.ScheduledJob{}, false, fmt.Errorf("claim scheduled job %s: %w", job.JobKey, err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return scheduler.ScheduledJob{}, false, fmt.Errorf("count claimed scheduled job %s: %w", job.JobKey, err)
+	}
+	if count != 1 {
 		return scheduler.ScheduledJob{}, false, nil
 	}
+	claimed, err := scanScheduledJob(tx.QueryRowContext(ctx, `SELECT `+scheduledJobColumns+`
+FROM scheduled_job WHERE job_key=?`, job.JobKey))
 	if err != nil {
-		return scheduler.ScheduledJob{}, false, err
+		return scheduler.ScheduledJob{}, false, fmt.Errorf("read claimed scheduled job %s: %w", job.JobKey, err)
 	}
-	claimed := now.UTC()
-	if current.Status == scheduler.JobSucceeded || current.Status == scheduler.JobSkipped ||
-		current.AttemptCount >= current.MaxAttempts {
-		return current, false, nil
+	if err := tx.Commit(); err != nil {
+		return scheduler.ScheduledJob{}, false, fmt.Errorf("commit scheduled job claim %s: %w", job.JobKey, err)
 	}
-	if current.Status == scheduler.JobRunning && current.LeaseUntil != nil && current.LeaseUntil.After(claimed) {
-		return current, false, nil
-	}
-	if current.Status == scheduler.JobFailed && current.RetryAt != nil && current.RetryAt.After(claimed) {
-		return current, false, nil
-	}
-	lease := leaseUntil.UTC().Format(timestampLayout)
-	started := claimed.Format(timestampLayout)
-	if current.StartedAt != nil && !current.StartedAt.IsZero() {
-		started = current.StartedAt.UTC().Format(timestampLayout)
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE scheduled_job SET status=?,attempt_count=attempt_count+1,
-lease_owner=?,lease_until=?,started_at=? WHERE job_key=? AND status IN ('queued','failed','running')`,
-		string(scheduler.JobRunning), owner, lease, started, job.JobKey)
-	if err != nil {
-		return scheduler.ScheduledJob{}, false, err
-	}
-	if count, err := result.RowsAffected(); err == nil && count == 0 {
-		return current, false, nil
-	}
-	if err = tx.Commit(); err != nil {
-		return scheduler.ScheduledJob{}, false, err
-	}
-	current.Status = scheduler.JobRunning
-	current.AttemptCount++
-	current.LeaseOwner = owner
-	leaseTime := leaseUntil
-	current.LeaseUntil = &leaseTime
-	if current.StartedAt == nil || current.StartedAt.IsZero() {
-		startTime := parseSQLiteTime(started)
-		current.StartedAt = &startTime
-	}
-	return current, true, nil
+	return claimed, true, nil
 }
 
 func (s *Store) FinishScheduledJob(ctx context.Context, job scheduler.ScheduledJob) error {
 	retryAt := formatNullableTime(job.RetryAt)
-	var errorMessage string
-	if job.LastError != "" {
-		errorMessage = job.LastError
-	}
-	_, err := s.writeDB().ExecContext(ctx, `UPDATE scheduled_job SET status=?,retry_at=?,finished_at=?,
-duration_ms=?,last_error_code=?,last_error_message=?,lease_owner=NULL,lease_until=NULL WHERE job_key=?`,
+	result, err := s.writeDB().ExecContext(ctx, `UPDATE scheduled_job SET status=?,retry_at=?,finished_at=?,
+duration_ms=?,last_error_code=?,last_error_message=?,lease_owner=NULL,lease_until=NULL
+WHERE job_key=? AND status='running' AND lease_owner=?`,
 		string(job.Status), retryAt, time.Now().UTC().Format(timestampLayout), job.DurationMS,
-		job.LastErrorCode, errorMessage, job.JobKey)
+		job.LastErrorCode, job.LastError, job.JobKey, job.LeaseOwner)
 	if err != nil {
 		return fmt.Errorf("finish scheduled job %s: %w", job.JobKey, err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count finished scheduled job %s: %w", job.JobKey, err)
+	}
+	if count != 1 {
+		return fmt.Errorf("finish scheduled job %s: %w", job.JobKey, scheduler.ErrJobLeaseLost)
 	}
 	return nil
 }
@@ -158,10 +144,10 @@ func (s *Store) DueScheduledJobs(ctx context.Context, now time.Time, limit int) 
 	timestamp := now.UTC().Format(timestampLayout)
 	rows, err := s.readDB().QueryContext(ctx, `SELECT `+scheduledJobColumns+`
 FROM scheduled_job
-WHERE (status='queued' AND (retry_at IS NULL OR retry_at<=?))
-   OR (status='failed' AND retry_at IS NOT NULL AND retry_at<=?)
-   OR (status='running' AND lease_until IS NOT NULL AND lease_until<=?)
-ORDER BY planned_at LIMIT ?`, timestamp, timestamp, timestamp, limit)
+WHERE (status='queued' AND (retry_at IS NULL OR julianday(retry_at)<=julianday(?)))
+   OR (status='failed' AND retry_at IS NOT NULL AND julianday(retry_at)<=julianday(?))
+   OR (status='running' AND lease_until IS NOT NULL AND julianday(lease_until)<=julianday(?))
+ORDER BY julianday(planned_at) LIMIT ?`, timestamp, timestamp, timestamp, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query due scheduled jobs: %w", err)
 	}
@@ -179,7 +165,7 @@ ORDER BY planned_at LIMIT ?`, timestamp, timestamp, timestamp, limit)
 
 func (s *Store) ExpireLeasedJobs(ctx context.Context, now time.Time) error {
 	_, err := s.writeDB().ExecContext(ctx, `UPDATE scheduled_job SET status='queued',lease_owner=NULL,lease_until=NULL
-WHERE status='running' AND lease_until IS NOT NULL AND lease_until<=?`, now.UTC().Format(timestampLayout))
+WHERE status='running' AND lease_until IS NOT NULL AND julianday(lease_until)<=julianday(?)`, now.UTC().Format(timestampLayout))
 	if err != nil {
 		return fmt.Errorf("expire scheduled job leases: %w", err)
 	}

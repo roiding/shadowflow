@@ -52,9 +52,10 @@ func main() {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConns = cfg.UpstreamMaxConcurrency * 4
 	transport.MaxIdleConnsPerHost = cfg.UpstreamMaxConcurrency
-	client := eastmoney.NewClient(cfg.UpstreamBaseURL, &http.Client{Transport: transport, Timeout: cfg.RequestTimeout}, cfg.PageSize).
+	upstreamClient := &http.Client{Transport: transport, Timeout: cfg.RequestTimeout}
+	client := eastmoney.NewClient(cfg.UpstreamBaseURL, upstreamClient, cfg.PageSize).
 		WithQuoteBaseURLs(cfg.QuoteBaseURLs).
-		WithUpstreamGuard(upstream.New(&http.Client{Transport: transport, Timeout: cfg.RequestTimeout}, upstream.Options{
+		WithUpstreamGuard(upstream.New(upstreamClient, upstream.Options{
 			MaxConcurrency: cfg.UpstreamMaxConcurrency, RatePerSecond: cfg.UpstreamRatePerSecond,
 		}))
 	service := collector.New(client, store, logger)

@@ -104,18 +104,21 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 	}
 	timeoutByPath := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/api/v1/research/") && strings.HasSuffix(r.URL.Path, "/export") {
+				ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+				defer cancel()
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 			timeout := 20 * time.Second
-			switch {
-			case strings.HasPrefix(r.URL.Path, "/api/v1/research/") && strings.HasSuffix(r.URL.Path, "/export"):
-				timeout = 120 * time.Second
-			case r.URL.Path == "/api/v1/focus/scan":
+			if r.URL.Path == "/api/v1/focus/scan" {
 				timeout = 30 * time.Second
 			}
 			requestTimeout(timeout)(next).ServeHTTP(w, r)
 		})
 	}
 	router := chi.NewRouter()
-	router.Use(middleware.RequestID, middleware.RealIP, middleware.Recoverer, middleware.Compress(5))
+	router.Use(middleware.RequestID, middleware.Recoverer, middleware.Compress(5), noStore)
 	router.Get("/health/live", server.live)
 	router.Get("/health/ready", server.ready)
 	router.Group(func(authed chi.Router) {
@@ -938,16 +941,25 @@ func (s *Server) exportResearch(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="shadowflow-%s-%s.csv"`, rankType, code))
-	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
+	if _, err := w.Write([]byte{0xEF, 0xBB, 0xBF}); err != nil {
+		return
+	}
 	writer := csv.NewWriter(w)
-	_ = writer.Write([]string{"trade_date", "snapshot_at", "rank_type", "rank", "code", "name", "latest_price_raw", "change_pct", "dark_money", "regular_money", "main_money_inflow", "dark_activity", "dark_inflow_ratio", "up_count", "down_count"})
+	if err := writer.Write([]string{"trade_date", "snapshot_at", "rank_type", "rank", "code", "name", "latest_price_raw", "change_pct", "dark_money", "regular_money", "main_money_inflow", "dark_activity", "dark_inflow_ratio", "up_count", "down_count"}); err != nil {
+		return
+	}
 	for _, record := range records {
-		_ = writer.Write([]string{record.TradeDate, record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, record.Name,
+		if err := writer.Write([]string{record.TradeDate, record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, record.Name,
 			strconv.FormatInt(record.LatestPriceRaw, 10), strconv.FormatFloat(record.ChangePct, 'f', 8, 64), strconv.FormatInt(record.DarkMoney, 10),
 			strconv.FormatInt(record.RegularMoney, 10), strconv.FormatInt(record.MainMoneyInflow, 10), strconv.FormatFloat(record.DarkActivity, 'f', 8, 64),
-			strconv.FormatFloat(record.DarkInflowRatio, 'f', 8, 64), strconv.FormatInt(record.UpCount, 10), strconv.FormatInt(record.DownCount, 10)})
+			strconv.FormatFloat(record.DarkInflowRatio, 'f', 8, 64), strconv.FormatInt(record.UpCount, 10), strconv.FormatInt(record.DownCount, 10)}); err != nil {
+			return
+		}
 	}
 	writer.Flush()
+	if err := writer.Error(); err != nil {
+		s.logger.Error("write research export", "error", err)
+	}
 }
 
 func (s *Server) exportDailyClose(w http.ResponseWriter, r *http.Request) {
@@ -974,23 +986,32 @@ func (s *Server) exportDailyClose(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="shadowflow-daily-close-%s.csv"`, tradeDate))
-	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
+	if _, err := w.Write([]byte{0xEF, 0xBB, 0xBF}); err != nil {
+		return
+	}
 	writer := csv.NewWriter(w)
-	_ = writer.Write([]string{"revision_id", "trade_date", "snapshot_kind", "snapshot_at", "rank_type", "rank", "code", "name",
+	if err := writer.Write([]string{"revision_id", "trade_date", "snapshot_kind", "snapshot_at", "rank_type", "rank", "code", "name",
 		"open_price", "high_price", "low_price", "close_price", "previous_close", "change_value", "change_pct",
 		"volume", "turnover", "turnover_rate", "amplitude", "quote_available", "latest_price_raw",
-		"dark_money", "regular_money", "main_money_inflow", "dark_activity", "dark_inflow_ratio", "up_count", "flat_count", "down_count"})
+		"dark_money", "regular_money", "main_money_inflow", "dark_activity", "dark_inflow_ratio", "up_count", "flat_count", "down_count"}); err != nil {
+		return
+	}
 	for _, record := range records {
-		_ = writer.Write([]string{revisionID, record.TradeDate, string(graymarket.SnapshotDailyClose), record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, record.Name,
+		if err := writer.Write([]string{revisionID, record.TradeDate, string(graymarket.SnapshotDailyClose), record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, record.Name,
 			strconv.FormatFloat(record.OpenPrice, 'f', 4, 64), strconv.FormatFloat(record.HighPrice, 'f', 4, 64), strconv.FormatFloat(record.LowPrice, 'f', 4, 64),
 			strconv.FormatFloat(record.ClosePrice, 'f', 4, 64), strconv.FormatFloat(record.PreviousClose, 'f', 4, 64), strconv.FormatFloat(record.ChangeValue, 'f', 4, 64),
 			strconv.FormatFloat(record.ChangePct, 'f', 8, 64), strconv.FormatInt(record.Volume, 10), strconv.FormatInt(record.Turnover, 10),
 			strconv.FormatFloat(record.TurnoverRate, 'f', 8, 64), strconv.FormatFloat(record.Amplitude, 'f', 8, 64), strconv.FormatBool(record.QuoteAvailable),
 			strconv.FormatInt(record.LatestPriceRaw, 10), strconv.FormatInt(record.DarkMoney, 10),
 			strconv.FormatInt(record.RegularMoney, 10), strconv.FormatInt(record.MainMoneyInflow, 10), strconv.FormatFloat(record.DarkActivity, 'f', 8, 64),
-			strconv.FormatFloat(record.DarkInflowRatio, 'f', 8, 64), strconv.FormatInt(record.UpCount, 10), strconv.FormatInt(record.FlatCount, 10), strconv.FormatInt(record.DownCount, 10)})
+			strconv.FormatFloat(record.DarkInflowRatio, 'f', 8, 64), strconv.FormatInt(record.UpCount, 10), strconv.FormatInt(record.FlatCount, 10), strconv.FormatInt(record.DownCount, 10)}); err != nil {
+			return
+		}
 	}
 	writer.Flush()
+	if err := writer.Error(); err != nil {
+		s.logger.Error("write daily close export", "error", err)
+	}
 }
 
 func boardTypeParam(w http.ResponseWriter, value string) (graymarket.RankType, bool) {

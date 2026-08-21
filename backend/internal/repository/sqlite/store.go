@@ -68,12 +68,16 @@ func OpenWithReadConns(path string, readConns int) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	store := &Store{db: db}
+	success := false
+	defer func() {
+		if !success {
+			_ = store.Close()
+		}
+	}()
 	if err := configureSQLite(db, path); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("configure sqlite: %w", err)
 	}
 	if _, err := db.Exec(schema); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("migrate database: %w", err)
 	}
 	if path == ":memory:" {
@@ -81,89 +85,70 @@ func OpenWithReadConns(path string, readConns int) (*Store, error) {
 	} else {
 		reader, readerErr := sql.Open("sqlite", sqliteDSN(path, "_pragma=busy_timeout(5000)", "_pragma=foreign_keys(ON)", "_pragma=query_only(ON)"))
 		if readerErr != nil {
-			_ = db.Close()
 			return nil, fmt.Errorf("open sqlite reader: %w", readerErr)
 		}
 		reader.SetMaxOpenConns(readConns)
 		reader.SetMaxIdleConns(readConns)
+		store.reader = reader
 		if err := configureReaderSQLite(reader); err != nil {
-			_ = reader.Close()
-			_ = db.Close()
 			return nil, fmt.Errorf("configure sqlite reader: %w", err)
 		}
-		store.reader = reader
 	}
 	if err := migrateDailyQuoteColumns(db); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("migrate daily quote columns: %w", err)
 	}
 	if err := migrateStockArchiveQuality(db); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("migrate stock archive quality: %w", err)
 	}
 	if err := migrateStockResearchUniverse(store); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("migrate stock research universe: %w", err)
 	}
 	if err := migrateResearchCloseModel(db); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("migrate 15:00 close snapshots: %w", err)
 	}
 	if err := migrateLegacyBoardMoney(store); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("migrate legacy board money: %w", err)
 	}
 	if err := migrateBoardMoneyAvailability(store); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("migrate board money availability: %w", err)
 	}
 	if err := migrateArchivePlaceholders(store); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("migrate archive placeholders: %w", err)
 	}
 	if err := migrateArchiveMetadata(db); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("migrate archive metadata: %w", err)
 	}
 	if err := migrateArchiveRevisions(store); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("migrate archive revisions: %w", err)
 	}
 	if err := migrateLightweightArchiveStorage(store); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("migrate lightweight archive storage: %w", err)
 	}
 	if err := migrateRevisionMetadata(store); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("migrate revision metadata: %w", err)
 	}
 	if err := migrateAnalytics(store); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("migrate analytics: %w", err)
 	}
 	if err := recordSchemaMigration(store); err != nil {
-		_ = readerClose(store)
-		_ = db.Close()
 		return nil, fmt.Errorf("record schema migration: %w", err)
 	}
 	if _, err := db.Exec(`UPDATE collection_run
 SET status='failed', finished_at=COALESCE(finished_at, ?), error_code='interrupted',
 error_message='process stopped before collection completed'
 WHERE status='running'`, time.Now().UTC().Format(timestampLayout)); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("recover interrupted runs: %w", err)
 	}
 	if _, err := db.Exec(`UPDATE relation_sync_run
 SET status='failed', finished_at=COALESCE(finished_at, ?), error_code='interrupted',
 error_message='process stopped before relation synchronization completed'
 WHERE status='running'`, time.Now().UTC().Format(timestampLayout)); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("recover interrupted relation syncs: %w", err)
 	}
 	if _, err := db.Exec(`DELETE FROM stock_board_relation_stage`); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("cleanup interrupted relation stage: %w", err)
 	}
+	success = true
 	return store, nil
 }
 

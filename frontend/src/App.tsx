@@ -88,7 +88,6 @@ function jitterInterval(base: number) {
 
 function App() {
   const [authRequired, setAuthRequired] = useState(false)
-  const [authVersion, setAuthVersion] = useState(0)
   const queryClient = useQueryClient()
 
   useEffect(() => {
@@ -119,8 +118,7 @@ function App() {
   const [stockPage, setStockPage] = useState(1)
   const [debouncedStockQuery, setDebouncedStockQuery] = useState('')
 
-  const refreshInterval = autoRefresh ? jitterInterval(refreshSeconds * 1000) : false
-  void authVersion
+  const refreshInterval = useMemo(() => autoRefresh ? jitterInterval(refreshSeconds * 1000) : false, [autoRefresh, refreshSeconds])
   const statusQuery = useQuery({ queryKey: ['system-status'], queryFn: async () => (await api.status()).data as SystemStatus, refetchInterval: refreshInterval, refetchIntervalInBackground: false })
   const latestTradingDay = statusQuery.data?.latest_trading_day ?? ''
   const rankQuery = useQuery({ queryKey: ['latest', boardType], queryFn: async () => { const started = performance.now(); const result = await api.latest(boardType); return { records: result.data ?? [], requestMs: Math.round(performance.now() - started) } }, refetchInterval: refreshInterval, refetchIntervalInBackground: false })
@@ -176,7 +174,6 @@ function App() {
   })
 
   useEffect(() => {
-    if (document.visibilityState !== 'visible') return
     const onVisible = () => {
       if (document.visibilityState === 'visible') void queryClient.invalidateQueries()
     }
@@ -228,7 +225,7 @@ function App() {
   const onStockSort = (key: keyof RankRecord) => { setStockSort((current) => ({ key, direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc' })); setStockPage(1) }
 
   if (authRequired && !getToken()) {
-    return <TokenGate onAuthenticated={() => { setAuthRequired(false); setAuthVersion((value) => value + 1); void statusQuery.refetch(); void rankQuery.refetch() }} />
+    return <TokenGate onAuthenticated={() => { setAuthRequired(false); void queryClient.invalidateQueries() }} />
   }
 
   return <div className="app-shell">

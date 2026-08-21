@@ -13,7 +13,8 @@ export function clearToken(): void {
   sessionStorage.removeItem(TOKEN_KEY)
 }
 
-export function notifyUnauthorized(): void {
+export function notifyUnauthorized(rejectedToken?: string): void {
+  if (rejectedToken !== undefined && getToken() !== rejectedToken) return
   clearToken()
   window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT))
 }

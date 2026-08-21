@@ -28,16 +28,41 @@ type Options struct {
 	RecoverySuccesses int
 }
 
-type Guard struct {
-	httpClient        *http.Client
-	options           Options
-	semaphore         chan struct{}
-	mu                sync.Mutex
-	nextSend          time.Time
+type circuitState struct {
 	failures          []time.Time
 	openUntil         time.Time
 	halfOpenProbe     bool
 	halfOpenSuccesses int
+}
+
+type Guard struct {
+	httpClient *http.Client
+	options    Options
+	semaphore  chan struct{}
+	rateMu     sync.Mutex
+	nextSend   time.Time
+	mu         sync.Mutex
+	circuits   map[string]*circuitState
+}
+
+type guardedBody struct {
+	io.ReadCloser
+	once    sync.Once
+	release func()
+}
+
+func (b *guardedBody) Read(buffer []byte) (int, error) {
+	n, err := b.ReadCloser.Read(buffer)
+	if err != nil {
+		b.once.Do(b.release)
+	}
+	return n, err
+}
+
+func (b *guardedBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(b.release)
+	return err
 }
 
 func New(httpClient *http.Client, options Options) *Guard {
@@ -62,149 +87,180 @@ func New(httpClient *http.Client, options Options) *Guard {
 	return &Guard{
 		httpClient: httpClient, options: options,
 		semaphore: make(chan struct{}, options.MaxConcurrency),
+		circuits:  make(map[string]*circuitState),
 	}
 }
 
 func (g *Guard) Do(ctx context.Context, request *http.Request) (*http.Response, error) {
-	if err := g.waitSend(ctx); err != nil {
-		return nil, err
-	}
-	probe, err := g.acquireProbe()
+	key := circuitKey(request)
+	probe, err := g.acquireProbe(key)
 	if err != nil {
 		return nil, err
 	}
 	select {
 	case g.semaphore <- struct{}{}:
 	case <-ctx.Done():
-		g.releaseProbe(probe)
+		g.releaseProbe(key, probe)
 		return nil, ctx.Err()
+	}
+	releaseSlot := func() { <-g.semaphore }
+	if err := g.waitSend(ctx); err != nil {
+		releaseSlot()
+		g.releaseProbe(key, probe)
+		return nil, err
 	}
 	response, err := g.httpClient.Do(request)
 	if err != nil {
-		<-g.semaphore
-		g.record(false)
-		g.releaseProbe(probe)
+		releaseSlot()
+		g.record(key, false)
+		g.releaseProbe(key, probe)
 		return nil, err
 	}
-	healthy := response.StatusCode < 500 && response.StatusCode != http.StatusTooManyRequests
-	<-g.semaphore
-	g.record(healthy)
-	g.releaseProbe(probe)
+	healthy := response.StatusCode < http.StatusInternalServerError &&
+		response.StatusCode != http.StatusRequestTimeout &&
+		response.StatusCode != http.StatusTooEarly &&
+		response.StatusCode != http.StatusTooManyRequests &&
+		response.StatusCode != http.StatusUnauthorized &&
+		response.StatusCode != http.StatusForbidden
+	g.record(key, healthy)
+	g.releaseProbe(key, probe)
 	if !healthy {
 		_, _ = io.Copy(io.Discard, response.Body)
 		_ = response.Body.Close()
+		releaseSlot()
 		return nil, fmt.Errorf("upstream returned HTTP %d", response.StatusCode)
 	}
+	if response.Body == nil {
+		releaseSlot()
+		return response, nil
+	}
+	response.Body = &guardedBody{ReadCloser: response.Body, release: releaseSlot}
 	return response, nil
 }
 
+// State reports the most severe state among upstream hosts. Breaker decisions
+// are isolated by host so failures on a delayed quote endpoint cannot disable
+// collection from an otherwise healthy host.
 func (g *Guard) State() State {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := time.Now()
-	if g.openUntil.IsZero() {
-		return StateClosed
+	state := StateClosed
+	for _, circuit := range g.circuits {
+		if !circuit.openUntil.IsZero() && now.Before(circuit.openUntil) {
+			return StateOpen
+		}
+		if !circuit.openUntil.IsZero() {
+			state = StateHalfOpen
+		}
 	}
-	if now.Before(g.openUntil) {
-		return StateOpen
+	return state
+}
+
+func circuitKey(request *http.Request) string {
+	if request == nil || request.URL == nil {
+		return "unknown"
 	}
-	return StateHalfOpen
+	if request.URL.Host != "" {
+		return request.URL.Host
+	}
+	return "unknown"
 }
 
 func (g *Guard) waitSend(ctx context.Context) error {
-	g.mu.Lock()
-	now := time.Now()
-	wait := time.Duration(0)
-	if g.nextSend.After(now) {
-		wait = g.nextSend.Sub(now)
+	g.rateMu.Lock()
+	defer g.rateMu.Unlock()
+	if wait := time.Until(g.nextSend); wait > 0 {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
-	g.nextSend = maxTime(now, g.nextSend).Add(time.Duration(float64(time.Second) / g.options.RatePerSecond))
+	g.nextSend = time.Now().Add(time.Duration(float64(time.Second) / g.options.RatePerSecond))
+	return nil
+}
+
+func (g *Guard) acquireProbe(key string) (bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	circuit := g.circuits[key]
+	if circuit == nil {
+		circuit = &circuitState{}
+		g.circuits[key] = circuit
+	}
+	now := time.Now()
+	if circuit.openUntil.IsZero() {
+		return false, nil
+	}
+	if now.Before(circuit.openUntil) {
+		return false, ErrCircuitOpen
+	}
+	if circuit.halfOpenProbe {
+		return false, ErrCircuitOpen
+	}
+	circuit.halfOpenProbe = true
+	return true, nil
+}
+
+func (g *Guard) releaseProbe(key string, probe bool) {
+	if !probe {
+		return
+	}
+	g.mu.Lock()
+	if circuit := g.circuits[key]; circuit != nil {
+		circuit.halfOpenProbe = false
+	}
 	g.mu.Unlock()
-	if wait == 0 {
-		return nil
-	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }
 
-func (g *Guard) acquireProbe() (bool, error) {
+func (g *Guard) record(key string, healthy bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	now := time.Now()
-	if g.openUntil.IsZero() || now.After(g.openUntil) {
-		if g.openUntil.IsZero() {
-			return false, nil
-		}
-		if g.halfOpenProbe {
-			return false, ErrCircuitOpen
-		}
-		g.halfOpenProbe = true
-		return true, nil
+	circuit := g.circuits[key]
+	if circuit == nil {
+		circuit = &circuitState{}
+		g.circuits[key] = circuit
 	}
-	return false, ErrCircuitOpen
-}
-
-func (g *Guard) releaseProbe(probe bool) {
-	if probe {
-		g.mu.Lock()
-		g.halfOpenProbe = false
-		g.mu.Unlock()
-	}
-}
-
-func (g *Guard) record(healthy bool) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
 	now := time.Now()
-	if !g.openUntil.IsZero() && now.Before(g.openUntil) {
+	if !circuit.openUntil.IsZero() && now.Before(circuit.openUntil) {
 		return
 	}
 	if healthy {
-		if !g.openUntil.IsZero() {
-			g.halfOpenSuccesses++
-			if g.halfOpenSuccesses >= g.options.RecoverySuccesses {
-				g.resetLocked()
+		if !circuit.openUntil.IsZero() {
+			circuit.halfOpenSuccesses++
+			if circuit.halfOpenSuccesses >= g.options.RecoverySuccesses {
+				resetCircuit(circuit)
 			}
 			return
 		}
-		g.failures = nil
+		circuit.failures = nil
 		return
 	}
-	if !g.openUntil.IsZero() {
-		g.openUntil = now.Add(g.options.OpenDuration)
-		g.halfOpenSuccesses = 0
+	if !circuit.openUntil.IsZero() {
+		circuit.openUntil = now.Add(g.options.OpenDuration)
+		circuit.halfOpenSuccesses = 0
 		return
 	}
-	g.failures = append(g.failures, now)
+	circuit.failures = append(circuit.failures, now)
 	cutoff := now.Add(-time.Minute)
 	index := 0
-	for index < len(g.failures) && g.failures[index].Before(cutoff) {
+	for index < len(circuit.failures) && circuit.failures[index].Before(cutoff) {
 		index++
 	}
-	g.failures = append([]time.Time(nil), g.failures[index:]...)
-	if len(g.failures) >= g.options.FailureThreshold {
-		g.openUntil = now.Add(g.options.OpenDuration)
-		g.halfOpenSuccesses = 0
-		g.failures = nil
+	circuit.failures = append([]time.Time(nil), circuit.failures[index:]...)
+	if len(circuit.failures) >= g.options.FailureThreshold {
+		circuit.openUntil = now.Add(g.options.OpenDuration)
+		circuit.halfOpenSuccesses = 0
+		circuit.failures = nil
 	}
 }
 
-func (g *Guard) resetLocked() {
-	g.openUntil = time.Time{}
-	g.halfOpenSuccesses = 0
-	g.halfOpenProbe = false
-	g.failures = nil
-}
-
-func maxTime(a, b time.Time) time.Time {
-	if a.After(b) {
-		return a
-	}
-	return b
+func resetCircuit(circuit *circuitState) {
+	circuit.openUntil = time.Time{}
+	circuit.halfOpenSuccesses = 0
+	circuit.halfOpenProbe = false
+	circuit.failures = nil
 }

@@ -10,7 +10,7 @@
     "test": "node --test scripts/*.test.mjs",
     "preview": "vite preview",
     "generate:api": "openapi-typescript ../backend/openapi.yaml -o src/api/schema.d.ts",
-    "contract:test": "npm run generate:api && git diff --check -- ../backend/openapi.yaml src/api/schema.d.ts",
+    "contract:test": "npm run contract:check",
     "contract:check": "openapi-typescript ../backend/openapi.yaml -o src/api/schema.d.ts && git diff --exit-code -- src/api/schema.d.ts"
   },
   "dependencies": {

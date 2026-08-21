@@ -79,3 +79,34 @@ func TestLoadCalendarUpdateDefaultsAndValidation(t *testing.T) {
 		t.Fatal("expected invalid calendar refresh lead days")
 	}
 }
+
+func TestLoadPropagatesSecurityAndConcurrencyOptions(t *testing.T) {
+	t.Setenv("SHADOWFLOW_API_TOKEN", " 0123456789abcdef ")
+	t.Setenv("SHADOWFLOW_RATE_LIMIT_PER_MINUTE", "321")
+	t.Setenv("SHADOWFLOW_EXPORT_RATE_LIMIT_PER_MINUTE", "17")
+	t.Setenv("SHADOWFLOW_SCAN_RATE_LIMIT_PER_MINUTE", "43")
+	t.Setenv("SHADOWFLOW_UPSTREAM_MAX_CONCURRENCY", "7")
+	t.Setenv("SHADOWFLOW_UPSTREAM_RATE_PER_SECOND", "12.5")
+	t.Setenv("SHADOWFLOW_SQLITE_READ_CONNS", "9")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.APIToken != "0123456789abcdef" || cfg.NormalRatePerMinute != 321 ||
+		cfg.ExportRatePerMinute != 17 || cfg.ScanRatePerMinute != 43 ||
+		cfg.UpstreamMaxConcurrency != 7 || cfg.UpstreamRatePerSecond != 12.5 || cfg.SQLiteReadConns != 9 {
+		t.Fatalf("security/concurrency options were not propagated: %+v", cfg)
+	}
+}
+
+func TestLoadRejectsInvalidRequestTimeout(t *testing.T) {
+	t.Setenv("SHADOWFLOW_REQUEST_TIMEOUT_SECONDS", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected zero request timeout to be rejected")
+	}
+	t.Setenv("SHADOWFLOW_REQUEST_TIMEOUT_SECONDS", "301")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected excessive request timeout to be rejected")
+	}
+}

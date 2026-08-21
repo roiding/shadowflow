@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"github.com/roiding/shadowflow/internal/repository"
 	"github.com/roiding/shadowflow/internal/tradingcalendar"
 )
+
+var errDependencyUnavailable = errors.New("scheduled job dependency is unavailable")
 
 type collectorService interface {
 	CollectBoards(context.Context, time.Time) error
@@ -53,10 +56,17 @@ func New(service collectorService, calendar *tradingcalendar.Calendar, logger *s
 	}
 	config := Options{SuccessRunRetentionDays: 30, FailureRunRetentionDays: 180, Jobs: noopJobStore{}}
 	if len(options) > 0 {
-		config = options[0]
-	}
-	if config.Jobs == nil {
-		config.Jobs = noopJobStore{}
+		provided := options[0]
+		if provided.SuccessRunRetentionDays > 0 {
+			config.SuccessRunRetentionDays = provided.SuccessRunRetentionDays
+		}
+		if provided.FailureRunRetentionDays > 0 {
+			config.FailureRunRetentionDays = provided.FailureRunRetentionDays
+		}
+		if provided.Jobs != nil {
+			config.Jobs = provided.Jobs
+		}
+		config.InstanceID = provided.InstanceID
 	}
 	owner := strings.TrimSpace(config.InstanceID)
 	if owner == "" {
@@ -244,10 +254,10 @@ func (s *Scheduler) claimAndLaunch(ctx context.Context, candidate ScheduledJob, 
 
 func (s *Scheduler) release(lane, key string, current time.Time) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	delete(s.lastKeys, key)
 	s.running[lane] = false
-	s.mu.Unlock()
-	s.prune(current)
+	s.pruneLocked(current)
 }
 
 func (s *Scheduler) runJob(parent context.Context, job ScheduledJob, current time.Time) {
@@ -271,7 +281,7 @@ func (s *Scheduler) runJob(parent context.Context, job ScheduledJob, current tim
 	if job.Status == JobFailed {
 		policy := policyFor(job.Kind)
 		if job.AttemptCount < policy.maxAttempts {
-			retryAt := current.Add(policy.retryAfter)
+			retryAt := finishedAt.Add(policy.retryAfter)
 			job.RetryAt = &retryAt
 		} else {
 			job.RetryAt = nil
@@ -321,7 +331,7 @@ func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current ti
 		}
 		if !endExists {
 			s.logger.Warn("stock kline archive is waiting for end-of-day money archive", "trade_date", tradeDate, "at", current)
-			return nil
+			return fmt.Errorf("%w: end-of-day archive for %s", errDependencyUnavailable, tradeDate)
 		}
 		return s.collector.CollectStockKlines(ctx, parseShanghaiTime(tradeDate, "16:15", current))
 	case "relations":
@@ -441,14 +451,19 @@ func jobKey(current time.Time, kind, tradeDate string) string {
 }
 
 func errorCode(err error) string {
-	message := err.Error()
-	if len(message) > 80 {
-		return message[:80]
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, errDependencyUnavailable):
+		return "dependency_unavailable"
+	default:
+		return "job_failed"
 	}
-	return message
 }
 
-func (s *Scheduler) prune(current time.Time) {
+func (s *Scheduler) pruneLocked(current time.Time) {
 	cutoff := current.Add(-24 * time.Hour).Format("2006-01-02")
 	for key := range s.lastKeys {
 		if len(key) >= 10 && key[:10] < cutoff {

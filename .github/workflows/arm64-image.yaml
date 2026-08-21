@@ -54,6 +54,10 @@ jobs:
         working-directory: frontend
         run: npm ci --no-audit --no-fund
 
+      - name: Check generated API contract
+        working-directory: frontend
+        run: npm run contract:check
+
       - name: Lint frontend
         working-directory: frontend
         run: npm run lint

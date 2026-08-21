@@ -40,6 +40,13 @@ if pgrep -x shadowflow >/dev/null 2>&1; then
   echo "stop the shadowflow service before restoring" >&2
   exit 1
 fi
+if [ -f "$database_path" ]; then
+  safety_copy="${database_path}.pre-restore-$(date '+%Y%m%d-%H%M%S')"
+  cp -p "$database_path" "$safety_copy"
+  [ ! -f "$database_path-wal" ] || cp -p "$database_path-wal" "$safety_copy-wal"
+  [ ! -f "$database_path-shm" ] || cp -p "$database_path-shm" "$safety_copy-shm"
+  echo "preserved existing database at $safety_copy" >&2
+fi
 mv "$restore_path" "$database_path"
 rm -f "$database_path-shm" "$database_path-wal"
 echo "$database_path"

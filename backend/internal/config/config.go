@@ -88,6 +88,9 @@ func Load() (Config, error) {
 	if pageSize < 1 || pageSize > 100 {
 		return Config{}, fmt.Errorf("SHADOWFLOW_PAGE_SIZE must be between 1 and 100")
 	}
+	if timeoutSeconds < 1 || timeoutSeconds > 300 {
+		return Config{}, fmt.Errorf("SHADOWFLOW_REQUEST_TIMEOUT_SECONDS must be between 1 and 300")
+	}
 	if successRetentionDays < 1 || failureRetentionDays < successRetentionDays {
 		return Config{}, fmt.Errorf("run retention must satisfy 1 <= success days <= failure days")
 	}
@@ -116,6 +119,13 @@ func Load() (Config, error) {
 		SchedulerEnabled:        schedulerEnabled,
 		SuccessRunRetentionDays: successRetentionDays,
 		FailureRunRetentionDays: failureRetentionDays,
+		APIToken:                strings.TrimSpace(os.Getenv("SHADOWFLOW_API_TOKEN")),
+		NormalRatePerMinute:     normalRate,
+		ExportRatePerMinute:     exportRate,
+		ScanRatePerMinute:       scanRate,
+		UpstreamMaxConcurrency:  upstreamConcurrency,
+		UpstreamRatePerSecond:   upstreamRate,
+		SQLiteReadConns:         readConns,
 	}, nil
 }
 

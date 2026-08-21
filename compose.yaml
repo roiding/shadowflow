@@ -28,7 +28,7 @@ services:
     volumes:
       - ${SHADOWFLOW_DATA_DIR:-./data}:/data
       - ${SHADOWFLOW_BACKUP_DIR:-./backups}:/backups
-    mem_limit: 256m
+    mem_limit: ${SHADOWFLOW_MEMORY_LIMIT:-512m}
     logging:
       driver: json-file
       options:

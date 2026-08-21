@@ -33,6 +33,8 @@ type entry struct {
 	refreshing  bool
 	lastAttempt time.Time
 	lastSuccess time.Time
+	lastAccess  time.Time
+	lastError   string
 }
 
 type Cache struct {
@@ -43,6 +45,7 @@ type Cache struct {
 	idleTTL        time.Duration
 	staleLimit     time.Duration
 	requestTimeout time.Duration
+	maxEntries     int
 	mu             sync.Mutex
 	entries        map[string]*entry
 }
@@ -52,7 +55,7 @@ func NewCache(source Source, logger *slog.Logger) *Cache {
 	return &Cache{
 		source: source, logger: logger, location: location,
 		tradingTTL: 15 * time.Second, idleTTL: 5 * time.Minute,
-		staleLimit: 10 * time.Minute, requestTimeout: 5 * time.Second,
+		staleLimit: 10 * time.Minute, requestTimeout: 5 * time.Second, maxEntries: 256,
 		entries: make(map[string]*entry),
 	}
 }
@@ -66,9 +69,11 @@ func (c *Cache) Snapshot(boardType graymarket.BoardType, boardCode string, relat
 	c.mu.Lock()
 	item := c.entries[key]
 	if item == nil {
+		c.evictLocked()
 		item = &entry{}
 		c.entries[key] = item
 	}
+	item.lastAccess = now
 	snapshot, status := c.visible(item, now)
 	shouldRefresh := !item.refreshing && (item.lastAttempt.IsZero() || now.Sub(item.lastAttempt) >= c.ttl(now))
 	if shouldRefresh {
@@ -83,19 +88,21 @@ func (c *Cache) Snapshot(boardType graymarket.BoardType, boardCode string, relat
 }
 
 func (c *Cache) visible(item *entry, now time.Time) (Snapshot, Status) {
+	snapshot := item.snapshot
+	snapshot.Error = item.lastError
 	if item.lastSuccess.IsZero() {
 		if item.lastAttempt.IsZero() || now.Sub(item.lastAttempt) <= c.staleLimit {
-			return Snapshot{}, StatusWarming
+			return snapshot, StatusWarming
 		}
-		return Snapshot{}, StatusUnavailable
+		return snapshot, StatusUnavailable
 	}
 	if now.Sub(item.lastSuccess) <= c.ttl(now) {
-		return item.snapshot, StatusReady
+		return snapshot, StatusReady
 	}
 	if now.Sub(item.lastSuccess) <= c.staleLimit {
-		return item.snapshot, StatusStale
+		return snapshot, StatusStale
 	}
-	return Snapshot{}, StatusUnavailable
+	return Snapshot{Error: item.lastError}, StatusUnavailable
 }
 
 func (c *Cache) ttl(now time.Time) time.Duration {
@@ -129,8 +136,44 @@ func (c *Cache) refresh(key string, relations []graymarket.StockBoardRelation) {
 		c.entries[key] = item
 	}
 	item.refreshing = false
+	item.lastError = next.Error
 	if err == nil {
 		item.snapshot = next
 		item.lastSuccess = fetchedAt
 	}
+	c.trimLocked()
+}
+
+func (c *Cache) evictLocked() {
+	if c.maxEntries <= 0 {
+		return
+	}
+	for len(c.entries) >= c.maxEntries && c.evictOneLocked() {
+	}
+}
+
+func (c *Cache) trimLocked() {
+	if c.maxEntries <= 0 {
+		return
+	}
+	for len(c.entries) > c.maxEntries && c.evictOneLocked() {
+	}
+}
+
+func (c *Cache) evictOneLocked() bool {
+	var oldestKey string
+	var oldest time.Time
+	for key, item := range c.entries {
+		if item.refreshing {
+			continue
+		}
+		if oldestKey == "" || item.lastAccess.Before(oldest) {
+			oldestKey, oldest = key, item.lastAccess
+		}
+	}
+	if oldestKey == "" {
+		return false
+	}
+	delete(c.entries, oldestKey)
+	return true
 }

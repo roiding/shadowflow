@@ -2,8 +2,11 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+var ErrJobLeaseLost = errors.New("scheduled job lease is no longer owned")
 
 type JobStatus string
 
@@ -47,7 +50,15 @@ type JobStore interface {
 type noopJobStore struct{}
 
 func (noopJobStore) EnsureScheduledJob(context.Context, ScheduledJob) error { return nil }
-func (noopJobStore) ClaimScheduledJob(_ context.Context, job ScheduledJob, _ string, _ time.Time, _ time.Time) (ScheduledJob, bool, error) {
+func (noopJobStore) ClaimScheduledJob(_ context.Context, job ScheduledJob, owner string, now time.Time, leaseUntil time.Time) (ScheduledJob, bool, error) {
+	job.Status = JobRunning
+	job.AttemptCount++
+	job.LeaseOwner = owner
+	job.LeaseUntil = &leaseUntil
+	if job.StartedAt == nil {
+		startedAt := now
+		job.StartedAt = &startedAt
+	}
 	return job, true, nil
 }
 func (noopJobStore) FinishScheduledJob(context.Context, ScheduledJob) error { return nil }

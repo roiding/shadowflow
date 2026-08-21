@@ -25,7 +25,10 @@ func TestGuardReopensOnFailedProbeAndRecoversAfterSuccesses(t *testing.T) {
 	guard := New(&http.Client{Transport: transport}, Options{MaxConcurrency: 1, RatePerSecond: 1000, FailureThreshold: 3, OpenDuration: time.Minute, RecoverySuccesses: 3})
 	send := func() error {
 		request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
-		_, err := guard.Do(context.Background(), request)
+		response, err := guard.Do(context.Background(), request)
+		if response != nil {
+			_ = response.Body.Close()
+		}
 		return err
 	}
 	for range 3 {
@@ -36,14 +39,18 @@ func TestGuardReopensOnFailedProbeAndRecoversAfterSuccesses(t *testing.T) {
 	if err := send(); err != ErrCircuitOpen {
 		t.Fatalf("expected open circuit, got %v", err)
 	}
-	guard.openUntil = time.Now().Add(-time.Second)
+	guard.mu.Lock()
+	guard.circuits["example.test"].openUntil = time.Now().Add(-time.Second)
+	guard.mu.Unlock()
 	if err := send(); err == nil {
 		t.Fatal("expected failed half-open probe")
 	}
 	if state := guard.State(); state != StateOpen {
 		t.Fatalf("failed probe should reopen circuit, got %s", state)
 	}
-	guard.openUntil = time.Now().Add(-time.Second)
+	guard.mu.Lock()
+	guard.circuits["example.test"].openUntil = time.Now().Add(-time.Second)
+	guard.mu.Unlock()
 	for range 3 {
 		if err := send(); err != nil {
 			t.Fatalf("expected recovery success: %v", err)

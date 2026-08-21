@@ -58,6 +58,7 @@ func main() {
 	schedulerService, err := scheduler.New(collectorService, calendar, logger, scheduler.Options{
 		SuccessRunRetentionDays: cfg.SuccessRunRetentionDays,
 		FailureRunRetentionDays: cfg.FailureRunRetentionDays,
+		Jobs:                    store,
 	})
 	if err != nil {
 		logger.Error("create scheduler", "error", err)

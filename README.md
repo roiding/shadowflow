@@ -101,7 +101,7 @@ docker compose up -d
 
 仓库地址为 `github.com/roiding/shadowflow`。GHCR 私有包需要具有读取权限的 Personal Access Token；公开包可以省略登录。也可以使用 `docker compose up -d --build` 从源码构建，但日常部署应优先使用 Actions 产出的固定镜像标签或摘要。
 
-GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go 测试/`go vet` 和 React lint/build，再构建 `linux/arm64` 镜像，通过 QEMU 实际启动容器并检查架构、数据库就绪状态和 React 首页；只有全部通过后，`main` 分支推送、`v*` 版本标签或手工触发才会发布镜像到 GHCR，Pull Request 不发布。镜像是多阶段构建，运行时只包含单个 Go 服务、静态前端、SQLite CLI 和时区数据。默认内存上限为 256 MB，可按 N1 其他服务占用调整。
+GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go 测试/`go vet` 和 React lint/build，再构建 `linux/arm64` 镜像，通过 QEMU 实际启动容器并检查架构、数据库就绪状态和 React 首页；只有全部通过后，`main` 分支推送、`v*` 版本标签或手工触发才会发布镜像到 GHCR，Pull Request 不发布。镜像是多阶段构建，运行时只包含单个 Go 服务、静态前端、SQLite CLI 和时区数据。默认内存上限为 512 MB，可通过 `SHADOWFLOW_MEMORY_LIMIT` 按 N1 其他服务占用调整。
 
 关键环境变量：
 
@@ -126,6 +126,7 @@ GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go 测
 | `SHADOWFLOW_UPSTREAM_MAX_CONCURRENCY` | `4` | 东方财富请求全局并发上限 |
 | `SHADOWFLOW_UPSTREAM_RATE_PER_SECOND` | `8` | 东方财富请求全局速率上限 |
 | `SHADOWFLOW_SQLITE_READ_CONNS` | `4` | SQLite 只读连接池大小；写入连接固定为 1 |
+| `SHADOWFLOW_MEMORY_LIMIT` | `512m` | Compose 容器内存上限；低内存设备可在压测后调整 |
 
 `backend/config/trading_calendar.json` 已内置 2026 年 A 股休市日期和 `valid_through`。服务每天检查覆盖期，距离到期不足阈值时读取交易所年度休市安排；只有年度标题、日期范围和最少假日数全部校验通过才原子替换，失败时保留旧文件。覆盖状态同时出现在 `/api/v1/system/status` 和 Prometheus 指标中。
 
