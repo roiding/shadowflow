@@ -168,6 +168,58 @@ func TestFetchStockKlines5mAggregatesOneMinuteFallback(t *testing.T) {
 	}
 }
 
+func TestFetchStockKlines5mUsesZeroVolumeOpeningAuctionPrice(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/trends2/") {
+			rows := make([]string, 0, 241)
+			cumulativeVolume := 0
+			cumulativeTurnover := 0
+			for minute := 9*60 + 30; minute <= 11*60+30; minute++ {
+				if minute == 9*60+30 {
+					rows = append(rows, "2026-08-21 09:30,12.63,12.63,12.63,12.63,0,63.00,12.630,0,0.00,0,63.00")
+					continue
+				}
+				volume := 1
+				open, close, high, low := 12.70, 12.70, 12.70, 12.70
+				if minute == 9*60+31 {
+					volume = 7
+					open, close, high, low = 12.84, 12.64, 12.84, 12.64
+				}
+				cumulativeVolume += volume
+				cumulativeTurnover += volume * 1270
+				rows = append(rows, fmt.Sprintf("2026-08-21 %02d:%02d,%.2f,%.2f,%.2f,%.2f,%d,%d.00,12.700,0,0.00,%d,%d.00",
+					minute/60, minute%60, open, close, high, low, volume, volume*1270, cumulativeVolume, cumulativeTurnover))
+			}
+			for minute := 13*60 + 1; minute <= 15*60; minute++ {
+				cumulativeVolume++
+				cumulativeTurnover += 1270
+				rows = append(rows, fmt.Sprintf("2026-08-21 %02d:%02d,12.70,12.70,12.70,12.70,1,1270.00,12.700,0,0.00,%d,%d.00",
+					minute/60, minute%60, cumulativeVolume, cumulativeTurnover))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"rc": 0, "data": map[string]any{"trends": rows}})
+			return
+		}
+		_, _ = w.Write([]byte("{"))
+	}))
+	defer server.Close()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	closeAt := time.Date(2026, 8, 21, 15, 0, 0, 0, location)
+	snapshot := graymarket.RankSnapshot{TradeDate: "2026-08-21", RankType: graymarket.RankStock, SnapshotAt: closeAt,
+		Records: []graymarket.RankRecord{{TradeDate: "2026-08-21", SnapshotAt: closeAt, RankType: graymarket.RankStock,
+			Market: 0, Code: "920221", OpenPrice: 12.63, HighPrice: 12.84, LowPrice: 12.63, ClosePrice: 12.70, PreviousClose: 12.74,
+			Volume: 246, Turnover: 312420, TurnoverRate: 0.0085, QuoteAvailable: true}}}
+	client := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL).
+		WithStockTrendBaseURLs([]string{server.URL + "/api/qt/stock/trends2/get"})
+	client.stockKlineRetryGap = 0
+	points, err := client.FetchStockKlines5m(context.Background(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 48 || points[0].OpenPrice != 12.63 || points[0].HighPrice != 12.84 || points[0].LowPrice != 12.63 || points[0].Volume != 11 {
+		t.Fatalf("unexpected zero-volume opening-auction handling: count=%d first=%+v", len(points), points[0])
+	}
+}
+
 func TestFetchStockKlines5mAllowsZeroVolumeClosingAuctionCloseMismatch(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/trends2/") {

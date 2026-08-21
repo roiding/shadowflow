@@ -245,11 +245,13 @@ func (c *Client) fetchStockKline(ctx context.Context, tradeDate string, stock gr
 }
 
 type aggregatedTrendBar struct {
-	point      graymarket.StockKlinePoint
-	firstAt    time.Time
-	lastAt     time.Time
-	minuteRows int
-	tradedRows int
+	point                graymarket.StockKlinePoint
+	firstAt              time.Time
+	lastAt               time.Time
+	minuteRows           int
+	tradedRows           int
+	openingAuctionPrice  float64
+	openingAuctionUsable bool
 }
 
 func (c *Client) fetchStockKlineFromTrends(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
@@ -354,12 +356,26 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 			bar.firstAt, bar.lastAt = at, at
 			bar.point.OpenPrice, bar.point.ClosePrice = openPrice, closePrice
 			bar.point.HighPrice, bar.point.LowPrice = highPrice, lowPrice
+			// Some instruments publish the opening auction price at 09:30 with
+			// zero volume. Preserve it for the first five-minute bar only when
+			// it agrees with the authoritative daily open; a zero-volume prior
+			// close placeholder must not contaminate the bar.
+			if index == 0 && at.Hour() == 9 && at.Minute() == 30 &&
+				minuteVolume == 0 && samePrice(openPrice, stock.OpenPrice) {
+				bar.openingAuctionPrice = openPrice
+				bar.openingAuctionUsable = true
+			}
 		}
 		if minuteVolume > 0 {
 			if bar.tradedRows == 0 {
 				bar.firstAt, bar.lastAt = at, at
 				bar.point.OpenPrice, bar.point.ClosePrice = openPrice, closePrice
 				bar.point.HighPrice, bar.point.LowPrice = highPrice, lowPrice
+				if bar.openingAuctionUsable {
+					bar.point.OpenPrice = bar.openingAuctionPrice
+					bar.point.HighPrice = max(bar.point.HighPrice, bar.openingAuctionPrice)
+					bar.point.LowPrice = min(bar.point.LowPrice, bar.openingAuctionPrice)
+				}
 			} else {
 				if at.After(bar.lastAt) {
 					bar.lastAt, bar.point.ClosePrice = at, closePrice
