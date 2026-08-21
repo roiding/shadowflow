@@ -52,6 +52,24 @@ func TestFetchBoardCatalogAndConstituents(t *testing.T) {
 	}
 }
 
+func TestFetchBoardConstituentsDeduplicatesRepeatedRows(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("fs") != "b:BK0457" {
+			t.Fatalf("unexpected quote request: %s", r.URL.String())
+		}
+		_, _ = w.Write([]byte(`{"rc":0,"data":{"total":2,"diff":[{"f12":"688226","f13":1,"f14":"重复股"},{"f12":"688226","f13":1,"f14":"重复股"}]}}`))
+	}))
+	defer server.Close()
+	client := NewClient("unused", server.Client(), 100).WithQuoteBaseURLs([]string{server.URL})
+	relations, err := client.FetchBoardConstituents(context.Background(), graymarket.Board{Code: "BK0457", Name: "测试行业", Type: graymarket.BoardIndustry})
+	if err != nil {
+		t.Fatalf("repeated constituent rows should be tolerated: %v", err)
+	}
+	if len(relations) != 1 || relations[0].StockCode != "688226" {
+		t.Fatalf("unexpected deduplicated relations: %+v", relations)
+	}
+}
+
 func TestFetchBoardCatalogRejectsUnderreportedTotal(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Query().Get("pn") {

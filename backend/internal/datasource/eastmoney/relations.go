@@ -262,10 +262,14 @@ func (c *Client) FetchBoardConstituents(ctx context.Context, board graymarket.Bo
 	seen := make(map[string]struct{})
 	result := make([]graymarket.StockBoardRelation, 0, 256)
 	expectedTotal := 0
+	rawRows := 0
 	for page := 1; ; page++ {
 		params := url.Values{
 			"pn": {strconv.Itoa(page)}, "pz": {strconv.Itoa(c.pageSize)}, "po": {"1"}, "np": {"1"},
-			"fltt": {"2"}, "invt": {"2"}, "fid": {"f3"}, "fields": {"f12,f13,f14"}, "fs": {"b:" + board.Code},
+			// Sort by immutable stock code rather than changing intraday
+			// performance. A moving f3 sort can make page boundaries overlap
+			// while the upstream market is updating.
+			"fltt": {"2"}, "invt": {"2"}, "fid": {"f12"}, "fields": {"f12,f13,f14"}, "fs": {"b:" + board.Code},
 		}
 		payload, rows, err := c.fetchQuotePage(ctx, "/api/qt/clist/get", params)
 		if err != nil {
@@ -276,12 +280,16 @@ func (c *Client) FetchBoardConstituents(ctx context.Context, board graymarket.Bo
 		}
 		fetchedAt := time.Now().UTC()
 		for _, row := range rows {
+			rawRows++
 			code := optionalString(row, "f12")
 			if code == "" {
 				return nil, fmt.Errorf("board %s contains a constituent with an empty code", board.Code)
 			}
 			if _, duplicate := seen[code]; duplicate {
-				return nil, fmt.Errorf("board %s contains duplicate stock code %s", board.Code, code)
+				// Eastmoney may repeat a constituent across pages. A relation is
+				// keyed by board + stock code, so duplicate source rows carry no
+				// additional relation information and are safely ignored.
+				continue
 			}
 			seen[code] = struct{}{}
 			raw, _ := json.Marshal(row)
@@ -302,8 +310,8 @@ func (c *Client) FetchBoardConstituents(ctx context.Context, board graymarket.Bo
 	if len(result) == 0 {
 		return nil, fmt.Errorf("constituent list for %s is empty", board.Code)
 	}
-	if len(result) != expectedTotal {
-		return nil, fmt.Errorf("incomplete constituent list for %s: expected %d records, got %d", board.Code, expectedTotal, len(result))
+	if rawRows < expectedTotal {
+		return nil, fmt.Errorf("incomplete constituent list for %s: expected at least %d source rows, got %d", board.Code, expectedTotal, rawRows)
 	}
 	return result, nil
 }
