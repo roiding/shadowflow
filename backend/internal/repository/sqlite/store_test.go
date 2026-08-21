@@ -67,7 +67,7 @@ func TestMigrateLegacyBoardMoneyUsesOneAuthoritativeTable(t *testing.T) {
 latest_price_raw,change_pct,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "legacy-run", at, "2026-08-12", "20260812",
-		"research_5m", "industry", 1, 90, "BK001", "legacy industry", "1660268100", 0, 0, 1,
+		"research_5m", "industry", 1, 90, "BK001", "legacy industry", "1660268100", 0, 0, 0,
 		42, 21, 63, 0, 0, 0, 0, 0, "", "", 101, 6, 1, at); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ WHERE snapshot_kind='research_5m'`).Scan(&legacyRows); err != nil {
 	location := time.FixedZone("Asia/Shanghai", 8*60*60)
 	from := time.Date(2026, 8, 12, 0, 0, 0, 0, location)
 	series, err := store.ResearchSeries(ctx, graymarket.RankIndustry, "BK001", from, from.Add(24*time.Hour-time.Nanosecond))
-	if err != nil || len(series) != 1 || series[0].DarkMoney != 42 {
+	if err != nil || len(series) != 1 || series[0].DarkMoney != 42 || !series[0].MoneyAvailable {
 		t.Fatalf("normalized funding is not queryable: series=%+v err=%v", series, err)
 	}
 }
@@ -467,7 +467,7 @@ func TestSaveBoardArchivePersists48MoneyPointsAndOneClose(t *testing.T) {
 	}
 }
 
-func TestSaveBoardArchiveMaterializesUnavailableMoneyPoints(t *testing.T) {
+func TestSaveBoardArchiveDoesNotMaterializeUnavailableMoneyPoints(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -489,8 +489,8 @@ func TestSaveBoardArchiveMaterializesUnavailableMoneyPoints(t *testing.T) {
 FROM board_money_5m WHERE trade_date=? AND rank_type='concept'`, record.TradeDate).Scan(&total, &available); err != nil {
 		t.Fatal(err)
 	}
-	if total != 48 || available != 24 {
-		t.Fatalf("unavailable board money was not materialized explicitly: total=%d available=%d", total, available)
+	if total != 24 || available != 24 {
+		t.Fatalf("unavailable board money should not be materialized: total=%d available=%d", total, available)
 	}
 }
 

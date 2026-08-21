@@ -64,10 +64,13 @@ func (c *Client) FetchStockKlines5mIncremental(ctx context.Context, snapshot gra
 	parentCtx := ctx
 	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
-	workerCount := min(2, len(snapshot.Records))
+	// Four workers keep the upstream connection pool busy while the shared
+	// limiter caps request bursts. Persistence is batched by the collector, so
+	// this no longer creates one SQLite write transaction per stock.
+	workerCount := min(4, len(snapshot.Records))
 	jobs := make(chan graymarket.RankRecord, workerCount)
 	results := make(chan stockKlineResult, workerCount)
-	limiter := time.NewTicker(125 * time.Millisecond)
+	limiter := time.NewTicker(100 * time.Millisecond)
 	defer limiter.Stop()
 	var workers sync.WaitGroup
 	for range workerCount {

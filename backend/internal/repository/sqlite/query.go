@@ -411,7 +411,7 @@ func (s *Store) HasEndOfDayArchive(ctx context.Context, tradeDate string) (bool,
 (SELECT count(*) FROM (SELECT rank_type FROM board_money_5m WHERE trade_date=? GROUP BY rank_type HAVING count(DISTINCT snapshot_at)=48)),
 (SELECT EXISTS(SELECT 1 FROM stock_archive_quality AS quality WHERE trade_date=?
 AND daily_close_rows=expected_stocks AND daily_kline_rows=expected_kline_stocks
-AND (SELECT count(*) FROM stock_research_5m WHERE trade_date=quality.trade_date)=expected_kline_stocks*expected_points))`,
+AND (SELECT coalesce(sum(money_available),0) FROM stock_research_5m WHERE trade_date=quality.trade_date)=expected_kline_stocks*expected_points))`,
 		tradeDate, tradeDate, tradeDate, tradeDate).Scan(&stockClose, &boardCloses, &curveTypes, &stockMoney); err != nil {
 		return false, err
 	}

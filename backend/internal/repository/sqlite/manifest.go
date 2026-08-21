@@ -125,7 +125,7 @@ FROM board_money_5m WHERE trade_date=?`, tradeDate).
 		Scan(&manifest.IndustryMoneyRows, &manifest.ConceptMoneyRows); err != nil {
 		return err
 	}
-	if err := queryer.QueryRowContext(ctx, `SELECT count(*),coalesce(sum(kline_available),0)
+	if err := queryer.QueryRowContext(ctx, `SELECT coalesce(sum(money_available),0),coalesce(sum(kline_available),0)
 FROM stock_research_5m WHERE trade_date=?`, tradeDate).
 		Scan(&manifest.StockMoneyRows, &manifest.StockKlineRows); err != nil {
 		return err

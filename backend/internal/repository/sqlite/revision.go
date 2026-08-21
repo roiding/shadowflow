@@ -295,3 +295,35 @@ VALUES ('lightweight_archive_storage_v1',?)`, now); err != nil {
 	}
 	return tx.Commit()
 }
+
+// migrateRevisionMetadataV2 keeps only revision metadata that still backs the
+// current archive or a computed feature/label set. Revisions are batch IDs,
+// not archive copies; orphan rows have no data path and only add catalog
+// noise. The physical *_revision archive tables were already removed by the
+// lightweight migration above.
+func migrateRevisionMetadata(store *Store) error {
+	var migrated int
+	if err := store.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM database_maintenance WHERE name='revision_metadata_v2')`).Scan(&migrated); err != nil {
+		return err
+	}
+	if migrated == 1 {
+		return nil
+	}
+	tx, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM daily_archive_revision AS revision
+WHERE NOT EXISTS (SELECT 1 FROM daily_archive_current AS current WHERE current.revision_id=revision.revision_id)
+  AND NOT EXISTS (SELECT 1 FROM daily_feature_set AS feature_set WHERE feature_set.revision_id=revision.revision_id)
+  AND NOT EXISTS (SELECT 1 FROM daily_feature AS feature WHERE feature.revision_id=revision.revision_id)
+  AND NOT EXISTS (SELECT 1 FROM future_return_label AS label WHERE label.signal_revision_id=revision.revision_id OR label.target_revision_id=revision.revision_id)`); err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(timestampLayout)
+	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at) VALUES ('revision_metadata_v2',?)`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

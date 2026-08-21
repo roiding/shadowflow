@@ -49,6 +49,10 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	store := &Store{db: db}
+	if err := configureSQLite(db, path); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure sqlite: %w", err)
+	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate database: %w", err)
@@ -73,6 +77,14 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate legacy board money: %w", err)
 	}
+	if err := migrateBoardMoneyAvailability(store); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate board money availability: %w", err)
+	}
+	if err := migrateArchivePlaceholders(store); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate archive placeholders: %w", err)
+	}
 	if err := migrateArchiveMetadata(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate archive metadata: %w", err)
@@ -84,6 +96,10 @@ func Open(path string) (*Store, error) {
 	if err := migrateLightweightArchiveStorage(store); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate lightweight archive storage: %w", err)
+	}
+	if err := migrateRevisionMetadata(store); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate revision metadata: %w", err)
 	}
 	if err := migrateAnalytics(store); err != nil {
 		_ = db.Close()
@@ -110,6 +126,27 @@ WHERE status='running'`, time.Now().UTC().Format(timestampLayout)); err != nil {
 	return store, nil
 }
 
+// configureSQLite applies connection-local pragmas explicitly. The schema also
+// contains these pragmas for fresh databases, but existing databases and
+// in-memory test databases must receive the same settings on every open.
+func configureSQLite(db *sql.DB, path string) error {
+	for _, statement := range []string{
+		`PRAGMA busy_timeout=30000`,
+		`PRAGMA synchronous=NORMAL`,
+		`PRAGMA foreign_keys=ON`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	if path != ":memory:" {
+		if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // migrateLegacyBoardMoney folds the pre-board_money_5m board funding rows into
 // the current table once. The old rank_snapshot research rows are then removed
 // so there is one authoritative storage path for historical funding data.
@@ -130,7 +167,8 @@ WHERE name='legacy_board_money_v1')`).Scan(&migrated); err != nil {
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO board_money_5m
 (run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
 SELECT run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,
-money_available,CAST(CASE WHEN quote_time GLOB '[0-9]*' THEN quote_time ELSE '0' END AS INTEGER),fetched_at
+CASE WHEN money_available=1 OR dark_money<>0 OR regular_money<>0 OR main_money_inflow<>0 THEN 1 ELSE 0 END,
+CAST(CASE WHEN quote_time GLOB '[0-9]*' THEN quote_time ELSE '0' END AS INTEGER),fetched_at
 FROM rank_snapshot
 WHERE snapshot_kind='research_5m' AND rank_type IN ('industry','concept')`); err != nil {
 		return err
@@ -161,6 +199,91 @@ WHERE snapshot_kind='research_5m' AND rank_type IN ('industry','concept')`); err
 	now := time.Now().UTC().Format(timestampLayout)
 	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at)
 VALUES ('legacy_board_money_v1',?)`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateBoardMoneyAvailability repairs historical rows written before the
+// explicit availability bit was populated. The old API returned funding
+// values even when the bit was left at its zero default; non-zero funding is
+// therefore authoritative for those legacy rows.
+func migrateBoardMoneyAvailability(store *Store) error {
+	var migrated int
+	if err := store.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM database_maintenance WHERE name='board_money_available_v2')`).Scan(&migrated); err != nil {
+		return err
+	}
+	if migrated == 1 {
+		return nil
+	}
+	tx, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE board_money_5m SET money_available=1
+WHERE money_available=0 AND (dark_money<>0 OR regular_money<>0 OR main_money_inflow<>0)`); err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(timestampLayout)
+	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at) VALUES ('board_money_available_v2',?)`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateArchivePlaceholders removes rows that represented unavailable money
+// rather than an observed point. Stock rows carrying a real five-minute K-line
+// are retained because that table is the current join target for both series.
+func migrateArchivePlaceholders(store *Store) error {
+	var migrated int
+	if err := store.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM database_maintenance WHERE name='archive_placeholders_v2')`).Scan(&migrated); err != nil {
+		return err
+	}
+	if migrated == 1 {
+		return nil
+	}
+	tx, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT trade_date FROM board_money_5m WHERE money_available=0
+UNION SELECT trade_date FROM stock_research_5m WHERE money_available=0 AND kline_available=0`)
+	if err != nil {
+		return err
+	}
+	var affectedDates []string
+	for rows.Next() {
+		var tradeDate string
+		if err := rows.Scan(&tradeDate); err != nil {
+			rows.Close()
+			return err
+		}
+		affectedDates = append(affectedDates, tradeDate)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM board_money_5m WHERE money_available=0`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM stock_research_5m WHERE money_available=0 AND kline_available=0`); err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(timestampLayout)
+	if _, err := tx.Exec(`UPDATE stock_archive_quality SET
+money_rows=(SELECT coalesce(sum(money_available),0) FROM stock_research_5m AS research WHERE research.trade_date=stock_archive_quality.trade_date),
+kline_rows=(SELECT coalesce(sum(kline_available),0) FROM stock_research_5m AS research WHERE research.trade_date=stock_archive_quality.trade_date),
+updated_at=?`, now); err != nil {
+		return err
+	}
+	for _, tradeDate := range affectedDates {
+		if err := refreshArchiveManifest(context.Background(), tx, tradeDate); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at) VALUES ('archive_placeholders_v2',?)`, now); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -551,20 +674,6 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, runID, point.SnapshotAt.Format(timestampL
 			return err
 		}
 	}
-	// Preserve a stable 48-point shape for every catalog board while keeping
-	// unavailable funding distinguishable from a real zero.
-	for _, record := range snapshot.Records {
-		for _, clock := range expectedResearchTimes() {
-			at, _ := time.ParseInLocation("2006-01-02 15:04", snapshot.TradeDate+" "+clock, snapshot.SnapshotAt.Location())
-			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO board_money_5m
-(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
-VALUES (?,?,?,?,?,?,?,?,0,0,0,0,0,?)`, runID, at.Format(timestampLayout), snapshot.TradeDate, string(snapshot.RankType),
-				0, record.Market, record.Code, record.Name, snapshot.SnapshotAt.UTC().Format(timestampLayout)); err != nil {
-				return err
-			}
-		}
-	}
-
 	minutes, err := snapshotMinutes(ctx, tx, "rank_intraday_work", snapshot.TradeDate, snapshot.RankType, "")
 	if err != nil {
 		return err
@@ -661,21 +770,9 @@ money_rank=excluded.money_rank,dark_money=excluded.dark_money,
 			return err
 		}
 	}
-	// Materialize missing money points only for archive-eligible securities so
-	// every stored eligible stock still has a stable 48-point shape.
-	for _, record := range records {
-		for index, clock := range expectedResearchTimes() {
-			at, _ := time.ParseInLocation("2006-01-02 15:04", snapshot.TradeDate+" "+clock, snapshot.SnapshotAt.Location())
-			minuteIndex, _ := researchMinuteIndex(at)
-			_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO stock_research_5m
-(trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available)
-VALUES (?,?,?,?,?,?,?,?,0)`, snapshot.TradeDate, minuteIndex, record.Market, record.Code, 0, 0, 0, 0)
-			if err != nil {
-				return err
-			}
-			_ = index
-		}
-	}
+	// Do not materialize unavailable funding points. A row is now an observed
+	// money point; SaveStockKlines may add a row later when only the K-line was
+	// available for that minute.
 	var klineRows, moneyRows int
 	if err := tx.QueryRowContext(ctx, `SELECT coalesce(sum(money_available),0) FROM stock_research_5m WHERE trade_date=?`, snapshot.TradeDate).Scan(&moneyRows); err != nil {
 		return err
@@ -764,18 +861,22 @@ WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock' AND mar
 	}
 	for _, point := range points {
 		minuteIndex, _ := researchMinuteIndex(point.SnapshotAt)
-		result, err := tx.ExecContext(ctx, `UPDATE stock_research_5m SET
-open_price_e4=?,high_price_e4=?,low_price_e4=?,close_price_e4=?,volume=?,turnover=?,
-amplitude_ppm=?,change_pct_ppm=?,change_value_e4=?,turnover_rate_ppm=?,kline_available=1
-WHERE trade_date=? AND minute_index=? AND market=? AND code=?`, scaleE4(point.OpenPrice), scaleE4(point.HighPrice),
+		_, err := tx.ExecContext(ctx, `INSERT INTO stock_research_5m
+(trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available,
+open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,amplitude_ppm,change_pct_ppm,
+change_value_e4,turnover_rate_ppm,kline_available)
+VALUES (?,?,?,?,0,0,0,0,0,?,?,?,?,?,?,?,?,?,?,1)
+ON CONFLICT(trade_date,minute_index,market,code) DO UPDATE SET
+open_price_e4=excluded.open_price_e4,high_price_e4=excluded.high_price_e4,
+low_price_e4=excluded.low_price_e4,close_price_e4=excluded.close_price_e4,
+volume=excluded.volume,turnover=excluded.turnover,amplitude_ppm=excluded.amplitude_ppm,
+change_pct_ppm=excluded.change_pct_ppm,change_value_e4=excluded.change_value_e4,
+turnover_rate_ppm=excluded.turnover_rate_ppm,kline_available=1`,
+			tradeDate, minuteIndex, point.Market, point.Code, scaleE4(point.OpenPrice), scaleE4(point.HighPrice),
 			scaleE4(point.LowPrice), scaleE4(point.ClosePrice), point.Volume, point.Turnover, scalePPM(point.Amplitude),
-			scalePPM(point.ChangePct), scaleE4(point.ChangeValue), scalePPM(point.TurnoverRate),
-			tradeDate, minuteIndex, point.Market, point.Code)
+			scalePPM(point.ChangePct), scaleE4(point.ChangeValue), scalePPM(point.TurnoverRate))
 		if err != nil {
 			return err
-		}
-		if affected, _ := result.RowsAffected(); affected != 1 {
-			return fmt.Errorf("stock money point is missing for %s at %s", point.Code, point.SnapshotAt.Format("15:04"))
 		}
 	}
 	now := time.Now().UTC()
