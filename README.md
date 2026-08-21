@@ -36,7 +36,7 @@ SHADOWFLOW_STATIC_DIR=../frontend/dist go run ./cmd/server
 
 访问 [http://127.0.0.1:8080](http://127.0.0.1:8080)。服务默认只绑定本机；未配置 Token 时本地 API 可直接访问。API 规范见 [backend/openapi.yaml](backend/openapi.yaml)，Prometheus 指标位于 `/metrics`。
 
-配置 `SHADOWFLOW_API_TOKEN` 后，除 `/health/live`、`/health/ready` 和静态页面外，`/api/v1/*` 与 `/metrics` 都需要：
+鉴权默认关闭。需要开启时，同时设置 `SHADOWFLOW_AUTH_ENABLED=true` 和至少 16 个字符的 `SHADOWFLOW_API_TOKEN`；开启后，除 `/health/live`、`/health/ready` 和静态页面外，`/api/v1/*` 与 `/metrics` 都需要 Bearer Token：
 
 ```bash
 curl -H "Authorization: Bearer $SHADOWFLOW_API_TOKEN" \
@@ -90,11 +90,6 @@ curl -X POST 'http://localhost:8080/api/v1/focus/scan' \
 
 ```bash
 echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-mkdir -p /mnt/ssd/shadowflow/data /mnt/ssd/shadowflow/backups
-export SHADOWFLOW_DATA_DIR=/mnt/ssd/shadowflow/data
-export SHADOWFLOW_BACKUP_DIR=/mnt/ssd/shadowflow/backups
-export SHADOWFLOW_API_TOKEN="$(openssl rand -hex 32)"
-export SHADOWFLOW_IMAGE=ghcr.io/roiding/shadowflow:v0.1.0
 docker compose pull
 docker compose up -d
 ```
@@ -119,7 +114,8 @@ GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go 测
 | `SHADOWFLOW_SCHEDULER_ENABLED` | `true` | 是否运行盘中和盘后采集调度；健康检查或只读 API 模式可设为 `false` |
 | `SHADOWFLOW_SUCCESS_RUN_RETENTION_DAYS` | `30` | 成功/跳过的采集运行记录保留天数 |
 | `SHADOWFLOW_FAILURE_RUN_RETENTION_DAYS` | `180` | 失败/部分成功的采集运行记录保留天数，必须不少于成功记录保留天数 |
-| `SHADOWFLOW_API_TOKEN` | 本地默认为空 | `/api/v1/*` 和 `/metrics` 的 Bearer Token；非回环监听必须配置至少 16 个字符 |
+| `SHADOWFLOW_AUTH_ENABLED` | `false` | 是否开启 `/api/v1/*` 和 `/metrics` 的 Bearer Token 鉴权 |
+| `SHADOWFLOW_API_TOKEN` | 空 | 鉴权开启时使用的 Bearer Token，至少 16 个字符；鉴权关闭时忽略 |
 | `SHADOWFLOW_RATE_LIMIT_PER_MINUTE` | `120` | 普通接口按客户端 IP 限流 |
 | `SHADOWFLOW_EXPORT_RATE_LIMIT_PER_MINUTE` | `10` | CSV 导出接口限流 |
 | `SHADOWFLOW_SCAN_RATE_LIMIT_PER_MINUTE` | `30` | 动态筛选扫描限流 |

@@ -135,6 +135,7 @@ jobs:
           container_id="$(docker run --detach --rm --platform linux/arm64 \
             --publish 127.0.0.1:18080:8080 \
             --env SHADOWFLOW_SCHEDULER_ENABLED=false \
+            --env SHADOWFLOW_AUTH_ENABLED=true \
             --env SHADOWFLOW_API_TOKEN="$api_token" \
             "$image")"
           cleanup() {

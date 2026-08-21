@@ -31,7 +31,7 @@ func newSecurityServer(t *testing.T, options Options) (*Server, func()) {
 }
 
 func TestBearerTokenProtectsAPIAndMetrics(t *testing.T) {
-	server, closeStore := newSecurityServer(t, Options{APIToken: "secret"})
+	server, closeStore := newSecurityServer(t, Options{AuthEnabled: true, APIToken: "secret"})
 	defer closeStore()
 	handler := server.Handler()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/system/status", nil)
@@ -85,7 +85,7 @@ func TestRateLimiterReturns429(t *testing.T) {
 }
 
 func TestBearerSchemeIsCaseInsensitive(t *testing.T) {
-	server, closeStore := newSecurityServer(t, Options{APIToken: "secret"})
+	server, closeStore := newSecurityServer(t, Options{AuthEnabled: true, APIToken: "secret"})
 	defer closeStore()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/system/status", nil)
 	request.Header.Set("Authorization", "bearer secret")
@@ -97,7 +97,7 @@ func TestBearerSchemeIsCaseInsensitive(t *testing.T) {
 }
 
 func TestAuthenticatedResponsesDisableCaching(t *testing.T) {
-	server, closeStore := newSecurityServer(t, Options{APIToken: "secret"})
+	server, closeStore := newSecurityServer(t, Options{AuthEnabled: true, APIToken: "secret"})
 	defer closeStore()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/system/status", nil)
 	request.Header.Set("Authorization", "Bearer secret")
@@ -105,6 +105,17 @@ func TestAuthenticatedResponsesDisableCaching(t *testing.T) {
 	server.Handler().ServeHTTP(response, request)
 	if got := response.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control=%q, want no-store", got)
+	}
+}
+
+func TestAuthenticationIsDisabledByDefault(t *testing.T) {
+	server, closeStore := newSecurityServer(t, Options{APIToken: "secret"})
+	defer closeStore()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/system/status", nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code == http.StatusUnauthorized {
+		t.Fatal("authentication should be disabled unless explicitly enabled")
 	}
 }
 
