@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Activity, AlertTriangle, BarChart3, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Download, Gauge, Info, LineChart, RefreshCw, Search, Server, Table2, Wifi, WifiOff } from 'lucide-react'
 import { api } from './api/client'
 import { getToken, UNAUTHORIZED_EVENT } from './auth'
@@ -89,6 +89,7 @@ function jitterInterval(base: number) {
 function App() {
   const [authRequired, setAuthRequired] = useState(false)
   const [authVersion, setAuthVersion] = useState(0)
+  const queryClient = useQueryClient()
 
   useEffect(() => {
     const listener = () => setAuthRequired(true)
@@ -176,12 +177,12 @@ function App() {
 
   useEffect(() => {
     if (document.visibilityState !== 'visible') return
-    const controller = new AbortController()
-    document.addEventListener('visibilitychange', () => {
-      if (!controller.signal.aborted && document.visibilityState === 'visible') void rankQuery.refetch()
-    }, { signal: controller.signal })
-    return () => controller.abort()
-  }, [rankQuery])
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void queryClient.invalidateQueries()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [queryClient])
 
   useEffect(() => {
     if (!latestTradingDay) return
