@@ -300,6 +300,12 @@ func (c *Client) FetchBoardConstituents(ctx context.Context, board graymarket.Bo
 				DetectedAt: fetchedAt, RawData: string(raw),
 			})
 		}
+		// Eastmoney returns rc=102 when callers request a page beyond the
+		// declared total for some boards. Stop as soon as the accumulated
+		// source rows reach that total, including an exactly full final page.
+		if expectedTotal > 0 && rawRows >= expectedTotal {
+			break
+		}
 		if len(rows) < c.pageSize {
 			break
 		}

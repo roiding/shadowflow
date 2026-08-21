@@ -70,6 +70,26 @@ func TestFetchBoardConstituentsDeduplicatesRepeatedRows(t *testing.T) {
 	}
 }
 
+func TestFetchBoardConstituentsStopsAtExactFullPageTotal(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if page := r.URL.Query().Get("pn"); page != "1" {
+			t.Fatalf("requested page %s after reaching the declared total", page)
+		}
+		_, _ = w.Write([]byte(`{"rc":0,"data":{"total":2,"diff":[{"f12":"000001","f13":0,"f14":"股票一"},{"f12":"000002","f13":0,"f14":"股票二"}]}}`))
+	}))
+	defer server.Close()
+	client := NewClient("unused", server.Client(), 2).WithQuoteBaseURLs([]string{server.URL})
+	relations, err := client.FetchBoardConstituents(context.Background(), graymarket.Board{Code: "BK1447", Name: "测试行业", Type: graymarket.BoardIndustry})
+	if err != nil {
+		t.Fatalf("exact full page should finish without requesting another page: %v", err)
+	}
+	if len(relations) != 2 || calls != 1 {
+		t.Fatalf("unexpected result: relations=%+v calls=%d", relations, calls)
+	}
+}
+
 func TestFetchBoardCatalogRejectsUnderreportedTotal(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Query().Get("pn") {
