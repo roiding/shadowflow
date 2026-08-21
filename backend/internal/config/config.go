@@ -23,6 +23,13 @@ type Config struct {
 	SchedulerEnabled        bool
 	SuccessRunRetentionDays int
 	FailureRunRetentionDays int
+	APIToken                string
+	NormalRatePerMinute     int
+	ExportRatePerMinute     int
+	ScanRatePerMinute       int
+	UpstreamMaxConcurrency  int
+	UpstreamRatePerSecond   float64
+	SQLiteReadConns         int
 }
 
 func Load() (Config, error) {
@@ -54,18 +61,51 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	normalRate, err := envInt("SHADOWFLOW_RATE_LIMIT_PER_MINUTE", 120)
+	if err != nil {
+		return Config{}, err
+	}
+	exportRate, err := envInt("SHADOWFLOW_EXPORT_RATE_LIMIT_PER_MINUTE", 10)
+	if err != nil {
+		return Config{}, err
+	}
+	scanRate, err := envInt("SHADOWFLOW_SCAN_RATE_LIMIT_PER_MINUTE", 30)
+	if err != nil {
+		return Config{}, err
+	}
+	upstreamConcurrency, err := envInt("SHADOWFLOW_UPSTREAM_MAX_CONCURRENCY", 4)
+	if err != nil {
+		return Config{}, err
+	}
+	upstreamRate, err := envFloat("SHADOWFLOW_UPSTREAM_RATE_PER_SECOND", 8)
+	if err != nil {
+		return Config{}, err
+	}
+	readConns, err := envInt("SHADOWFLOW_SQLITE_READ_CONNS", 4)
+	if err != nil {
+		return Config{}, err
+	}
 	if pageSize < 1 || pageSize > 100 {
 		return Config{}, fmt.Errorf("SHADOWFLOW_PAGE_SIZE must be between 1 and 100")
 	}
+	if timeoutSeconds < 1 || timeoutSeconds > 300 {
+		return Config{}, fmt.Errorf("SHADOWFLOW_REQUEST_TIMEOUT_SECONDS must be between 1 and 300")
+	}
 	if successRetentionDays < 1 || failureRetentionDays < successRetentionDays {
 		return Config{}, fmt.Errorf("run retention must satisfy 1 <= success days <= failure days")
+	}
+	if normalRate < 1 || exportRate < 1 || scanRate < 1 {
+		return Config{}, fmt.Errorf("rate limits must be at least one request per minute")
+	}
+	if upstreamConcurrency < 1 || upstreamRate <= 0 || readConns < 1 || readConns > 32 {
+		return Config{}, fmt.Errorf("upstream and SQLite concurrency settings are out of range")
 	}
 	if calendarRefreshLeadDays < 1 || calendarRefreshLeadDays > 180 {
 		return Config{}, fmt.Errorf("SHADOWFLOW_CALENDAR_REFRESH_LEAD_DAYS must be between 1 and 180")
 	}
 
 	return Config{
-		ListenAddr:              env("SHADOWFLOW_LISTEN_ADDR", ":8080"),
+		ListenAddr:              env("SHADOWFLOW_LISTEN_ADDR", "127.0.0.1:8080"),
 		DatabasePath:            env("SHADOWFLOW_DATABASE_PATH", "./data/shadowflow.db"),
 		CalendarPath:            env("SHADOWFLOW_CALENDAR_PATH", "./config/trading_calendar.json"),
 		CalendarAutoUpdate:      calendarAutoUpdate,
@@ -79,6 +119,13 @@ func Load() (Config, error) {
 		SchedulerEnabled:        schedulerEnabled,
 		SuccessRunRetentionDays: successRetentionDays,
 		FailureRunRetentionDays: failureRetentionDays,
+		APIToken:                strings.TrimSpace(os.Getenv("SHADOWFLOW_API_TOKEN")),
+		NormalRatePerMinute:     normalRate,
+		ExportRatePerMinute:     exportRate,
+		ScanRatePerMinute:       scanRate,
+		UpstreamMaxConcurrency:  upstreamConcurrency,
+		UpstreamRatePerSecond:   upstreamRate,
+		SQLiteReadConns:         readConns,
 	}, nil
 }
 
@@ -114,6 +161,18 @@ func envInt(key string, fallback int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func envFloat(key string, fallback float64) (float64, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a number: %w", key, err)
 	}
 	return parsed, nil
 }

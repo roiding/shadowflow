@@ -2,7 +2,12 @@ package scheduler
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -10,21 +15,25 @@ import (
 	"github.com/roiding/shadowflow/internal/tradingcalendar"
 )
 
+var errDependencyUnavailable = errors.New("scheduled job dependency is unavailable")
+
 type collectorService interface {
 	CollectBoards(context.Context, time.Time) error
 	CollectEndOfDay(context.Context, time.Time) error
 	CollectStockKlines(context.Context, time.Time) error
 	CleanupArchivedIntraday(context.Context, string) error
 	Maintain(context.Context, time.Time, int, int) (repository.MaintenanceResult, error)
-	HasEndOfDayArchive(context.Context, string) bool
-	HasStockKlineArchive(context.Context, string) bool
+	HasEndOfDayArchive(context.Context, string) (bool, error)
+	HasStockKlineArchive(context.Context, string) (bool, error)
 	CollectStockBoardRelations(context.Context, string) error
-	HasStockBoardRelations(context.Context, string) bool
+	HasStockBoardRelations(context.Context, string) (bool, error)
 }
 
 type Options struct {
 	SuccessRunRetentionDays int
 	FailureRunRetentionDays int
+	Jobs                    JobStore
+	InstanceID              string
 }
 
 type Scheduler struct {
@@ -32,6 +41,8 @@ type Scheduler struct {
 	calendar  *tradingcalendar.Calendar
 	logger    *slog.Logger
 	location  *time.Location
+	jobs      JobStore
+	owner     string
 	mu        sync.Mutex
 	running   map[string]bool
 	lastKeys  map[string]struct{}
@@ -43,15 +54,35 @@ func New(service collectorService, calendar *tradingcalendar.Calendar, logger *s
 	if err != nil {
 		return nil, err
 	}
-	config := Options{SuccessRunRetentionDays: 30, FailureRunRetentionDays: 180}
+	config := Options{SuccessRunRetentionDays: 30, FailureRunRetentionDays: 180, Jobs: noopJobStore{}}
 	if len(options) > 0 {
-		config = options[0]
+		provided := options[0]
+		if provided.SuccessRunRetentionDays > 0 {
+			config.SuccessRunRetentionDays = provided.SuccessRunRetentionDays
+		}
+		if provided.FailureRunRetentionDays > 0 {
+			config.FailureRunRetentionDays = provided.FailureRunRetentionDays
+		}
+		if provided.Jobs != nil {
+			config.Jobs = provided.Jobs
+		}
+		config.InstanceID = provided.InstanceID
+	}
+	owner := strings.TrimSpace(config.InstanceID)
+	if owner == "" {
+		var seed [8]byte
+		if _, err := rand.Read(seed[:]); err != nil {
+			return nil, fmt.Errorf("generate scheduler owner: %w", err)
+		}
+		owner = hex.EncodeToString(seed[:])
 	}
 	return &Scheduler{
 		collector: service,
 		calendar:  calendar,
 		logger:    logger,
 		location:  location,
+		jobs:      config.Jobs,
+		owner:     owner,
 		running:   make(map[string]bool),
 		lastKeys:  make(map[string]struct{}),
 		options:   config,
@@ -59,16 +90,73 @@ func New(service collectorService, calendar *tradingcalendar.Calendar, logger *s
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
-	s.recoverLatestArchive(ctx, time.Now().In(s.location))
+	current := time.Now().In(s.location)
+	s.recoverLatestArchive(ctx, current)
+	s.enqueueReplayableJobs(ctx, current)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case current := <-ticker.C:
-			s.check(ctx, current.In(s.location))
+		case now := <-ticker.C:
+			current := now.In(s.location)
+			s.expireLeases(ctx, current)
+			s.startDueJobs(ctx, current)
+			s.check(ctx, current)
 		}
+	}
+}
+
+func (s *Scheduler) expireLeases(ctx context.Context, now time.Time) {
+	if err := s.jobs.ExpireLeasedJobs(ctx, now); err != nil {
+		s.logger.Error("expire scheduler leases", "error", err)
+	}
+}
+
+func (s *Scheduler) startDueJobs(ctx context.Context, now time.Time) {
+	due, err := s.jobs.DueScheduledJobs(ctx, now, 16)
+	if err != nil {
+		s.logger.Error("query due scheduled jobs", "error", err)
+		return
+	}
+	for _, job := range due {
+		s.claimAndLaunch(ctx, job, now)
+	}
+}
+
+func (s *Scheduler) enqueueReplayableJobs(ctx context.Context, now time.Time) {
+	tradeDate := now.Format("2006-01-02")
+	if !s.calendar.IsTradingDay(now) {
+		return
+	}
+	plans := []struct {
+		kind string
+		at   string
+	}{
+		{"cleanup", "09:00"}, {"maintenance", "09:05"},
+		{"relations", "08:00"}, {"relations", "08:50"}, {"relations", "09:15"},
+		{"end-of-day", "16:00"}, {"end-of-day", "16:05"}, {"end-of-day", "16:10"},
+		{"stock-kline", "16:15"}, {"stock-kline", "17:30"}, {"stock-kline", "20:00"},
+	}
+	for _, plan := range plans {
+		plannedAt, err := time.ParseInLocation("2006-01-02 15:04", tradeDate+" "+plan.at, s.location)
+		if err != nil || plannedAt.After(now) {
+			continue
+		}
+		// Later retry invitations are redundant when an earlier instance is still queued.
+		job := newScheduledJob(plan.kind, plannedAt, tradeDate)
+		if err := s.jobs.EnsureScheduledJob(ctx, job); err != nil {
+			s.logger.Error("enqueue replayable scheduled job", "kind", plan.kind, "trade_date", tradeDate, "error", err)
+		}
+	}
+}
+
+func newScheduledJob(kind string, plannedAt time.Time, tradeDate string) ScheduledJob {
+	policy := policyFor(kind)
+	return ScheduledJob{
+		JobKey: jobKey(plannedAt, kind, tradeDate), Kind: kind, TradeDate: tradeDate,
+		PlannedAt: plannedAt, Status: JobQueued, MaxAttempts: policy.maxAttempts,
 	}
 }
 
@@ -85,13 +173,17 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 
 func (s *Scheduler) startJob(ctx context.Context, kind string, current time.Time, tradeDate string) bool {
 	lane := jobLane(kind)
-	key := current.Format("2006-01-02T15:04") + ":" + kind + ":" + tradeDate
+	key := jobKey(current, kind, tradeDate)
 	s.mu.Lock()
 	if s.running[lane] {
+		if _, seen := s.lastKeys[key]; seen {
+			s.mu.Unlock()
+			return false
+		}
 		s.mu.Unlock()
 		return false
 	}
-	if _, ok := s.lastKeys[key]; ok {
+	if _, seen := s.lastKeys[key]; seen {
 		s.mu.Unlock()
 		return false
 	}
@@ -99,70 +191,163 @@ func (s *Scheduler) startJob(ctx context.Context, kind string, current time.Time
 	s.running[lane] = true
 	s.mu.Unlock()
 
+	job := newScheduledJob(kind, current.Truncate(time.Minute), tradeDate)
+	if err := s.jobs.EnsureScheduledJob(ctx, job); err != nil {
+		s.release(lane, key, current)
+		s.logger.Error("ensure scheduled job", "kind", kind, "job_key", key, "error", err)
+		return false
+	}
+	leaseUntil := current.Add(policyFor(kind).timeout + 30*time.Second)
+	claimed, ok, err := s.jobs.ClaimScheduledJob(ctx, job, s.owner, current, leaseUntil)
+	if err != nil {
+		s.release(lane, key, current)
+		s.logger.Error("claim scheduled job", "kind", kind, "job_key", key, "error", err)
+		return false
+	}
+	if !ok {
+		s.release(lane, key, current)
+		return false
+	}
 	go func() {
-		defer func() {
-			s.mu.Lock()
-			s.running[lane] = false
-			s.prune(current)
-			s.mu.Unlock()
-		}()
-		s.runJob(ctx, kind, current, tradeDate)
+		defer s.release(lane, key, current)
+		s.runJob(ctx, claimed, current)
 	}()
 	return true
 }
 
-func (s *Scheduler) runJob(ctx context.Context, kind string, current time.Time, tradeDate string) {
-	timeout := 50 * time.Second
-	switch kind {
-	case "end-of-day":
-		timeout = 15 * time.Minute
-	case "stock-kline":
-		timeout = 90 * time.Minute
-	case "relations":
-		timeout = 45 * time.Minute
-	case "cleanup", "maintenance":
-		timeout = 2 * time.Minute
-	case "startup-recovery":
-		timeout = 105 * time.Minute
+func (s *Scheduler) claimAndLaunch(ctx context.Context, candidate ScheduledJob, now time.Time) bool {
+	lane := jobLane(candidate.Kind)
+	key := candidate.JobKey
+	s.mu.Lock()
+	if s.running[lane] {
+		if _, seen := s.lastKeys[key]; seen {
+			s.mu.Unlock()
+			return false
+		}
+		s.mu.Unlock()
+		return false
 	}
-	jobCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	if _, seen := s.lastKeys[key]; seen {
+		s.mu.Unlock()
+		return false
+	}
+	s.lastKeys[key] = struct{}{}
+	s.running[lane] = true
+	s.mu.Unlock()
+	leaseUntil := now.Add(policyFor(candidate.Kind).timeout + 30*time.Second)
+	claimed, ok, err := s.jobs.ClaimScheduledJob(ctx, candidate, s.owner, now, leaseUntil)
+	if err != nil {
+		s.release(lane, key, now)
+		s.logger.Error("claim due scheduled job", "kind", candidate.Kind, "job_key", key, "error", err)
+		return false
+	}
+	if !ok {
+		s.release(lane, key, now)
+		return false
+	}
+	go func() {
+		defer s.release(lane, key, now)
+		s.runJob(ctx, claimed, now)
+	}()
+	return true
+}
 
-	var err error
-	switch kind {
-	case "minute":
-		err = s.collector.CollectBoards(jobCtx, current.Truncate(time.Minute))
-	case "end-of-day":
-		if s.collector.HasEndOfDayArchive(jobCtx, tradeDate) {
-			s.logger.Info("end-of-day archive already available; skipping retry", "trade_date", tradeDate, "at", current)
-			return
+func (s *Scheduler) release(lane, key string, current time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.lastKeys, key)
+	s.running[lane] = false
+	s.pruneLocked(current)
+}
+
+func (s *Scheduler) runJob(parent context.Context, job ScheduledJob, current time.Time) {
+	ctx, cancel := context.WithTimeout(parent, policyFor(job.Kind).timeout)
+	defer cancel()
+	startedAt := time.Now().UTC()
+
+	err := s.executeJob(ctx, job, current)
+	finishedAt := time.Now().UTC()
+	job.DurationMS = finishedAt.Sub(startedAt).Milliseconds()
+	switch {
+	case ctx.Err() != nil && parent.Err() == nil:
+		job.Status = JobFailed
+		job.LastErrorCode, job.LastError = "timeout", ctx.Err().Error()
+	case err == nil:
+		job.Status = JobSucceeded
+	default:
+		job.Status = JobFailed
+		job.LastErrorCode, job.LastError = errorCode(err), err.Error()
+	}
+	if job.Status == JobFailed {
+		policy := policyFor(job.Kind)
+		if job.AttemptCount < policy.maxAttempts {
+			retryAt := finishedAt.Add(policy.retryAfter)
+			job.RetryAt = &retryAt
+		} else {
+			job.RetryAt = nil
 		}
-		err = s.collector.CollectEndOfDay(jobCtx, parseShanghaiTime(tradeDate, "16:00", current))
-	case "cleanup":
-		err = s.collector.CleanupArchivedIntraday(jobCtx, tradeDate)
-	case "maintenance":
-		_, err = s.collector.Maintain(jobCtx, current, s.options.SuccessRunRetentionDays, s.options.FailureRunRetentionDays)
-	case "stock-kline":
-		if s.collector.HasStockKlineArchive(jobCtx, tradeDate) {
-			s.logger.Info("stock kline archive already available; skipping retry", "trade_date", tradeDate, "at", current)
-			return
-		}
-		if !s.collector.HasEndOfDayArchive(jobCtx, tradeDate) {
-			s.logger.Warn("stock kline archive is waiting for end-of-day money archive", "trade_date", tradeDate, "at", current)
-			return
-		}
-		err = s.collector.CollectStockKlines(jobCtx, parseShanghaiTime(tradeDate, "16:15", current))
-	case "relations":
-		if s.collector.HasStockBoardRelations(jobCtx, tradeDate) {
-			s.logger.Info("stock-board relations already synchronized; skipping retry", "trade_date", tradeDate, "at", current)
-			return
-		}
-		err = s.collector.CollectStockBoardRelations(jobCtx, tradeDate)
-	case "startup-recovery":
-		err = s.recoverArchive(jobCtx, tradeDate, current)
+	}
+	if err := s.jobs.FinishScheduledJob(context.WithoutCancel(ctx), job); err != nil {
+		s.logger.Error("finish scheduled job", "kind", job.Kind, "job_key", job.JobKey, "error", err)
 	}
 	if err != nil {
-		s.logger.Error("scheduled job failed", "kind", kind, "trade_date", tradeDate, "at", current, "error", err)
+		s.logger.Error("scheduled job failed", "kind", job.Kind, "trade_date", job.TradeDate,
+			"at", current, "attempt", job.AttemptCount, "retry_at", job.RetryAt, "error", err)
+	}
+}
+
+func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current time.Time) error {
+	tradeDate := job.TradeDate
+	switch job.Kind {
+	case "minute":
+		return s.collector.CollectBoards(ctx, job.PlannedAt)
+	case "end-of-day":
+		exists, err := s.collector.HasEndOfDayArchive(ctx, tradeDate)
+		if err != nil {
+			return err
+		}
+		if exists {
+			s.logger.Info("end-of-day archive already available; skipping retry", "trade_date", tradeDate, "at", current)
+			return nil
+		}
+		return s.collector.CollectEndOfDay(ctx, parseShanghaiTime(tradeDate, "16:00", current))
+	case "cleanup":
+		return s.collector.CleanupArchivedIntraday(ctx, tradeDate)
+	case "maintenance":
+		_, err := s.collector.Maintain(ctx, current, s.options.SuccessRunRetentionDays, s.options.FailureRunRetentionDays)
+		return err
+	case "stock-kline":
+		exists, err := s.collector.HasStockKlineArchive(ctx, tradeDate)
+		if err != nil {
+			return err
+		}
+		if exists {
+			s.logger.Info("stock kline archive already available; skipping retry", "trade_date", tradeDate, "at", current)
+			return nil
+		}
+		endExists, err := s.collector.HasEndOfDayArchive(ctx, tradeDate)
+		if err != nil {
+			return err
+		}
+		if !endExists {
+			s.logger.Warn("stock kline archive is waiting for end-of-day money archive", "trade_date", tradeDate, "at", current)
+			return fmt.Errorf("%w: end-of-day archive for %s", errDependencyUnavailable, tradeDate)
+		}
+		return s.collector.CollectStockKlines(ctx, parseShanghaiTime(tradeDate, "16:15", current))
+	case "relations":
+		exists, err := s.collector.HasStockBoardRelations(ctx, tradeDate)
+		if err != nil {
+			return err
+		}
+		if exists {
+			s.logger.Info("stock-board relations already synchronized; skipping retry", "trade_date", tradeDate, "at", current)
+			return nil
+		}
+		return s.collector.CollectStockBoardRelations(ctx, tradeDate)
+	case "startup-recovery":
+		return s.recoverArchive(ctx, tradeDate, current)
+	default:
+		return fmt.Errorf("unknown scheduled job kind %q", job.Kind)
 	}
 }
 
@@ -175,12 +360,20 @@ func (s *Scheduler) recoverLatestArchive(ctx context.Context, current time.Time)
 }
 
 func (s *Scheduler) recoverArchive(ctx context.Context, tradeDate string, current time.Time) error {
-	if !s.collector.HasEndOfDayArchive(ctx, tradeDate) {
+	exists, err := s.collector.HasEndOfDayArchive(ctx, tradeDate)
+	if err != nil {
+		return err
+	}
+	if !exists {
 		if err := s.collector.CollectEndOfDay(ctx, parseShanghaiTime(tradeDate, "16:00", current)); err != nil {
 			return err
 		}
 	}
-	if !s.collector.HasStockKlineArchive(ctx, tradeDate) {
+	exists, err = s.collector.HasStockKlineArchive(ctx, tradeDate)
+	if err != nil {
+		return err
+	}
+	if !exists {
 		if err := s.collector.CollectStockKlines(ctx, parseShanghaiTime(tradeDate, "16:15", current)); err != nil {
 			return err
 		}
@@ -253,7 +446,24 @@ func isTradingMinute(value time.Time) bool {
 	return timeOfDay >= "09:31" && timeOfDay <= "11:30" || timeOfDay >= "13:01" && timeOfDay <= "15:00"
 }
 
-func (s *Scheduler) prune(current time.Time) {
+func jobKey(current time.Time, kind, tradeDate string) string {
+	return current.Format("2006-01-02T15:04") + ":" + kind + ":" + tradeDate
+}
+
+func errorCode(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, errDependencyUnavailable):
+		return "dependency_unavailable"
+	default:
+		return "job_failed"
+	}
+}
+
+func (s *Scheduler) pruneLocked(current time.Time) {
 	cutoff := current.Add(-24 * time.Hour).Format("2006-01-02")
 	for key := range s.lastKeys {
 		if len(key) >= 10 && key[:10] < cutoff {

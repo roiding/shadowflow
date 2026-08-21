@@ -20,7 +20,7 @@ const recordColumns = `snapshot_at,trade_date,rank_type,rank,market,code,name,qu
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at`
 
 func (s *Store) LatestRank(ctx context.Context, rankType graymarket.RankType) ([]graymarket.RankRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_intraday_work
+	rows, err := s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_intraday_work
 WHERE rank_type=? AND snapshot_at=(SELECT max(snapshot_at) FROM rank_intraday_work WHERE rank_type=?)
 ORDER BY rank`, string(rankType), string(rankType))
 	if err != nil {
@@ -31,7 +31,7 @@ ORDER BY rank`, string(rankType), string(rankType))
 		return result, err
 	}
 	// The post-close full snapshot is authoritative after intraday cleanup.
-	rows, err = s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
+	rows, err = s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
 WHERE rank_type=? AND snapshot_kind='daily_close'
 AND snapshot_at=(SELECT max(snapshot_at) FROM rank_snapshot WHERE rank_type=? AND snapshot_kind='daily_close')
 ORDER BY rank`, string(rankType), string(rankType))
@@ -45,7 +45,7 @@ func (s *Store) RankAt(ctx context.Context, rankType graymarket.RankType, tradeD
 	// During the current session the work table is authoritative, including
 	// five-minute boundaries that have not yet been compacted. Historical
 	// dates fall back to the long-term research table after cleanup.
-	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_intraday_work
+	rows, err := s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_intraday_work
 WHERE trade_date=? AND rank_type=? AND snapshot_at=? ORDER BY rank`, tradeDate, string(rankType), at.Format(timestampLayout))
 	if err != nil {
 		return nil, err
@@ -63,7 +63,7 @@ WHERE trade_date=? AND rank_type=? AND snapshot_at=? ORDER BY rank`, tradeDate, 
 			return result, err
 		}
 	}
-	rows, err = s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
+	rows, err = s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
 WHERE trade_date=? AND rank_type=? AND snapshot_at=? AND snapshot_kind=? ORDER BY rank`, tradeDate, string(rankType), at.Format(timestampLayout), string(kind))
 	if err != nil {
 		return nil, err
@@ -72,7 +72,7 @@ WHERE trade_date=? AND rank_type=? AND snapshot_at=? AND snapshot_kind=? ORDER B
 }
 
 func (s *Store) IntradaySeries(ctx context.Context, rankType graymarket.RankType, code, tradeDate string) ([]graymarket.RankRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_intraday_work
+	rows, err := s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_intraday_work
 WHERE trade_date=? AND rank_type=? AND code=? ORDER BY snapshot_at`, tradeDate, string(rankType), code)
 	if err != nil {
 		return nil, err
@@ -86,7 +86,7 @@ WHERE trade_date=? AND rank_type=? AND code=? ORDER BY snapshot_at`, tradeDate, 
 		return nil, err
 	}
 	if len(result) > 0 {
-		rows, closeErr := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
+		rows, closeErr := s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
 WHERE trade_date=? AND rank_type=? AND code=? AND snapshot_kind='daily_close'
 ORDER BY snapshot_at`, tradeDate, string(rankType), code)
 		if closeErr != nil {
@@ -98,7 +98,7 @@ ORDER BY snapshot_at`, tradeDate, string(rankType), code)
 		}
 		return append(result, closeRecords...), nil
 	}
-	rows, err = s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
+	rows, err = s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
 WHERE trade_date=? AND rank_type=? AND code=? AND snapshot_kind='daily_close'
 ORDER BY snapshot_at`, tradeDate, string(rankType), code)
 	if err != nil {
@@ -118,7 +118,7 @@ func (s *Store) BoardResearchRevisionSeries(ctx context.Context, revisionID stri
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT snapshot_at,trade_date,rank_type,rank,market,code,name,
+	rows, err := s.readDB().QueryContext(ctx, `SELECT snapshot_at,trade_date,rank_type,rank,market,code,name,
 dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at
 FROM board_money_5m WHERE trade_date=? AND rank_type=? AND code=?
 ORDER BY snapshot_at,rank`, tradeDate, string(rankType), code)
@@ -129,7 +129,7 @@ ORDER BY snapshot_at,rank`, tradeDate, string(rankType), code)
 }
 
 func (s *Store) StockResearchSeries(ctx context.Context, code, tradeDate string) ([]graymarket.StockResearchPoint, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available,
+	rows, err := s.readDB().QueryContext(ctx, `SELECT minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available,
 open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,amplitude_ppm,change_pct_ppm,
 change_value_e4,turnover_rate_ppm,kline_available
 FROM stock_research_5m WHERE trade_date=? AND code=? ORDER BY minute_index`, tradeDate, code)
@@ -144,7 +144,7 @@ func (s *Store) StockResearchRevisionSeries(ctx context.Context, revisionID, cod
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available,
+	rows, err := s.readDB().QueryContext(ctx, `SELECT minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available,
 open_price_e4,high_price_e4,low_price_e4,close_price_e4,volume,turnover,amplitude_ppm,change_pct_ppm,
 change_value_e4,turnover_rate_ppm,kline_available
 FROM stock_research_5m WHERE trade_date=? AND code=? ORDER BY minute_index`, tradeDate, code)
@@ -188,7 +188,7 @@ func scanStockResearchRows(rows *sql.Rows, tradeDate string) ([]graymarket.Stock
 }
 
 func (s *Store) boardMoneyRecords(ctx context.Context, where string, args ...any) ([]graymarket.RankRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT snapshot_at,trade_date,rank_type,rank,market,code,name,
+	rows, err := s.readDB().QueryContext(ctx, `SELECT snapshot_at,trade_date,rank_type,rank,market,code,name,
 dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at
 FROM board_money_5m WHERE `+where+` ORDER BY snapshot_at,rank`, args...)
 	if err != nil {
@@ -243,11 +243,11 @@ func (s *Store) DailyClosePage(ctx context.Context, rankType graymarket.RankType
 		args = append(args, pattern, pattern)
 	}
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM rank_snapshot WHERE `+where, args...).Scan(&total); err != nil {
+	if err := s.readDB().QueryRowContext(ctx, `SELECT count(*) FROM rank_snapshot WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	args = append(args, limit, offset)
-	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot WHERE `+where+
+	rows, err := s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot WHERE `+where+
 		` ORDER BY `+column+` `+direction+`,rank ASC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, 0, err
@@ -284,11 +284,11 @@ func (s *Store) DailyCloseRevisionPage(ctx context.Context, revisionID string, r
 		args = append(args, pattern, pattern)
 	}
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM rank_snapshot WHERE `+where, args...).Scan(&total); err != nil {
+	if err := s.readDB().QueryRowContext(ctx, `SELECT count(*) FROM rank_snapshot WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	args = append(args, limit, offset)
-	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot WHERE `+where+
+	rows, err := s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot WHERE `+where+
 		` ORDER BY `+column+` `+direction+`,rank ASC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, 0, err
@@ -324,7 +324,7 @@ func (s *Store) DailyCloseStocks(ctx context.Context, tradeDate string, stockCod
 		for _, code := range batch {
 			args = append(args, code)
 		}
-		rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
+		rows, err := s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
 WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock' AND code IN (`+placeholders+`)`, args...)
 		if err != nil {
 			return nil, err
@@ -340,7 +340,7 @@ WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock' AND cod
 }
 
 func (s *Store) DailyCloseRecords(ctx context.Context, tradeDate string) ([]graymarket.RankRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
+	rows, err := s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
 WHERE trade_date=? AND snapshot_kind='daily_close'
 ORDER BY CASE rank_type WHEN 'industry' THEN 1 WHEN 'concept' THEN 2 ELSE 3 END,rank`, tradeDate)
 	if err != nil {
@@ -354,7 +354,7 @@ func (s *Store) DailyCloseRevisionRecords(ctx context.Context, revisionID string
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
+	rows, err := s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
 WHERE trade_date=? AND snapshot_kind='daily_close'
 ORDER BY CASE rank_type WHEN 'industry' THEN 1 WHEN 'concept' THEN 2 ELSE 3 END,rank`, tradeDate)
 	if err != nil {
@@ -367,7 +367,7 @@ func (s *Store) DailyCloseTradeDates(ctx context.Context, asOf string, limit int
 	if limit < 1 {
 		return []string{}, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT trade_date FROM rank_snapshot
+	rows, err := s.readDB().QueryContext(ctx, `SELECT trade_date FROM rank_snapshot
 WHERE trade_date<=? AND snapshot_kind='daily_close' AND rank_type IN ('concept','stock')
 GROUP BY trade_date
 HAVING sum(rank_type='concept')>0
@@ -397,7 +397,7 @@ ORDER BY trade_date DESC LIMIT ?`, asOf, limit)
 
 func (s *Store) HasDailyClose(ctx context.Context, tradeDate string) (bool, error) {
 	var exists int
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
+	err := s.readDB().QueryRowContext(ctx, `SELECT EXISTS(
 SELECT 1 FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock'
 )`, tradeDate).Scan(&exists)
 	return exists == 1, err
@@ -405,7 +405,7 @@ SELECT 1 FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' A
 
 func (s *Store) HasEndOfDayArchive(ctx context.Context, tradeDate string) (bool, error) {
 	var stockClose, boardCloses, curveTypes, stockMoney int
-	if err := s.db.QueryRowContext(ctx, `SELECT
+	if err := s.readDB().QueryRowContext(ctx, `SELECT
 (SELECT EXISTS(SELECT 1 FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock')),
 (SELECT count(DISTINCT rank_type) FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type IN ('industry','concept')),
 (SELECT count(*) FROM (SELECT rank_type FROM board_money_5m WHERE trade_date=? GROUP BY rank_type HAVING count(DISTINCT snapshot_at)=48)),
@@ -420,14 +420,14 @@ AND (SELECT coalesce(sum(money_available),0) FROM stock_research_5m WHERE trade_
 
 func (s *Store) HasStockKlineArchive(ctx context.Context, tradeDate string) (bool, error) {
 	var exists int
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM stock_archive_quality WHERE trade_date=?
+	err := s.readDB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM stock_archive_quality WHERE trade_date=?
 AND kline_rows=expected_kline_stocks*expected_points)`, tradeDate).Scan(&exists)
 	return exists == 1, err
 }
 
 func (s *Store) MissingStockKlineCodes(ctx context.Context, tradeDate string) ([]string, error) {
 	var expectedStocks, expectedPoints, closeStocks int
-	err := s.db.QueryRowContext(ctx, `SELECT expected_kline_stocks,expected_points,
+	err := s.readDB().QueryRowContext(ctx, `SELECT expected_kline_stocks,expected_points,
 (SELECT count(*) FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock' AND quote_available=1)
 FROM stock_archive_quality WHERE trade_date=?`, tradeDate, tradeDate).Scan(&expectedStocks, &expectedPoints, &closeStocks)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -439,7 +439,7 @@ FROM stock_archive_quality WHERE trade_date=?`, tradeDate, tradeDate).Scan(&expe
 	if expectedPoints != 48 || closeStocks != expectedStocks {
 		return nil, fmt.Errorf("inconsistent stock archive quality for %s: expected_stocks=%d close_stocks=%d expected_points=%d", tradeDate, expectedStocks, closeStocks, expectedPoints)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT close.code FROM rank_snapshot AS close
+	rows, err := s.readDB().QueryContext(ctx, `SELECT close.code FROM rank_snapshot AS close
 LEFT JOIN (
 	SELECT market,code,sum(kline_available) AS kline_rows
 	FROM stock_research_5m WHERE trade_date=? GROUP BY market,code
@@ -511,7 +511,7 @@ func scanRecords(rows *sql.Rows) ([]graymarket.RankRecord, error) {
 }
 
 func (s *Store) Quality(ctx context.Context, tradeDate string) ([]repository.QualitySummary, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT trade_date,rank_type,expected_minutes,collected_minutes,
+	rows, err := s.readDB().QueryContext(ctx, `SELECT trade_date,rank_type,expected_minutes,collected_minutes,
 expected_research,collected_research,expected_daily_close,collected_daily_close,
 missing_minutes_json,missing_research_json,missing_daily_close_json,compacted_at
 FROM research_quality WHERE trade_date=? ORDER BY rank_type`, tradeDate)
@@ -545,7 +545,7 @@ FROM research_quality WHERE trade_date=? ORDER BY rank_type`, tradeDate)
 func (s *Store) StockArchiveQuality(ctx context.Context, tradeDate string) (repository.StockArchiveQuality, error) {
 	quality := repository.StockArchiveQuality{TradeDate: tradeDate, ExpectedPoints: 48}
 	var moneyArchivedAt, klineArchivedAt sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,
+	err := s.readDB().QueryRowContext(ctx, `SELECT expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,
 daily_close_rows,daily_kline_rows,money_archived_at,kline_archived_at
 FROM stock_archive_quality WHERE trade_date=?`, tradeDate).Scan(&quality.ExpectedStocks, &quality.ExpectedPoints,
 		&quality.ExpectedKlineStocks, &quality.MoneyRows, &quality.KlineRows, &quality.DailyCloseRows,
@@ -599,7 +599,7 @@ func (s *Store) RecentRuns(ctx context.Context, tradeDate string, limit int) ([]
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT run_id,snapshot_at,snapshot_kind,rank_type,status,requested_date,
+	rows, err := s.readDB().QueryContext(ctx, `SELECT run_id,snapshot_at,snapshot_kind,rank_type,status,requested_date,
 actual_trade_date,expected_total,fetched_total,page_count,attempt_count,started_at,finished_at,duration_ms,error_code,error_message
 FROM collection_run WHERE requested_date=? ORDER BY snapshot_at DESC LIMIT ?`, tradeDate, limit)
 	if err != nil {
@@ -633,7 +633,7 @@ FROM collection_run WHERE requested_date=? ORDER BY snapshot_at DESC LIMIT ?`, t
 func (s *Store) OperationalMetrics(ctx context.Context) (repository.OperationalMetrics, error) {
 	var result repository.OperationalMetrics
 
-	rows, err := s.db.QueryContext(ctx, `SELECT rank_type,status,sum(run_count) FROM (
+	rows, err := s.readDB().QueryContext(ctx, `SELECT rank_type,status,sum(run_count) FROM (
 SELECT rank_type,status,count(*) AS run_count FROM collection_run GROUP BY rank_type,status
 UNION ALL
 SELECT rank_type,status,run_count FROM collection_run_rollup
@@ -654,7 +654,7 @@ SELECT rank_type,status,run_count FROM collection_run_rollup
 		return result, err
 	}
 
-	rows, err = s.db.QueryContext(ctx, `SELECT rank_type,coalesce(sum(record_count),0),
+	rows, err = s.readDB().QueryContext(ctx, `SELECT rank_type,coalesce(sum(record_count),0),
 coalesce(sum(duration_ms),0)/1000.0,coalesce(sum(run_count),0) FROM (
 SELECT rank_type,sum(fetched_total) AS record_count,sum(duration_ms) AS duration_ms,count(*) AS run_count
 FROM collection_run WHERE status='success' GROUP BY rank_type
@@ -680,7 +680,7 @@ SELECT rank_type,record_count,duration_ms,run_count FROM collection_run_rollup W
 		return result, err
 	}
 
-	rows, err = s.db.QueryContext(ctx, `SELECT rank_type,max(finished_at) FROM (
+	rows, err = s.readDB().QueryContext(ctx, `SELECT rank_type,max(finished_at) FROM (
 SELECT rank_type,finished_at FROM collection_run WHERE status='success' AND finished_at IS NOT NULL
 UNION ALL
 SELECT rank_type,latest_success_at AS finished_at FROM collection_run_rollup
@@ -706,7 +706,7 @@ WHERE status='success' AND latest_success_at IS NOT NULL
 		return result, err
 	}
 
-	rows, err = s.db.QueryContext(ctx, `SELECT rank_type,max(snapshot_at) FROM (
+	rows, err = s.readDB().QueryContext(ctx, `SELECT rank_type,max(snapshot_at) FROM (
 SELECT rank_type,snapshot_at FROM rank_intraday_work
 UNION ALL
 SELECT rank_type,snapshot_at FROM rank_snapshot WHERE snapshot_kind IN ('research_5m','daily_close')
@@ -731,10 +731,10 @@ SELECT rank_type,snapshot_at FROM rank_snapshot WHERE snapshot_kind IN ('researc
 		return result, err
 	}
 
-	if err := s.db.QueryRowContext(ctx, `SELECT count(DISTINCT trade_date) FROM research_quality`).Scan(&result.ResearchCompactionRuns); err != nil {
+	if err := s.readDB().QueryRowContext(ctx, `SELECT count(DISTINCT trade_date) FROM research_quality`).Scan(&result.ResearchCompactionRuns); err != nil {
 		return result, err
 	}
-	rows, err = s.db.QueryContext(ctx, `SELECT rank_type,COALESCE(sum(expected_research-collected_research),0)
+	rows, err = s.readDB().QueryContext(ctx, `SELECT rank_type,COALESCE(sum(expected_research-collected_research),0)
 FROM research_quality GROUP BY rank_type ORDER BY rank_type`)
 	if err != nil {
 		return result, err

@@ -446,6 +446,37 @@ CREATE TABLE IF NOT EXISTS stock_board_relation_stage (
     PRIMARY KEY (run_id, stock_code, board_code, relation_source, relation_scope)
 );
 
+CREATE TABLE IF NOT EXISTS schema_migration (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    checksum TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scheduled_job (
+    job_key TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    planned_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued','running','succeeded','failed','skipped')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL,
+    lease_owner TEXT,
+    lease_until TEXT,
+    retry_at TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    last_error_code TEXT NOT NULL DEFAULT '',
+    last_error_message TEXT NOT NULL DEFAULT '',
+    duration_ms INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduled_job_due
+    ON scheduled_job (status, retry_at, planned_at);
+
+CREATE INDEX IF NOT EXISTS idx_scheduled_job_date
+    ON scheduled_job (trade_date, planned_at);
+
 CREATE TABLE IF NOT EXISTS relation_sync_run (
     run_id TEXT PRIMARY KEY,
     trade_date TEXT NOT NULL,

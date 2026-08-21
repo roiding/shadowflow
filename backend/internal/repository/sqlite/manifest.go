@@ -31,7 +31,7 @@ type manifestQueryer interface {
 }
 
 func (s *Store) ArchiveManifest(ctx context.Context, tradeDate string) (repository.DailyArchiveManifest, error) {
-	manifest, err := scanArchiveManifest(s.db.QueryRowContext(ctx, `SELECT manifest.trade_date,manifest.status,
+	manifest, err := scanArchiveManifest(s.readDB().QueryRowContext(ctx, `SELECT manifest.trade_date,manifest.status,
 manifest.industry_close_rows,manifest.industry_money_rows,manifest.concept_close_rows,manifest.concept_money_rows,
 manifest.stock_close_rows,manifest.stock_money_rows,manifest.stock_kline_rows,manifest.stock_daily_kline_rows,
 manifest.expected_stock_rows,manifest.expected_stock_kline_rows,manifest.code_count,manifest.code_set_sha256,

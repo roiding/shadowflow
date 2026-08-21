@@ -20,13 +20,14 @@ import (
 
 	"github.com/roiding/shadowflow/internal/focus"
 	"github.com/roiding/shadowflow/internal/graymarket"
+	"github.com/roiding/shadowflow/internal/quote"
 	"github.com/roiding/shadowflow/internal/repository"
 	"github.com/roiding/shadowflow/internal/tradingcalendar"
 )
 
 type Server struct {
 	store    repository.Store
-	quotes   StockQuoteSource
+	quotes   QuoteSnapshotSource
 	calendar *tradingcalendar.Calendar
 	logger   *slog.Logger
 	location *time.Location
@@ -35,12 +36,16 @@ type Server struct {
 }
 
 type Options struct {
-	StaticDir   string
-	QuoteSource StockQuoteSource
+	StaticDir           string
+	QuoteSource         QuoteSnapshotSource
+	APIToken            string
+	NormalRatePerMinute int
+	ExportRatePerMinute int
+	ScanRatePerMinute   int
 }
 
-type StockQuoteSource interface {
-	FetchStockQuotes(context.Context, []graymarket.StockBoardRelation) ([]graymarket.StockQuote, error)
+type QuoteSnapshotSource interface {
+	Snapshot(graymarket.BoardType, string, []graymarket.StockBoardRelation) (quote.Snapshot, quote.Status)
 }
 
 type envelope struct {
@@ -63,33 +68,88 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 	if len(options) > 0 {
 		server.quotes = options[0].QuoteSource
 	}
+	normalLimit := 120
+	exportLimit := 10
+	scanLimit := 30
+	if len(options) > 0 {
+		if options[0].NormalRatePerMinute > 0 {
+			normalLimit = options[0].NormalRatePerMinute
+		}
+		if options[0].ExportRatePerMinute > 0 {
+			exportLimit = options[0].ExportRatePerMinute
+		}
+		if options[0].ScanRatePerMinute > 0 {
+			scanLimit = options[0].ScanRatePerMinute
+		}
+	}
+	normal := newRateLimiter(normalLimit)
+	export := newRateLimiter(exportLimit)
+	scan := newRateLimiter(scanLimit)
+	limitByPath := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			limiter := normal
+			switch {
+			case strings.HasPrefix(r.URL.Path, "/api/v1/research/") && strings.HasSuffix(r.URL.Path, "/export"):
+				limiter = export
+			case r.URL.Path == "/api/v1/focus/scan":
+				limiter = scan
+			}
+			if !limiter.allow(clientIP(r)) {
+				w.Header().Set("Retry-After", "1")
+				writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	timeoutByPath := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/api/v1/research/") && strings.HasSuffix(r.URL.Path, "/export") {
+				ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+				defer cancel()
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+			timeout := 20 * time.Second
+			if r.URL.Path == "/api/v1/focus/scan" {
+				timeout = 30 * time.Second
+			}
+			requestTimeout(timeout)(next).ServeHTTP(w, r)
+		})
+	}
 	router := chi.NewRouter()
-	router.Use(middleware.RequestID, middleware.RealIP, middleware.Recoverer, middleware.Compress(5))
+	router.Use(middleware.RequestID, middleware.Recoverer, middleware.Compress(5), noStore)
 	router.Get("/health/live", server.live)
 	router.Get("/health/ready", server.ready)
-	router.Get("/metrics", server.metrics)
-	router.Route("/api/v1", func(r chi.Router) {
-		r.Get("/ranks/latest", server.latestRank)
-		r.Get("/ranks", server.rankAt)
-		r.Get("/ranks/daily-close", server.dailyClose)
-		r.Get("/trading-days", server.tradingDays)
-		r.Get("/boards/{type}/{code}/intraday", server.intraday)
-		r.Get("/boards/{type}/{code}/trend", server.trend)
-		r.Get("/boards/{type}/{code}/stocks", server.boardStocks)
-		r.Get("/boards/{type}/{code}/quotes", server.boardQuotes)
-		r.Get("/stocks/{code}/boards", server.stockBoards)
-		r.Get("/stocks/{code}/research-5m", server.stockResearch)
-		r.Get("/relations/changes", server.relationChanges)
-		r.Get("/research/export", server.exportResearch)
-		r.Get("/research/daily-close/export", server.exportDailyClose)
-		r.Get("/research/quality", server.quality)
-		r.Get("/research/revisions", server.archiveRevisions)
-		r.Get("/research/features", server.dailyFeatures)
-		r.Get("/research/labels", server.futureLabels)
-		r.Get("/collection-runs", server.collectionRuns)
-		r.Get("/focus/three-day", server.threeDayFocus)
-		r.Post("/focus/scan", server.focusScan)
-		r.Get("/system/status", server.status)
+	router.Group(func(authed chi.Router) {
+		if len(options) > 0 && options[0].APIToken != "" {
+			authed.Use(bearerMiddleware(options[0].APIToken))
+		}
+		authed.Get("/metrics", server.metrics)
+		authed.Route("/api/v1", func(r chi.Router) {
+			r.Use(limitByPath, timeoutByPath)
+			r.Get("/ranks/latest", server.latestRank)
+			r.Get("/ranks", server.rankAt)
+			r.Get("/ranks/daily-close", server.dailyClose)
+			r.Get("/trading-days", server.tradingDays)
+			r.Get("/boards/{type}/{code}/intraday", server.intraday)
+			r.Get("/boards/{type}/{code}/trend", server.trend)
+			r.Get("/boards/{type}/{code}/stocks", server.boardStocks)
+			r.Get("/boards/{type}/{code}/quotes", server.boardQuotes)
+			r.Get("/stocks/{code}/boards", server.stockBoards)
+			r.Get("/stocks/{code}/research-5m", server.stockResearch)
+			r.Get("/relations/changes", server.relationChanges)
+			r.Get("/research/export", server.exportResearch)
+			r.Get("/research/daily-close/export", server.exportDailyClose)
+			r.Get("/research/quality", server.quality)
+			r.Get("/research/revisions", server.archiveRevisions)
+			r.Get("/research/features", server.dailyFeatures)
+			r.Get("/research/labels", server.futureLabels)
+			r.Get("/collection-runs", server.collectionRuns)
+			r.Get("/focus/three-day", server.threeDayFocus)
+			r.Post("/focus/scan", server.focusScan)
+			r.Get("/system/status", server.status)
+		})
 	})
 	if len(options) > 0 && options[0].StaticDir != "" {
 		mountStatic(router, options[0].StaticDir)
@@ -230,6 +290,8 @@ type boardStockQuote struct {
 	BoardType         graymarket.BoardType `json:"board_type"`
 	SourceOrder       int                  `json:"source_order"`
 	EffectiveDate     string               `json:"effective_date,omitempty"`
+	RelationSource    string               `json:"relation_source"`
+	RelationScope     string               `json:"relation_scope"`
 	LatestPrice       float64              `json:"latest_price"`
 	OpenPrice         float64              `json:"open_price"`
 	HighPrice         float64              `json:"high_price"`
@@ -287,21 +349,27 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 	quotes := make(map[string]graymarket.StockQuote, len(relations))
 	meta := map[string]any{
 		"as_of": asOf, "board_type": boardType, "board_code": boardCode,
-		"quote_source": "unavailable", "quote_available": false,
+		"quote_source": "unavailable", "quote_available": false, "quote_status": "unavailable", "stale": false,
 		"dark_data_available": len(darkRecords) > 0, "dark_data_count": len(darkRecords),
 	}
 	if s.quotes != nil && len(relations) > 0 {
-		latest, quoteErr := s.quotes.FetchStockQuotes(r.Context(), relations)
-		if quoteErr != nil {
-			meta["quote_error"] = quoteErr.Error()
-		} else {
-			availableCount := 0
-			for _, quote := range latest {
-				quotes[quote.StockCode] = quote
-				if quote.Available {
-					availableCount++
-				}
+		snapshot, status := s.quotes.Snapshot(boardType, boardCode, relations)
+		availableCount := 0
+		for _, latest := range snapshot.Quotes {
+			quotes[latest.StockCode] = latest
+			if latest.Available {
+				availableCount++
 			}
+		}
+		meta["quote_status"] = string(status)
+		meta["stale"] = status == quote.StatusStale
+		if !snapshot.FetchedAt.IsZero() {
+			meta["cache_age_ms"] = time.Since(snapshot.FetchedAt).Milliseconds()
+		}
+		if snapshot.Error != "" {
+			meta["quote_error"] = snapshot.Error
+			meta["quote_source"] = "eastmoney"
+		} else if len(snapshot.Quotes) > 0 {
 			meta["quote_source"] = "eastmoney"
 			meta["quote_available"] = availableCount > 0
 			meta["quoted_count"] = availableCount
@@ -325,6 +393,7 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 			StockCode: relation.StockCode, StockMarket: relation.StockMarket, StockName: relation.StockName,
 			BoardCode: relation.BoardCode, BoardName: relation.BoardName, BoardType: relation.BoardType,
 			SourceOrder: relation.SourceOrder, EffectiveDate: relation.EffectiveDate,
+			RelationSource: relation.RelationSource, RelationScope: relation.RelationScope,
 			LatestPrice: quote.LatestPrice, OpenPrice: openPrice, HighPrice: highPrice, LowPrice: lowPrice, PreviousClose: previousClose,
 			ChangePct: quote.ChangePct, ChangeValue: quote.ChangeValue, Volume: quote.Volume, Turnover: turnover,
 			TurnoverRate: turnoverRate, Amplitude: amplitude, QuoteTime: quote.QuoteTime, FetchedAt: quote.FetchedAt,
@@ -872,16 +941,25 @@ func (s *Server) exportResearch(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="shadowflow-%s-%s.csv"`, rankType, code))
-	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
+	if _, err := w.Write([]byte{0xEF, 0xBB, 0xBF}); err != nil {
+		return
+	}
 	writer := csv.NewWriter(w)
-	_ = writer.Write([]string{"trade_date", "snapshot_at", "rank_type", "rank", "code", "name", "latest_price_raw", "change_pct", "dark_money", "regular_money", "main_money_inflow", "dark_activity", "dark_inflow_ratio", "up_count", "down_count"})
+	if err := writer.Write([]string{"trade_date", "snapshot_at", "rank_type", "rank", "code", "name", "latest_price_raw", "change_pct", "dark_money", "regular_money", "main_money_inflow", "dark_activity", "dark_inflow_ratio", "up_count", "down_count"}); err != nil {
+		return
+	}
 	for _, record := range records {
-		_ = writer.Write([]string{record.TradeDate, record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, record.Name,
+		if err := writer.Write([]string{record.TradeDate, record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, record.Name,
 			strconv.FormatInt(record.LatestPriceRaw, 10), strconv.FormatFloat(record.ChangePct, 'f', 8, 64), strconv.FormatInt(record.DarkMoney, 10),
 			strconv.FormatInt(record.RegularMoney, 10), strconv.FormatInt(record.MainMoneyInflow, 10), strconv.FormatFloat(record.DarkActivity, 'f', 8, 64),
-			strconv.FormatFloat(record.DarkInflowRatio, 'f', 8, 64), strconv.FormatInt(record.UpCount, 10), strconv.FormatInt(record.DownCount, 10)})
+			strconv.FormatFloat(record.DarkInflowRatio, 'f', 8, 64), strconv.FormatInt(record.UpCount, 10), strconv.FormatInt(record.DownCount, 10)}); err != nil {
+			return
+		}
 	}
 	writer.Flush()
+	if err := writer.Error(); err != nil {
+		s.logger.Error("write research export", "error", err)
+	}
 }
 
 func (s *Server) exportDailyClose(w http.ResponseWriter, r *http.Request) {
@@ -908,23 +986,32 @@ func (s *Server) exportDailyClose(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="shadowflow-daily-close-%s.csv"`, tradeDate))
-	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
+	if _, err := w.Write([]byte{0xEF, 0xBB, 0xBF}); err != nil {
+		return
+	}
 	writer := csv.NewWriter(w)
-	_ = writer.Write([]string{"revision_id", "trade_date", "snapshot_kind", "snapshot_at", "rank_type", "rank", "code", "name",
+	if err := writer.Write([]string{"revision_id", "trade_date", "snapshot_kind", "snapshot_at", "rank_type", "rank", "code", "name",
 		"open_price", "high_price", "low_price", "close_price", "previous_close", "change_value", "change_pct",
 		"volume", "turnover", "turnover_rate", "amplitude", "quote_available", "latest_price_raw",
-		"dark_money", "regular_money", "main_money_inflow", "dark_activity", "dark_inflow_ratio", "up_count", "flat_count", "down_count"})
+		"dark_money", "regular_money", "main_money_inflow", "dark_activity", "dark_inflow_ratio", "up_count", "flat_count", "down_count"}); err != nil {
+		return
+	}
 	for _, record := range records {
-		_ = writer.Write([]string{revisionID, record.TradeDate, string(graymarket.SnapshotDailyClose), record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, record.Name,
+		if err := writer.Write([]string{revisionID, record.TradeDate, string(graymarket.SnapshotDailyClose), record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, record.Name,
 			strconv.FormatFloat(record.OpenPrice, 'f', 4, 64), strconv.FormatFloat(record.HighPrice, 'f', 4, 64), strconv.FormatFloat(record.LowPrice, 'f', 4, 64),
 			strconv.FormatFloat(record.ClosePrice, 'f', 4, 64), strconv.FormatFloat(record.PreviousClose, 'f', 4, 64), strconv.FormatFloat(record.ChangeValue, 'f', 4, 64),
 			strconv.FormatFloat(record.ChangePct, 'f', 8, 64), strconv.FormatInt(record.Volume, 10), strconv.FormatInt(record.Turnover, 10),
 			strconv.FormatFloat(record.TurnoverRate, 'f', 8, 64), strconv.FormatFloat(record.Amplitude, 'f', 8, 64), strconv.FormatBool(record.QuoteAvailable),
 			strconv.FormatInt(record.LatestPriceRaw, 10), strconv.FormatInt(record.DarkMoney, 10),
 			strconv.FormatInt(record.RegularMoney, 10), strconv.FormatInt(record.MainMoneyInflow, 10), strconv.FormatFloat(record.DarkActivity, 'f', 8, 64),
-			strconv.FormatFloat(record.DarkInflowRatio, 'f', 8, 64), strconv.FormatInt(record.UpCount, 10), strconv.FormatInt(record.FlatCount, 10), strconv.FormatInt(record.DownCount, 10)})
+			strconv.FormatFloat(record.DarkInflowRatio, 'f', 8, 64), strconv.FormatInt(record.UpCount, 10), strconv.FormatInt(record.FlatCount, 10), strconv.FormatInt(record.DownCount, 10)}); err != nil {
+			return
+		}
 	}
 	writer.Flush()
+	if err := writer.Error(); err != nil {
+		s.logger.Error("write daily close export", "error", err)
+	}
 }
 
 func boardTypeParam(w http.ResponseWriter, value string) (graymarket.RankType, bool) {

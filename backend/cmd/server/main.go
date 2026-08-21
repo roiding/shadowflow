@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +16,8 @@ import (
 	"github.com/roiding/shadowflow/internal/collector"
 	"github.com/roiding/shadowflow/internal/config"
 	"github.com/roiding/shadowflow/internal/datasource/eastmoney"
+	"github.com/roiding/shadowflow/internal/datasource/upstream"
+	"github.com/roiding/shadowflow/internal/quote"
 	"github.com/roiding/shadowflow/internal/repository/sqlite"
 	"github.com/roiding/shadowflow/internal/scheduler"
 	"github.com/roiding/shadowflow/internal/tradingcalendar"
@@ -26,7 +30,11 @@ func main() {
 		logger.Error("load config", "error", err)
 		os.Exit(1)
 	}
-	store, err := sqlite.Open(cfg.DatabasePath)
+	if err := validateListenSecurity(cfg.ListenAddr, cfg.APIToken); err != nil {
+		logger.Error("invalid security configuration", "error", err)
+		os.Exit(1)
+	}
+	store, err := sqlite.OpenWithReadConns(cfg.DatabasePath, cfg.SQLiteReadConns)
 	if err != nil {
 		logger.Error("open database", "error", err)
 		os.Exit(1)
@@ -37,18 +45,26 @@ func main() {
 		logger.Error("load calendar", "error", err)
 		os.Exit(1)
 	}
-	client := eastmoney.NewClient(cfg.UpstreamBaseURL, &http.Client{Timeout: cfg.RequestTimeout}, cfg.PageSize).
-		WithQuoteBaseURLs(cfg.QuoteBaseURLs)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = cfg.UpstreamMaxConcurrency * 4
+	transport.MaxIdleConnsPerHost = cfg.UpstreamMaxConcurrency
+	upstreamClient := &http.Client{Transport: transport, Timeout: cfg.RequestTimeout}
+	guard := upstream.New(upstreamClient, upstream.Options{
+		MaxConcurrency: cfg.UpstreamMaxConcurrency, RatePerSecond: cfg.UpstreamRatePerSecond,
+	})
+	client := eastmoney.NewClient(cfg.UpstreamBaseURL, upstreamClient, cfg.PageSize).
+		WithQuoteBaseURLs(cfg.QuoteBaseURLs).WithUpstreamGuard(guard)
 	collectorService := collector.New(client, store, logger)
 	schedulerService, err := scheduler.New(collectorService, calendar, logger, scheduler.Options{
 		SuccessRunRetentionDays: cfg.SuccessRunRetentionDays,
 		FailureRunRetentionDays: cfg.FailureRunRetentionDays,
+		Jobs:                    store,
 	})
 	if err != nil {
 		logger.Error("create scheduler", "error", err)
 		os.Exit(1)
 	}
-	apiServer, err := api.New(store, calendar, logger, api.Options{StaticDir: cfg.StaticDir, QuoteSource: client})
+	apiServer, err := api.New(store, calendar, logger, api.Options{StaticDir: cfg.StaticDir, QuoteSource: quote.NewCache(client, logger), APIToken: cfg.APIToken, NormalRatePerMinute: cfg.NormalRatePerMinute, ExportRatePerMinute: cfg.ExportRatePerMinute, ScanRatePerMinute: cfg.ScanRatePerMinute})
 	if err != nil {
 		logger.Error("create API", "error", err)
 		os.Exit(1)
@@ -115,4 +131,21 @@ func runCalendarUpdater(ctx context.Context, calendar *tradingcalendar.Calendar,
 			refresh()
 		}
 	}
+}
+
+func validateListenSecurity(addr, token string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("parse listen address: %w", err)
+	}
+	if host == "" {
+		return fmt.Errorf("listen host must be explicit; use 127.0.0.1 for local access")
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		if len(token) < 16 {
+			return fmt.Errorf("SHADOWFLOW_API_TOKEN must contain at least 16 characters for non-loopback listen addresses")
+		}
+	}
+	return nil
 }

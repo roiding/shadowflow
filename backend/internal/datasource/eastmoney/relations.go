@@ -331,7 +331,7 @@ func (c *Client) fetchQuotePage(ctx context.Context, path string, params url.Val
 		}
 		request.Header.Set("Accept", "application/json")
 		request.Header.Set("User-Agent", "shadowflow/0.2")
-		response, err := c.httpClient.Do(request)
+		response, err := c.guard.Do(ctx, request)
 		if err != nil {
 			fallbackErr = errors.Join(fallbackErr, fmt.Errorf("%s: %w", baseURL, err))
 			if index+1 < len(c.quoteBaseURLs) {

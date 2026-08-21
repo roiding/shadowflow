@@ -2,6 +2,8 @@ package scheduler
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -104,16 +106,16 @@ func (c *schedulerCollector) Maintain(context.Context, time.Time, int, int) (rep
 	return repository.MaintenanceResult{}, nil
 }
 
-func (c *schedulerCollector) HasEndOfDayArchive(context.Context, string) bool {
+func (c *schedulerCollector) HasEndOfDayArchive(context.Context, string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.hasEnd
+	return c.hasEnd, nil
 }
 
-func (c *schedulerCollector) HasStockKlineArchive(context.Context, string) bool {
+func (c *schedulerCollector) HasStockKlineArchive(context.Context, string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.hasKline
+	return c.hasKline, nil
 }
 
 func (c *schedulerCollector) CollectStockBoardRelations(context.Context, string) error {
@@ -123,8 +125,8 @@ func (c *schedulerCollector) CollectStockBoardRelations(context.Context, string)
 	return nil
 }
 
-func (c *schedulerCollector) HasStockBoardRelations(context.Context, string) bool {
-	return false
+func (c *schedulerCollector) HasStockBoardRelations(context.Context, string) (bool, error) {
+	return false, nil
 }
 
 func TestSchedulerUsesIndependentIntradayAndArchiveLanes(t *testing.T) {
@@ -191,5 +193,97 @@ func TestRecoveryTradeDateOnlyRunsOutsideTradingSession(t *testing.T) {
 		if gotDate != test.wantDate || gotRun != test.wantRun {
 			t.Errorf("%s: got (%s,%v), want (%s,%v)", test.at, gotDate, gotRun, test.wantDate, test.wantRun)
 		}
+	}
+}
+
+type recordingJobStore struct {
+	finished chan ScheduledJob
+}
+
+func (s *recordingJobStore) EnsureScheduledJob(context.Context, ScheduledJob) error { return nil }
+func (s *recordingJobStore) ClaimScheduledJob(_ context.Context, job ScheduledJob, owner string, now, leaseUntil time.Time) (ScheduledJob, bool, error) {
+	job.Status = JobRunning
+	job.AttemptCount++
+	job.LeaseOwner = owner
+	job.StartedAt = &now
+	job.LeaseUntil = &leaseUntil
+	return job, true, nil
+}
+func (s *recordingJobStore) FinishScheduledJob(_ context.Context, job ScheduledJob) error {
+	s.finished <- job
+	return nil
+}
+func (*recordingJobStore) DueScheduledJobs(context.Context, time.Time, int) ([]ScheduledJob, error) {
+	return nil, nil
+}
+func (*recordingJobStore) ExpireLeasedJobs(context.Context, time.Time) error { return nil }
+
+func TestNoopJobStoreClaimsIncrementAttempts(t *testing.T) {
+	now := time.Now()
+	claimed, ok, err := (noopJobStore{}).ClaimScheduledJob(context.Background(), ScheduledJob{MaxAttempts: 2}, "owner", now, now.Add(time.Minute))
+	if err != nil || !ok || claimed.Status != JobRunning || claimed.AttemptCount != 1 || claimed.LeaseOwner != "owner" {
+		t.Fatalf("unexpected noop claim: job=%+v ok=%v err=%v", claimed, ok, err)
+	}
+}
+
+func TestStockKlineWaitsAndRetriesWhenEndOfDayArchiveIsMissing(t *testing.T) {
+	calendar, err := tradingcalendar.Load(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := &recordingJobStore{finished: make(chan ScheduledJob, 1)}
+	fake := &schedulerCollector{}
+	s, err := New(fake, calendar, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{Jobs: jobs, InstanceID: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := time.Date(2026, 8, 17, 16, 15, 5, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	if !s.startJob(context.Background(), "stock-kline", current, "2026-08-17") {
+		t.Fatal("stock-kline job did not start")
+	}
+	select {
+	case job := <-jobs.finished:
+		if job.Status != JobFailed || job.LastErrorCode != "dependency_unavailable" || job.RetryAt == nil {
+			t.Fatalf("missing dependency must remain retryable: %+v", job)
+		}
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		if len(fake.calls) != 0 {
+			t.Fatalf("stock kline collector ran without its dependency: %v", fake.calls)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("job was not finished")
+	}
+}
+
+func TestSchedulerErrorCodesAreStable(t *testing.T) {
+	if got := errorCode(errors.New("a volatile upstream message")); got != "job_failed" {
+		t.Fatalf("generic error code = %q", got)
+	}
+	if got := errorCode(fmt.Errorf("wrapped: %w", errDependencyUnavailable)); got != "dependency_unavailable" {
+		t.Fatalf("dependency error code = %q", got)
+	}
+}
+
+func TestCleanupUsesCurrentDateAsExclusiveCutoff(t *testing.T) {
+	calendar, err := tradingcalendar.Load(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := &recordingJobStore{finished: make(chan ScheduledJob, 1)}
+	fake := &schedulerCollector{}
+	s, err := New(fake, calendar, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{Jobs: jobs, InstanceID: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	monday := time.Date(2026, 8, 17, 9, 0, 5, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	s.check(context.Background(), monday)
+	select {
+	case job := <-jobs.finished:
+		if job.TradeDate != "2026-08-17" {
+			t.Fatalf("cleanup cutoff=%s, want current date", job.TradeDate)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cleanup job did not finish")
 	}
 }

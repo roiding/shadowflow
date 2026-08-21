@@ -97,7 +97,7 @@ revision_id=excluded.revision_id,updated_at=excluded.updated_at`,
 }
 
 func (s *Store) ArchiveRevisions(ctx context.Context, tradeDate string) ([]repository.ArchiveRevision, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT revision_id,trade_date,revision_no,
+	rows, err := s.readDB().QueryContext(ctx, `SELECT revision_id,trade_date,revision_no,
 coalesce(previous_revision_id,''),content_sha256,created_at
 FROM daily_archive_revision WHERE trade_date=? ORDER BY revision_no DESC`, tradeDate)
 	if err != nil {
