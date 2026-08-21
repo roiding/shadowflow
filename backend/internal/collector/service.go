@@ -44,6 +44,8 @@ type IncrementalStockKlineSource interface {
 	FetchStockKlines5mIncremental(context.Context, graymarket.RankSnapshot, func([]graymarket.StockKlinePoint) error) (int, error)
 }
 
+const stockKlinePersistBatchStocks = 500
+
 type store interface {
 	SaveIntraday(context.Context, string, graymarket.RankSnapshot, bool) error
 	SaveDailyClose(context.Context, string, graymarket.RankSnapshot) error
@@ -194,14 +196,37 @@ func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error
 	run.ExpectedTotal = len(snapshot.Records) * 48
 	run.PageCount = len(snapshot.Records)
 	if incremental, ok := s.source.(IncrementalStockKlineSource); ok {
-		completed, fetchErr := incremental.FetchStockKlines5mIncremental(ctx, snapshot, func(points []graymarket.StockKlinePoint) error {
-			if err := s.store.SaveStockKlines(ctx, runID, points); err != nil {
+		pending := make([]graymarket.StockKlinePoint, 0, stockKlinePersistBatchStocks*48)
+		pendingStocks := 0
+		flush := func() error {
+			if pendingStocks == 0 {
+				return nil
+			}
+			if err := s.store.SaveStockKlines(ctx, runID, pending); err != nil {
 				return err
 			}
-			run.FetchedTotal += len(points)
+			run.FetchedTotal += len(pending)
+			pending = pending[:0]
+			pendingStocks = 0
 			return nil
+		}
+		_, fetchErr := incremental.FetchStockKlines5mIncremental(ctx, snapshot, func(points []graymarket.StockKlinePoint) error {
+			pending = append(pending, points...)
+			pendingStocks++
+			if pendingStocks < stockKlinePersistBatchStocks {
+				return nil
+			}
+			return flush()
 		})
-		run.FetchedTotal = maxInt(run.FetchedTotal, completed*48)
+		// Keep the final partial batch durable even when the fetch ended with a
+		// recoverable upstream error; the next run will request only its missing
+		// stocks.
+		persistErr := flush()
+		if fetchErr == nil && persistErr != nil {
+			fetchErr = fmt.Errorf("persist stock kline batch: %w", persistErr)
+		} else if fetchErr != nil && persistErr != nil {
+			fetchErr = errors.Join(fetchErr, fmt.Errorf("persist stock kline batch: %w", persistErr))
+		}
 		if fetchErr != nil {
 			run.Status = repository.RunFailed
 			if run.FetchedTotal > 0 {
@@ -254,13 +279,6 @@ func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error
 	}
 	run.Status = repository.RunSuccess
 	return finish(nil)
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func (s *Service) HasStockKlineArchive(ctx context.Context, tradeDate string) bool {
