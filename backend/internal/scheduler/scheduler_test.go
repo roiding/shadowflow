@@ -104,16 +104,16 @@ func (c *schedulerCollector) Maintain(context.Context, time.Time, int, int) (rep
 	return repository.MaintenanceResult{}, nil
 }
 
-func (c *schedulerCollector) HasEndOfDayArchive(context.Context, string) bool {
+func (c *schedulerCollector) HasEndOfDayArchive(context.Context, string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.hasEnd
+	return c.hasEnd, nil
 }
 
-func (c *schedulerCollector) HasStockKlineArchive(context.Context, string) bool {
+func (c *schedulerCollector) HasStockKlineArchive(context.Context, string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.hasKline
+	return c.hasKline, nil
 }
 
 func (c *schedulerCollector) CollectStockBoardRelations(context.Context, string) error {
@@ -123,8 +123,8 @@ func (c *schedulerCollector) CollectStockBoardRelations(context.Context, string)
 	return nil
 }
 
-func (c *schedulerCollector) HasStockBoardRelations(context.Context, string) bool {
-	return false
+func (c *schedulerCollector) HasStockBoardRelations(context.Context, string) (bool, error) {
+	return false, nil
 }
 
 func TestSchedulerUsesIndependentIntradayAndArchiveLanes(t *testing.T) {

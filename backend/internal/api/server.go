@@ -20,13 +20,14 @@ import (
 
 	"github.com/roiding/shadowflow/internal/focus"
 	"github.com/roiding/shadowflow/internal/graymarket"
+	"github.com/roiding/shadowflow/internal/quote"
 	"github.com/roiding/shadowflow/internal/repository"
 	"github.com/roiding/shadowflow/internal/tradingcalendar"
 )
 
 type Server struct {
 	store    repository.Store
-	quotes   StockQuoteSource
+	quotes   QuoteSnapshotSource
 	calendar *tradingcalendar.Calendar
 	logger   *slog.Logger
 	location *time.Location
@@ -35,12 +36,16 @@ type Server struct {
 }
 
 type Options struct {
-	StaticDir   string
-	QuoteSource StockQuoteSource
+	StaticDir           string
+	QuoteSource         QuoteSnapshotSource
+	APIToken            string
+	NormalRatePerMinute int
+	ExportRatePerMinute int
+	ScanRatePerMinute   int
 }
 
-type StockQuoteSource interface {
-	FetchStockQuotes(context.Context, []graymarket.StockBoardRelation) ([]graymarket.StockQuote, error)
+type QuoteSnapshotSource interface {
+	Snapshot(graymarket.BoardType, string, []graymarket.StockBoardRelation) (quote.Snapshot, quote.Status)
 }
 
 type envelope struct {
@@ -63,33 +68,85 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 	if len(options) > 0 {
 		server.quotes = options[0].QuoteSource
 	}
+	normalLimit := 120
+	exportLimit := 10
+	scanLimit := 30
+	if len(options) > 0 {
+		if options[0].NormalRatePerMinute > 0 {
+			normalLimit = options[0].NormalRatePerMinute
+		}
+		if options[0].ExportRatePerMinute > 0 {
+			exportLimit = options[0].ExportRatePerMinute
+		}
+		if options[0].ScanRatePerMinute > 0 {
+			scanLimit = options[0].ScanRatePerMinute
+		}
+	}
+	normal := newRateLimiter(normalLimit)
+	export := newRateLimiter(exportLimit)
+	scan := newRateLimiter(scanLimit)
+	limitByPath := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			limiter := normal
+			switch {
+			case strings.HasPrefix(r.URL.Path, "/api/v1/research/") && strings.HasSuffix(r.URL.Path, "/export"):
+				limiter = export
+			case r.URL.Path == "/api/v1/focus/scan":
+				limiter = scan
+			}
+			if !limiter.allow(clientIP(r)) {
+				w.Header().Set("Retry-After", "1")
+				writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	timeoutByPath := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			timeout := 20 * time.Second
+			switch {
+			case strings.HasPrefix(r.URL.Path, "/api/v1/research/") && strings.HasSuffix(r.URL.Path, "/export"):
+				timeout = 120 * time.Second
+			case r.URL.Path == "/api/v1/focus/scan":
+				timeout = 30 * time.Second
+			}
+			requestTimeout(timeout)(next).ServeHTTP(w, r)
+		})
+	}
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID, middleware.RealIP, middleware.Recoverer, middleware.Compress(5))
 	router.Get("/health/live", server.live)
 	router.Get("/health/ready", server.ready)
-	router.Get("/metrics", server.metrics)
-	router.Route("/api/v1", func(r chi.Router) {
-		r.Get("/ranks/latest", server.latestRank)
-		r.Get("/ranks", server.rankAt)
-		r.Get("/ranks/daily-close", server.dailyClose)
-		r.Get("/trading-days", server.tradingDays)
-		r.Get("/boards/{type}/{code}/intraday", server.intraday)
-		r.Get("/boards/{type}/{code}/trend", server.trend)
-		r.Get("/boards/{type}/{code}/stocks", server.boardStocks)
-		r.Get("/boards/{type}/{code}/quotes", server.boardQuotes)
-		r.Get("/stocks/{code}/boards", server.stockBoards)
-		r.Get("/stocks/{code}/research-5m", server.stockResearch)
-		r.Get("/relations/changes", server.relationChanges)
-		r.Get("/research/export", server.exportResearch)
-		r.Get("/research/daily-close/export", server.exportDailyClose)
-		r.Get("/research/quality", server.quality)
-		r.Get("/research/revisions", server.archiveRevisions)
-		r.Get("/research/features", server.dailyFeatures)
-		r.Get("/research/labels", server.futureLabels)
-		r.Get("/collection-runs", server.collectionRuns)
-		r.Get("/focus/three-day", server.threeDayFocus)
-		r.Post("/focus/scan", server.focusScan)
-		r.Get("/system/status", server.status)
+	router.Group(func(authed chi.Router) {
+		if len(options) > 0 && options[0].APIToken != "" {
+			authed.Use(bearerMiddleware(options[0].APIToken))
+		}
+		authed.Get("/metrics", server.metrics)
+		authed.Route("/api/v1", func(r chi.Router) {
+			r.Use(limitByPath, timeoutByPath)
+			r.Get("/ranks/latest", server.latestRank)
+			r.Get("/ranks", server.rankAt)
+			r.Get("/ranks/daily-close", server.dailyClose)
+			r.Get("/trading-days", server.tradingDays)
+			r.Get("/boards/{type}/{code}/intraday", server.intraday)
+			r.Get("/boards/{type}/{code}/trend", server.trend)
+			r.Get("/boards/{type}/{code}/stocks", server.boardStocks)
+			r.Get("/boards/{type}/{code}/quotes", server.boardQuotes)
+			r.Get("/stocks/{code}/boards", server.stockBoards)
+			r.Get("/stocks/{code}/research-5m", server.stockResearch)
+			r.Get("/relations/changes", server.relationChanges)
+			r.Get("/research/export", server.exportResearch)
+			r.Get("/research/daily-close/export", server.exportDailyClose)
+			r.Get("/research/quality", server.quality)
+			r.Get("/research/revisions", server.archiveRevisions)
+			r.Get("/research/features", server.dailyFeatures)
+			r.Get("/research/labels", server.futureLabels)
+			r.Get("/collection-runs", server.collectionRuns)
+			r.Get("/focus/three-day", server.threeDayFocus)
+			r.Post("/focus/scan", server.focusScan)
+			r.Get("/system/status", server.status)
+		})
 	})
 	if len(options) > 0 && options[0].StaticDir != "" {
 		mountStatic(router, options[0].StaticDir)
@@ -230,6 +287,8 @@ type boardStockQuote struct {
 	BoardType         graymarket.BoardType `json:"board_type"`
 	SourceOrder       int                  `json:"source_order"`
 	EffectiveDate     string               `json:"effective_date,omitempty"`
+	RelationSource    string               `json:"relation_source"`
+	RelationScope     string               `json:"relation_scope"`
 	LatestPrice       float64              `json:"latest_price"`
 	OpenPrice         float64              `json:"open_price"`
 	HighPrice         float64              `json:"high_price"`
@@ -287,21 +346,27 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 	quotes := make(map[string]graymarket.StockQuote, len(relations))
 	meta := map[string]any{
 		"as_of": asOf, "board_type": boardType, "board_code": boardCode,
-		"quote_source": "unavailable", "quote_available": false,
+		"quote_source": "unavailable", "quote_available": false, "quote_status": "unavailable", "stale": false,
 		"dark_data_available": len(darkRecords) > 0, "dark_data_count": len(darkRecords),
 	}
 	if s.quotes != nil && len(relations) > 0 {
-		latest, quoteErr := s.quotes.FetchStockQuotes(r.Context(), relations)
-		if quoteErr != nil {
-			meta["quote_error"] = quoteErr.Error()
-		} else {
-			availableCount := 0
-			for _, quote := range latest {
-				quotes[quote.StockCode] = quote
-				if quote.Available {
-					availableCount++
-				}
+		snapshot, status := s.quotes.Snapshot(boardType, boardCode, relations)
+		availableCount := 0
+		for _, latest := range snapshot.Quotes {
+			quotes[latest.StockCode] = latest
+			if latest.Available {
+				availableCount++
 			}
+		}
+		meta["quote_status"] = string(status)
+		meta["stale"] = status == quote.StatusStale
+		if !snapshot.FetchedAt.IsZero() {
+			meta["cache_age_ms"] = time.Since(snapshot.FetchedAt).Milliseconds()
+		}
+		if snapshot.Error != "" {
+			meta["quote_error"] = snapshot.Error
+			meta["quote_source"] = "eastmoney"
+		} else if len(snapshot.Quotes) > 0 {
 			meta["quote_source"] = "eastmoney"
 			meta["quote_available"] = availableCount > 0
 			meta["quoted_count"] = availableCount
@@ -325,6 +390,7 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 			StockCode: relation.StockCode, StockMarket: relation.StockMarket, StockName: relation.StockName,
 			BoardCode: relation.BoardCode, BoardName: relation.BoardName, BoardType: relation.BoardType,
 			SourceOrder: relation.SourceOrder, EffectiveDate: relation.EffectiveDate,
+			RelationSource: relation.RelationSource, RelationScope: relation.RelationScope,
 			LatestPrice: quote.LatestPrice, OpenPrice: openPrice, HighPrice: highPrice, LowPrice: lowPrice, PreviousClose: previousClose,
 			ChangePct: quote.ChangePct, ChangeValue: quote.ChangeValue, Volume: quote.Volume, Turnover: turnover,
 			TurnoverRate: turnoverRate, Amplitude: amplitude, QuoteTime: quote.QuoteTime, FetchedAt: quote.FetchedAt,

@@ -12,6 +12,7 @@ import (
 	"github.com/roiding/shadowflow/internal/collector"
 	"github.com/roiding/shadowflow/internal/config"
 	"github.com/roiding/shadowflow/internal/datasource/eastmoney"
+	"github.com/roiding/shadowflow/internal/datasource/upstream"
 	"github.com/roiding/shadowflow/internal/repository/sqlite"
 )
 
@@ -42,14 +43,20 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	store, err := sqlite.Open(cfg.DatabasePath)
+	store, err := sqlite.OpenWithReadConns(cfg.DatabasePath, cfg.SQLiteReadConns)
 	if err != nil {
 		fatal(err)
 	}
 	defer store.Close()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	client := eastmoney.NewClient(cfg.UpstreamBaseURL, &http.Client{Timeout: cfg.RequestTimeout}, cfg.PageSize).
-		WithQuoteBaseURLs(cfg.QuoteBaseURLs)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = cfg.UpstreamMaxConcurrency * 4
+	transport.MaxIdleConnsPerHost = cfg.UpstreamMaxConcurrency
+	client := eastmoney.NewClient(cfg.UpstreamBaseURL, &http.Client{Transport: transport, Timeout: cfg.RequestTimeout}, cfg.PageSize).
+		WithQuoteBaseURLs(cfg.QuoteBaseURLs).
+		WithUpstreamGuard(upstream.New(&http.Client{Transport: transport, Timeout: cfg.RequestTimeout}, upstream.Options{
+			MaxConcurrency: cfg.UpstreamMaxConcurrency, RatePerSecond: cfg.UpstreamRatePerSecond,
+		}))
 	service := collector.New(client, store, logger)
 	timeout := 10 * time.Minute
 	// A full industry/concept relationship scan visits roughly a thousand

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/roiding/shadowflow/internal/graymarket"
+	"github.com/roiding/shadowflow/internal/quote"
 	"github.com/roiding/shadowflow/internal/repository"
 	"github.com/roiding/shadowflow/internal/repository/sqlite"
 	"github.com/roiding/shadowflow/internal/tradingcalendar"
@@ -41,8 +42,8 @@ type staticQuoteSource struct {
 	quotes []graymarket.StockQuote
 }
 
-func (source staticQuoteSource) FetchStockQuotes(context.Context, []graymarket.StockBoardRelation) ([]graymarket.StockQuote, error) {
-	return source.quotes, nil
+func (source staticQuoteSource) Snapshot(graymarket.BoardType, string, []graymarket.StockBoardRelation) (quote.Snapshot, quote.Status) {
+	return quote.Snapshot{Quotes: source.quotes, FetchedAt: time.Now().UTC()}, quote.StatusReady
 }
 
 func TestRelationAPIsReconstructAsOfDate(t *testing.T) {

@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,16 +36,32 @@ func quoteAvailableRecords(records []graymarket.RankRecord) []graymarket.RankRec
 }
 
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	reader *sql.DB
 }
 
 func Open(path string) (*Store, error) {
+	return OpenWithReadConns(path, 4)
+}
+
+func OpenWithReadConns(path string, readConns int) (*Store, error) {
+	if readConns <= 0 {
+		readConns = 4
+	}
+	if readConns > 32 {
+		readConns = 32
+	}
 	if path != ":memory:" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return nil, fmt.Errorf("create database directory: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	writerDSN := path
+	if path != ":memory:" {
+		writerDSN = sqliteDSN(path, "_pragma=busy_timeout(30000)", "_pragma=foreign_keys(ON)",
+			"_pragma=synchronous(NORMAL)", "_pragma=journal_mode(WAL)")
+	}
+	db, err := sql.Open("sqlite", writerDSN)
 	if err != nil {
 		return nil, err
 	}
@@ -56,6 +75,23 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate database: %w", err)
+	}
+	if path == ":memory:" {
+		store.reader = db
+	} else {
+		reader, readerErr := sql.Open("sqlite", sqliteDSN(path, "_pragma=busy_timeout(5000)", "_pragma=foreign_keys(ON)", "_pragma=query_only(ON)"))
+		if readerErr != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("open sqlite reader: %w", readerErr)
+		}
+		reader.SetMaxOpenConns(readConns)
+		reader.SetMaxIdleConns(readConns)
+		if err := configureReaderSQLite(reader); err != nil {
+			_ = reader.Close()
+			_ = db.Close()
+			return nil, fmt.Errorf("configure sqlite reader: %w", err)
+		}
+		store.reader = reader
 	}
 	if err := migrateDailyQuoteColumns(db); err != nil {
 		_ = db.Close()
@@ -104,6 +140,11 @@ func Open(path string) (*Store, error) {
 	if err := migrateAnalytics(store); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate analytics: %w", err)
+	}
+	if err := recordSchemaMigration(store); err != nil {
+		_ = readerClose(store)
+		_ = db.Close()
+		return nil, fmt.Errorf("record schema migration: %w", err)
 	}
 	if _, err := db.Exec(`UPDATE collection_run
 SET status='failed', finished_at=COALESCE(finished_at, ?), error_code='interrupted',
@@ -289,7 +330,34 @@ updated_at=?`, now); err != nil {
 	return tx.Commit()
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func readerClose(store *Store) error {
+	if store.reader != nil && store.reader != store.db {
+		return store.reader.Close()
+	}
+	return nil
+}
+
+func recordSchemaMigration(store *Store) error {
+	started := time.Now()
+	_, err := store.db.Exec(`INSERT INTO schema_migration(version,applied_at,duration_ms,checksum)
+VALUES (1,?,?,?)
+ON CONFLICT(version) DO UPDATE SET checksum=excluded.checksum`,
+		time.Now().UTC().Format(timestampLayout), time.Since(started).Milliseconds(), fmt.Sprintf("%x", sha256.Sum256([]byte(schema))))
+	return err
+}
+
+func (s *Store) Close() error {
+	var closeErr error
+	if s.reader != nil && s.reader != s.db {
+		if err := s.reader.Close(); err != nil {
+			closeErr = err
+		}
+	}
+	if err := s.db.Close(); err != nil {
+		closeErr = errors.Join(closeErr, err)
+	}
+	return closeErr
+}
 
 func migrateStockArchiveQuality(db *sql.DB) error {
 	for _, statement := range []string{
@@ -1247,4 +1315,30 @@ func decompress(body []byte) ([]byte, error) {
 	}
 	defer reader.Close()
 	return io.ReadAll(reader)
+}
+
+func (s *Store) writeDB() *sql.DB { return s.db }
+
+func (s *Store) readDB() *sql.DB {
+	if s.reader != nil {
+		return s.reader
+	}
+	return s.db
+}
+
+func sqliteDSN(path string, pragmas ...string) string {
+	return (&url.URL{Scheme: "file", Path: path, RawQuery: strings.Join(pragmas, "&")}).String()
+}
+
+func configureReaderSQLite(db *sql.DB) error {
+	for _, statement := range []string{
+		`PRAGMA busy_timeout=5000`,
+		`PRAGMA foreign_keys=ON`,
+		`PRAGMA query_only=ON`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }

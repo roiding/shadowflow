@@ -218,7 +218,7 @@ func (s *Store) RebuildAnalytics(ctx context.Context, revisionID string) error {
 
 func (s *Store) DailyFeatures(ctx context.Context, tradeDate, revisionID string, rankType graymarket.RankType) ([]repository.DailyFeature, repository.DailyFeatureSet, error) {
 	if revisionID == "" {
-		if err := s.db.QueryRowContext(ctx, `SELECT revision_id FROM daily_archive_current WHERE trade_date=?`, tradeDate).Scan(&revisionID); err != nil {
+		if err := s.readDB().QueryRowContext(ctx, `SELECT revision_id FROM daily_archive_current WHERE trade_date=?`, tradeDate).Scan(&revisionID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return []repository.DailyFeature{}, repository.DailyFeatureSet{}, nil
 			}
@@ -227,7 +227,7 @@ func (s *Store) DailyFeatures(ctx context.Context, tradeDate, revisionID string,
 	}
 	var set repository.DailyFeatureSet
 	var sourceJSON, generatedAt string
-	err := s.db.QueryRowContext(ctx, `SELECT revision_id,trade_date,feature_version,
+	err := s.readDB().QueryRowContext(ctx, `SELECT revision_id,trade_date,feature_version,
 source_revisions_json,generated_at FROM daily_feature_set WHERE revision_id=?`, revisionID).
 		Scan(&set.RevisionID, &set.TradeDate, &set.FeatureVersion, &sourceJSON, &generatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -249,7 +249,7 @@ source_revisions_json,generated_at FROM daily_feature_set WHERE revision_id=?`, 
 		where += " AND rank_type=?"
 		args = append(args, string(rankType))
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT revision_id,trade_date,rank_type,market,code,name,
+	rows, err := s.readDB().QueryContext(ctx, `SELECT revision_id,trade_date,rank_type,market,code,name,
 primary_industry_code,signed_dark_activity,capital_intensity,control_coefficient,
 rank_percentile,turnover_percentile,dark_money_percentile,self_turnover_percentile_5,
 self_turnover_percentile_10,self_turnover_percentile_20,self_turnover_percentile_60,
@@ -299,7 +299,7 @@ FROM daily_feature WHERE `+where+` ORDER BY rank_type,code`, args...)
 
 func (s *Store) FutureReturnLabels(ctx context.Context, tradeDate, revisionID, targetRevisionID string, horizon int) ([]repository.FutureReturnLabel, error) {
 	if revisionID == "" {
-		if err := s.db.QueryRowContext(ctx, `SELECT revision_id FROM daily_archive_current WHERE trade_date=?`, tradeDate).Scan(&revisionID); err != nil {
+		if err := s.readDB().QueryRowContext(ctx, `SELECT revision_id FROM daily_archive_current WHERE trade_date=?`, tradeDate).Scan(&revisionID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return []repository.FutureReturnLabel{}, nil
 			}
@@ -320,7 +320,7 @@ func (s *Store) FutureReturnLabels(ctx context.Context, tradeDate, revisionID, t
 		where += " AND label.target_revision_id=?"
 		args = append(args, targetRevisionID)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT label.signal_revision_id,label.target_revision_id,
+	rows, err := s.readDB().QueryContext(ctx, `SELECT label.signal_revision_id,label.target_revision_id,
 label.signal_date,label.target_date,label.horizon,label.rank_type,label.market,label.code,
 label.return_rate,label.relative_industry_return,label.max_favorable_return,
 label.max_adverse_return,label.label_version,label.generated_at

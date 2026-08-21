@@ -200,7 +200,7 @@ func (c *Client) fetchStockKline(ctx context.Context, tradeDate string, stock gr
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "Mozilla/5.0 ShadowFlow/0.1")
 	request.Header.Set("Referer", "https://quote.eastmoney.com/")
-	response, err := c.httpClient.Do(request)
+	response, err := c.guard.Do(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -281,7 +281,7 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "Mozilla/5.0 ShadowFlow/0.1")
 	request.Header.Set("Referer", "https://quote.eastmoney.com/")
-	response, err := c.httpClient.Do(request)
+	response, err := c.guard.Do(ctx, request)
 	if err != nil {
 		return nil, err
 	}

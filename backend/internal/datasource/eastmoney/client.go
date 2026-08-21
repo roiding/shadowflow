@@ -18,6 +18,7 @@ import (
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 
+	"github.com/roiding/shadowflow/internal/datasource/upstream"
 	"github.com/roiding/shadowflow/internal/graymarket"
 )
 
@@ -28,6 +29,7 @@ type Client struct {
 	stockTrendBaseURLs   []string
 	quoteBaseURLs        []string
 	httpClient           *http.Client
+	guard                *upstream.Guard
 	pageSize             int
 	stockKlineRetryGap   time.Duration
 	stockKlineFailures   atomic.Int32
@@ -46,9 +48,17 @@ func NewClient(baseURL string, httpClient *http.Client, pageSize int) *Client {
 		},
 		quoteBaseURLs:      []string{"https://push2.eastmoney.com", "https://push2delay.eastmoney.com"},
 		httpClient:         httpClient,
+		guard:              upstream.New(httpClient, upstream.Options{}),
 		pageSize:           pageSize,
 		stockKlineRetryGap: time.Second,
 	}
+}
+
+func (c *Client) WithUpstreamGuard(guard *upstream.Guard) *Client {
+	if guard != nil {
+		c.guard = guard
+	}
+	return c
 }
 
 func (c *Client) WithStockKlineBaseURL(baseURL string) *Client {
@@ -176,7 +186,7 @@ func (c *Client) fetchPage(ctx context.Context, rankType graymarket.RankType, da
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "shadowflow/0.1")
 
-	response, err := c.httpClient.Do(request)
+	response, err := c.guard.Do(ctx, request)
 	if err != nil {
 		return apiResponse{}, graymarket.RawPage{}, fmt.Errorf("request page %d: %w", page, err)
 	}

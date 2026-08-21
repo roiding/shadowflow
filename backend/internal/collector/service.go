@@ -281,24 +281,12 @@ func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error
 	return finish(nil)
 }
 
-func (s *Service) HasStockKlineArchive(ctx context.Context, tradeDate string) bool {
-	exists, err := s.store.HasStockKlineArchive(ctx, tradeDate)
-	if err != nil {
-		s.logger.Error("check stock kline archive", "trade_date", tradeDate, "error", err)
-		return false
-	}
-	return exists
+func (s *Service) HasStockKlineArchive(ctx context.Context, tradeDate string) (bool, error) {
+	return s.store.HasStockKlineArchive(ctx, tradeDate)
 }
-
-func (s *Service) HasEndOfDayArchive(ctx context.Context, tradeDate string) bool {
-	exists, err := s.store.HasEndOfDayArchive(ctx, tradeDate)
-	if err != nil {
-		s.logger.Error("check end-of-day archive status", "trade_date", tradeDate, "error", err)
-		return false
-	}
-	return exists
+func (s *Service) HasEndOfDayArchive(ctx context.Context, tradeDate string) (bool, error) {
+	return s.store.HasEndOfDayArchive(ctx, tradeDate)
 }
-
 func (s *Service) CleanupArchivedIntraday(ctx context.Context, beforeDate string) error {
 	return s.store.CleanupArchivedIntraday(ctx, beforeDate)
 }

@@ -170,6 +170,7 @@ type MaintenanceResult struct {
 	FailedRunsDeleted     int       `json:"failed_runs_deleted"`
 	TransientRawDeleted   int       `json:"transient_raw_deleted"`
 	RelationRunsDeleted   int       `json:"relation_runs_deleted"`
+	ScheduledJobsDeleted  int       `json:"scheduled_jobs_deleted"`
 	WALBusy               int       `json:"wal_busy"`
 	WALLogFrames          int       `json:"wal_log_frames"`
 	WALCheckpointedFrames int       `json:"wal_checkpointed_frames"`

@@ -272,7 +272,7 @@ added_count=?,removed_count=?,baseline_built=?,finished_at=?,duration_ms=?,error
 
 func (s *Store) HasSuccessfulRelationSync(ctx context.Context, tradeDate string) (bool, error) {
 	var exists int
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM relation_sync_run
+	err := s.readDB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM relation_sync_run
 WHERE trade_date=? AND status='success')`, tradeDate).Scan(&exists)
 	return exists == 1, err
 }
@@ -335,7 +335,7 @@ FROM latest WHERE event_rank=1 AND change_type='added' ORDER BY ` + orderBy
 	args = append(args, filterArgs...)
 	args = append(args, asOf)
 	args = append(args, filterArgs...)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +349,7 @@ func (s *Store) RelationChanges(ctx context.Context, tradeDate string, boardType
 		where += " AND board_type=?"
 		args = append(args, string(boardType))
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT stock_code,stock_market,stock_name,board_code,board_name,
+	rows, err := s.readDB().QueryContext(ctx, `SELECT stock_code,stock_market,stock_name,board_code,board_name,
 board_type,source_order,relation_source,relation_scope,effective_date,detected_at,raw_data,change_type,run_id
 FROM stock_board_relation_change WHERE `+where+` ORDER BY change_type,board_type,board_code,stock_code`, args...)
 	if err != nil {

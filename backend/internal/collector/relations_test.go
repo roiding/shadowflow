@@ -55,7 +55,7 @@ func TestCollectStockBoardRelationsBuildsBaselineAndChanges(t *testing.T) {
 	if err := service.CollectStockBoardRelations(ctx, "2026-08-13"); err != nil {
 		t.Fatal(err)
 	}
-	if !service.HasStockBoardRelations(ctx, "2026-08-13") {
+	if exists, err := service.HasStockBoardRelations(ctx, "2026-08-13"); err != nil || !exists {
 		t.Fatal("successful relation sync was not recorded")
 	}
 	relations, err := store.StockBoardRelations(ctx, "000001", "2026-08-13")
@@ -85,7 +85,7 @@ func TestCollectStockBoardRelationsDoesNotApplyPartialScan(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected relation sync failure")
 	}
-	if service.HasStockBoardRelations(context.Background(), "2026-08-14") {
+	if exists, err := service.HasStockBoardRelations(context.Background(), "2026-08-14"); err != nil || exists {
 		t.Fatal("failed relation sync was marked successful")
 	}
 }

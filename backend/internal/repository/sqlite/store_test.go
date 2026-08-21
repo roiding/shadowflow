@@ -1325,3 +1325,18 @@ func TestLatestRankUsesOneCompleteWorkSnapshot(t *testing.T) {
 		t.Fatalf("latest rank mixed dates or selected stale work data: records=%+v err=%v", result, err)
 	}
 }
+
+func TestFileReaderPoolUsesPerConnectionQueryOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "暗盘", "shadowflow.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.readDB().QueryRow("SELECT 1").Scan(new(int)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.readDB().QueryRow("CREATE TABLE should_fail(id)").Err; err == nil {
+		t.Fatal("reader pool unexpectedly permits writes")
+	}
+}

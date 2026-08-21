@@ -74,16 +74,11 @@ func (s *Service) CollectStockBoardRelations(ctx context.Context, tradeDate stri
 	return nil
 }
 
-func (s *Service) HasStockBoardRelations(ctx context.Context, tradeDate string) bool {
+func (s *Service) HasStockBoardRelations(ctx context.Context, tradeDate string) (bool, error) {
 	if s.relationStore == nil {
-		return false
+		return false, nil
 	}
-	exists, err := s.relationStore.HasSuccessfulRelationSync(ctx, tradeDate)
-	if err != nil {
-		s.logger.Error("check stock-board relation sync", "trade_date", tradeDate, "error", err)
-		return false
-	}
-	return exists
+	return s.relationStore.HasSuccessfulRelationSync(ctx, tradeDate)
 }
 
 func (s *Service) fetchBoardCatalog(ctx context.Context, boardType graymarket.BoardType) ([]graymarket.Board, error) {

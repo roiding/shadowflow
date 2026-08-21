@@ -136,7 +136,7 @@ func (c *Client) fetchMoney5mOnce(ctx context.Context, tradeDate string, board g
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "shadowflow/0.1")
-	response, err := c.httpClient.Do(request)
+	response, err := c.guard.Do(ctx, request)
 	if err != nil {
 		return nil, err
 	}
