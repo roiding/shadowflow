@@ -34,7 +34,16 @@ cd ../backend
 SHADOWFLOW_STATIC_DIR=../frontend/dist go run ./cmd/server
 ```
 
-访问 [http://localhost:8080](http://localhost:8080)。API 规范见 [backend/openapi.yaml](backend/openapi.yaml)，Prometheus 指标位于 `/metrics`。
+访问 [http://127.0.0.1:8080](http://127.0.0.1:8080)。服务默认只绑定本机；未配置 Token 时本地 API 可直接访问。API 规范见 [backend/openapi.yaml](backend/openapi.yaml)，Prometheus 指标位于 `/metrics`。
+
+配置 `SHADOWFLOW_API_TOKEN` 后，除 `/health/live`、`/health/ready` 和静态页面外，`/api/v1/*` 与 `/metrics` 都需要：
+
+```bash
+curl -H "Authorization: Bearer $SHADOWFLOW_API_TOKEN" \
+  'http://127.0.0.1:8080/api/v1/ranks/latest?type=industry'
+```
+
+前端会在收到 401 时显示 Token Gate；Token 只保存在当前浏览器标签页的 `sessionStorage`。导出链接会通过带 Token 的前端请求下载，不应把 Token 拼进 URL。
 
 日终数据接口：
 
@@ -84,6 +93,7 @@ echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 mkdir -p /mnt/ssd/shadowflow/data /mnt/ssd/shadowflow/backups
 export SHADOWFLOW_DATA_DIR=/mnt/ssd/shadowflow/data
 export SHADOWFLOW_BACKUP_DIR=/mnt/ssd/shadowflow/backups
+export SHADOWFLOW_API_TOKEN="$(openssl rand -hex 32)"
 export SHADOWFLOW_IMAGE=ghcr.io/roiding/shadowflow:v0.1.0
 docker compose pull
 docker compose up -d
@@ -109,6 +119,13 @@ GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go 测
 | `SHADOWFLOW_SCHEDULER_ENABLED` | `true` | 是否运行盘中和盘后采集调度；健康检查或只读 API 模式可设为 `false` |
 | `SHADOWFLOW_SUCCESS_RUN_RETENTION_DAYS` | `30` | 成功/跳过的采集运行记录保留天数 |
 | `SHADOWFLOW_FAILURE_RUN_RETENTION_DAYS` | `180` | 失败/部分成功的采集运行记录保留天数，必须不少于成功记录保留天数 |
+| `SHADOWFLOW_API_TOKEN` | 本地默认为空 | `/api/v1/*` 和 `/metrics` 的 Bearer Token；非回环监听必须配置至少 16 个字符 |
+| `SHADOWFLOW_RATE_LIMIT_PER_MINUTE` | `120` | 普通接口按客户端 IP 限流 |
+| `SHADOWFLOW_EXPORT_RATE_LIMIT_PER_MINUTE` | `10` | CSV 导出接口限流 |
+| `SHADOWFLOW_SCAN_RATE_LIMIT_PER_MINUTE` | `30` | 动态筛选扫描限流 |
+| `SHADOWFLOW_UPSTREAM_MAX_CONCURRENCY` | `4` | 东方财富请求全局并发上限 |
+| `SHADOWFLOW_UPSTREAM_RATE_PER_SECOND` | `8` | 东方财富请求全局速率上限 |
+| `SHADOWFLOW_SQLITE_READ_CONNS` | `4` | SQLite 只读连接池大小；写入连接固定为 1 |
 
 `backend/config/trading_calendar.json` 已内置 2026 年 A 股休市日期和 `valid_through`。服务每天检查覆盖期，距离到期不足阈值时读取交易所年度休市安排；只有年度标题、日期范围和最少假日数全部校验通过才原子替换，失败时保留旧文件。覆盖状态同时出现在 `/api/v1/system/status` 和 Prometheus 指标中。
 
@@ -120,7 +137,14 @@ GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go 测
 docker exec shadowflow /app/scripts/backup.sh
 ```
 
-默认保留 30 天，可通过 `SHADOWFLOW_BACKUP_RETENTION_DAYS` 调整。恢复时先停止服务，再运行：
+备份会执行 `integrity_check`、gzip 校验，生成 SHA-256 sidecar 和关键表计数 metadata。默认保留 30 天，可通过 `SHADOWFLOW_BACKUP_RETENTION_DAYS` 调整。恢复前可先做不落库验证：
+
+```bash
+docker compose run --rm --entrypoint /app/scripts/restore.sh shadowflow \
+  /backups/shadowflow-YYYYMMDD-HHMMSS.db.gz --dry-run
+```
+
+恢复时先停止服务，再运行：
 
 ```bash
 docker compose stop shadowflow
@@ -151,7 +175,7 @@ docker compose run --rm --entrypoint /app/collect shadowflow -task relations -da
 
 `end-of-day` 在 `16:00` 执行，失败时于 `16:05`、`16:10` 补试，原子写入行业、概念、个股各自的完整日终榜和 48 个盘后修订资金点。`stock-kline` 在 `16:15` 执行，并于 `17:30`、`20:00` 补试，保存有成交个股的 48 根未复权五分钟 K。五分钟接口不可用时，会从同源 `trends2` 取得当日 241 根一分钟 OHLC，按 `09:35-11:30`、`13:05-15:00` 聚合为 48 根并与日 K 的 OHLC 交叉校验；分钟量额保留原值，不与可能包含 `15:00-15:30` 盘后交易的日终截面强制一致，241 根源数据也不长期保存。K 线任务以当日已归档日终个股截面为候选源，每只股票只有完整 48 根才会在事务中落库；整批允许部分成功，后续运行只补当日缺失股票。历史日没有当日主归档时不依赖事后猜测，系统以每日实际采集为准。`cleanup` 每天 `09:00` 检查上一交易日：两类板块资金与日终、个股资金、五分钟 K、完整日终榜和日 K 任一不完整，都不会删除盘中工作数据。
 
-服务启动时会在开盘前、收盘后或非交易日检查最近可安全补采的交易日；若日终归档或个股五分钟 K 不完整，会自动按顺序补采。盘中采集、关系同步和盘后归档使用独立调度通道，关系扫描变慢不会阻塞分钟采集。每天 `09:05` 维护任务会按保留策略清理运行日志、回收旧的临时原始响应、执行被动 WAL checkpoint，并按约 30 天周期运行 `PRAGMA optimize`。`/api/v1/research/quality` 的 `meta.archive_manifest` 提供统一的每日归档清单、代码集合摘要、来源契约和校验错误。
+调度实例持久化在 SQLite `scheduled_job` 表中，使用原子 claim 和 lease 防止进程重启后重复执行；失败任务按类型保留重试预算，过期 lease 会自动回到队列。启动时会回补当日已错过且可安全重放的非分钟级任务。盘中采集、关系同步和盘后归档使用独立调度通道，关系扫描变慢不会阻塞分钟采集。每天 `09:05` 维护任务会按保留策略清理运行日志、调度任务、回收旧的临时原始响应、执行被动 WAL checkpoint，并按约 30 天周期运行 `PRAGMA optimize`。`/api/v1/research/quality` 的 `meta.archive_manifest` 提供统一的每日归档清单、代码集合摘要、来源契约和校验错误。
 
 ## 归档完整性和分析数据
 
@@ -191,10 +215,10 @@ python3 scripts/export_research.py \
 ## 验证
 
 ```bash
-cd backend && go test ./...
-cd ../frontend && npm run build
-curl http://localhost:8080/health/ready
-curl http://localhost:8080/metrics
+cd backend && go test ./... && go vet ./...
+cd ../frontend && npm run lint && npm test && npm run build
+curl http://127.0.0.1:8080/health/ready
+curl -H "Authorization: Bearer $SHADOWFLOW_API_TOKEN" http://127.0.0.1:8080/metrics
 ```
 
 完整业务口径和实施阶段见 [项目规划.md](项目规划.md)。

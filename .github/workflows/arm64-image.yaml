@@ -127,9 +127,11 @@ jobs:
           set -euo pipefail
           image="shadowflow-smoke:${GITHUB_SHA}"
           test "$(docker image inspect "$image" --format '{{.Architecture}}')" = "arm64"
+          api_token="ci-smoke-$(openssl rand -hex 16)"
           container_id="$(docker run --detach --rm --platform linux/arm64 \
             --publish 127.0.0.1:18080:8080 \
             --env SHADOWFLOW_SCHEDULER_ENABLED=false \
+            --env SHADOWFLOW_API_TOKEN="$api_token" \
             "$image")"
           cleanup() {
             docker logs "$container_id" || true
@@ -150,6 +152,18 @@ jobs:
             --output /tmp/shadowflow-health.json \
             http://127.0.0.1:18080/health/ready
           grep --quiet '"status":"ready"' /tmp/shadowflow-health.json
+          if curl --silent --show-error \
+            http://127.0.0.1:18080/api/v1/system/status | grep --quiet 'unauthorized'; then
+            :
+          else
+            echo "API authorization smoke test failed" >&2
+            exit 1
+          fi
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer $api_token" \
+            --output /tmp/shadowflow-status.json \
+            http://127.0.0.1:18080/api/v1/system/status
+          grep --quiet '"server_time"' /tmp/shadowflow-status.json
           curl --fail --silent --show-error \
             --output /tmp/shadowflow-index.html \
             http://127.0.0.1:18080/

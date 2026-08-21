@@ -32,10 +32,10 @@ COPY --from=frontend-build /src/frontend/dist /app/web
 COPY backend/config/trading_calendar.json /app/config/trading_calendar.json
 COPY scripts /app/scripts
 ENV TZ=Asia/Shanghai \
-    SHADOWFLOW_LISTEN_ADDR=:8080 \
     SHADOWFLOW_DATABASE_PATH=/data/shadowflow.db \
     SHADOWFLOW_CALENDAR_PATH=/app/config/trading_calendar.json \
-    SHADOWFLOW_STATIC_DIR=/app/web
+    SHADOWFLOW_STATIC_DIR=/app/web \
+    SHADOWFLOW_LISTEN_ADDR=0.0.0.0:8080
 EXPOSE 8080
 VOLUME ["/data", "/backups"]
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD wget -q -O /dev/null http://127.0.0.1:8080/health/ready || exit 1
