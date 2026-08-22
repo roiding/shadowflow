@@ -81,7 +81,6 @@ func TestLoadCalendarUpdateDefaultsAndValidation(t *testing.T) {
 }
 
 func TestLoadPropagatesSecurityAndConcurrencyOptions(t *testing.T) {
-	t.Setenv("SHADOWFLOW_AUTH_ENABLED", "true")
 	t.Setenv("SHADOWFLOW_API_TOKEN", " 0123456789abcdef ")
 	t.Setenv("SHADOWFLOW_RATE_LIMIT_PER_MINUTE", "321")
 	t.Setenv("SHADOWFLOW_EXPORT_RATE_LIMIT_PER_MINUTE", "17")
@@ -94,22 +93,21 @@ func TestLoadPropagatesSecurityAndConcurrencyOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.AuthEnabled || cfg.APIToken != "0123456789abcdef" || cfg.NormalRatePerMinute != 321 ||
+	if cfg.APIToken != "0123456789abcdef" || cfg.NormalRatePerMinute != 321 ||
 		cfg.ExportRatePerMinute != 17 || cfg.ScanRatePerMinute != 43 ||
 		cfg.UpstreamMaxConcurrency != 7 || cfg.UpstreamRatePerSecond != 12.5 || cfg.SQLiteReadConns != 9 {
 		t.Fatalf("security/concurrency options were not propagated: %+v", cfg)
 	}
 }
 
-func TestLoadDisablesAuthenticationByDefault(t *testing.T) {
-	t.Setenv("SHADOWFLOW_AUTH_ENABLED", "")
-	t.Setenv("SHADOWFLOW_API_TOKEN", "unused-token")
+func TestLoadAllowsEmptyTokenByDefault(t *testing.T) {
+	t.Setenv("SHADOWFLOW_API_TOKEN", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AuthEnabled {
-		t.Fatal("authentication should be disabled by default")
+	if cfg.APIToken != "" {
+		t.Fatalf("unexpected API token: %q", cfg.APIToken)
 	}
 }
 

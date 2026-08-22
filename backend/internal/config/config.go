@@ -23,7 +23,6 @@ type Config struct {
 	SchedulerEnabled        bool
 	SuccessRunRetentionDays int
 	FailureRunRetentionDays int
-	AuthEnabled             bool
 	APIToken                string
 	NormalRatePerMinute     int
 	ExportRatePerMinute     int
@@ -59,10 +58,6 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	failureRetentionDays, err := envInt("SHADOWFLOW_FAILURE_RUN_RETENTION_DAYS", 180)
-	if err != nil {
-		return Config{}, err
-	}
-	authEnabled, err := envBool("SHADOWFLOW_AUTH_ENABLED", false)
 	if err != nil {
 		return Config{}, err
 	}
@@ -124,7 +119,6 @@ func Load() (Config, error) {
 		SchedulerEnabled:        schedulerEnabled,
 		SuccessRunRetentionDays: successRetentionDays,
 		FailureRunRetentionDays: failureRetentionDays,
-		AuthEnabled:             authEnabled,
 		APIToken:                strings.TrimSpace(os.Getenv("SHADOWFLOW_API_TOKEN")),
 		NormalRatePerMinute:     normalRate,
 		ExportRatePerMinute:     exportRate,

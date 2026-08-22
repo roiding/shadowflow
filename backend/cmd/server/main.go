@@ -30,7 +30,7 @@ func main() {
 		logger.Error("load config", "error", err)
 		os.Exit(1)
 	}
-	if err := validateListenSecurity(cfg.ListenAddr, cfg.AuthEnabled, cfg.APIToken); err != nil {
+	if err := validateListenSecurity(cfg.ListenAddr, cfg.APIToken); err != nil {
 		logger.Error("invalid security configuration", "error", err)
 		os.Exit(1)
 	}
@@ -64,7 +64,7 @@ func main() {
 		logger.Error("create scheduler", "error", err)
 		os.Exit(1)
 	}
-	apiServer, err := api.New(store, calendar, logger, api.Options{StaticDir: cfg.StaticDir, QuoteSource: quote.NewCache(client, logger), AuthEnabled: cfg.AuthEnabled, APIToken: cfg.APIToken, NormalRatePerMinute: cfg.NormalRatePerMinute, ExportRatePerMinute: cfg.ExportRatePerMinute, ScanRatePerMinute: cfg.ScanRatePerMinute})
+	apiServer, err := api.New(store, calendar, logger, api.Options{StaticDir: cfg.StaticDir, QuoteSource: quote.NewCache(client, logger), APIToken: cfg.APIToken, NormalRatePerMinute: cfg.NormalRatePerMinute, ExportRatePerMinute: cfg.ExportRatePerMinute, ScanRatePerMinute: cfg.ScanRatePerMinute})
 	if err != nil {
 		logger.Error("create API", "error", err)
 		os.Exit(1)
@@ -133,7 +133,7 @@ func runCalendarUpdater(ctx context.Context, calendar *tradingcalendar.Calendar,
 	}
 }
 
-func validateListenSecurity(addr string, authEnabled bool, token string) error {
+func validateListenSecurity(addr, token string) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return fmt.Errorf("parse listen address: %w", err)
@@ -141,8 +141,11 @@ func validateListenSecurity(addr string, authEnabled bool, token string) error {
 	if host == "" {
 		return fmt.Errorf("listen host must be explicit; use 127.0.0.1 for local access")
 	}
-	if authEnabled && len(token) < 16 {
-		return fmt.Errorf("SHADOWFLOW_API_TOKEN must contain at least 16 characters when SHADOWFLOW_AUTH_ENABLED=true")
+	if token == "" {
+		return nil
+	}
+	if len(token) < 16 {
+		return fmt.Errorf("SHADOWFLOW_API_TOKEN must contain at least 16 characters when authentication is enabled")
 	}
 	return nil
 }

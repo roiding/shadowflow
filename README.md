@@ -36,7 +36,7 @@ SHADOWFLOW_STATIC_DIR=../frontend/dist go run ./cmd/server
 
 访问 [http://127.0.0.1:8080](http://127.0.0.1:8080)。服务默认只绑定本机；未配置 Token 时本地 API 可直接访问。API 规范见 [backend/openapi.yaml](backend/openapi.yaml)，Prometheus 指标位于 `/metrics`。
 
-鉴权默认关闭。需要开启时，同时设置 `SHADOWFLOW_AUTH_ENABLED=true` 和至少 16 个字符的 `SHADOWFLOW_API_TOKEN`；开启后，除 `/health/live`、`/health/ready` 和静态页面外，`/api/v1/*` 与 `/metrics` 都需要 Bearer Token：
+鉴权由 `SHADOWFLOW_API_TOKEN` 是否为空控制：为空时关闭，有值时开启。开启后，除 `/health/live`、`/health/ready` 和静态页面外，`/api/v1/*` 与 `/metrics` 都需要 Bearer Token。Token 至少 16 个字符：
 
 ```bash
 curl -H "Authorization: Bearer $SHADOWFLOW_API_TOKEN" \
@@ -102,7 +102,7 @@ GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go 测
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `SHADOWFLOW_DATABASE_PATH` | `/data/shadowflow.db` | SQLite 文件路径 |
+| `SHADOWFLOW_DATABASE_PATH` | `/data/shadowflow.db` | SQLite 文件路径，固定配置 |
 | `SHADOWFLOW_CALENDAR_PATH` | `/app/config/trading_calendar.json` | 本地交易日历 |
 | `SHADOWFLOW_CALENDAR_AUTO_UPDATE` | `true` | 覆盖期不足时是否从交易所年度休市安排自动刷新 |
 | `SHADOWFLOW_CALENDAR_SOURCE_URL` | 上交所年度休市安排页 | 自动更新来源 |
@@ -114,15 +114,9 @@ GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go 测
 | `SHADOWFLOW_SCHEDULER_ENABLED` | `true` | 是否运行盘中和盘后采集调度；健康检查或只读 API 模式可设为 `false` |
 | `SHADOWFLOW_SUCCESS_RUN_RETENTION_DAYS` | `30` | 成功/跳过的采集运行记录保留天数 |
 | `SHADOWFLOW_FAILURE_RUN_RETENTION_DAYS` | `180` | 失败/部分成功的采集运行记录保留天数，必须不少于成功记录保留天数 |
-| `SHADOWFLOW_AUTH_ENABLED` | `false` | 是否开启 `/api/v1/*` 和 `/metrics` 的 Bearer Token 鉴权 |
-| `SHADOWFLOW_API_TOKEN` | 空 | 鉴权开启时使用的 Bearer Token，至少 16 个字符；鉴权关闭时忽略 |
-| `SHADOWFLOW_RATE_LIMIT_PER_MINUTE` | `120` | 普通接口按客户端 IP 限流 |
-| `SHADOWFLOW_EXPORT_RATE_LIMIT_PER_MINUTE` | `10` | CSV 导出接口限流 |
-| `SHADOWFLOW_SCAN_RATE_LIMIT_PER_MINUTE` | `30` | 动态筛选扫描限流 |
-| `SHADOWFLOW_UPSTREAM_MAX_CONCURRENCY` | `4` | 东方财富请求全局并发上限 |
-| `SHADOWFLOW_UPSTREAM_RATE_PER_SECOND` | `8` | 东方财富请求全局速率上限 |
-| `SHADOWFLOW_SQLITE_READ_CONNS` | `4` | SQLite 只读连接池大小；写入连接固定为 1 |
-| `SHADOWFLOW_MEMORY_LIMIT` | `512m` | Compose 容器内存上限；低内存设备可在压测后调整 |
+| `SHADOWFLOW_API_TOKEN` | 空 | 非空时开启 `/api/v1/*` 和 `/metrics` 的 Bearer Token 鉴权，至少 16 个字符；为空时关闭 |
+
+其余运行参数已固定在 `compose.yaml` 中，通常不需要额外配置。
 
 `backend/config/trading_calendar.json` 已内置 2026 年 A 股休市日期和 `valid_through`。服务每天检查覆盖期，距离到期不足阈值时读取交易所年度休市安排；只有年度标题、日期范围和最少假日数全部校验通过才原子替换，失败时保留旧文件。覆盖状态同时出现在 `/api/v1/system/status` 和 Prometheus 指标中。
 

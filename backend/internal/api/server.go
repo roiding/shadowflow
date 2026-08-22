@@ -38,7 +38,6 @@ type Server struct {
 type Options struct {
 	StaticDir           string
 	QuoteSource         QuoteSnapshotSource
-	AuthEnabled         bool
 	APIToken            string
 	NormalRatePerMinute int
 	ExportRatePerMinute int
@@ -123,7 +122,7 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 	router.Get("/health/live", server.live)
 	router.Get("/health/ready", server.ready)
 	router.Group(func(authed chi.Router) {
-		if len(options) > 0 && options[0].AuthEnabled {
+		if len(options) > 0 && options[0].APIToken != "" {
 			authed.Use(bearerMiddleware(options[0].APIToken))
 		}
 		authed.Get("/metrics", server.metrics)

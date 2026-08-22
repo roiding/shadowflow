@@ -1,35 +1,14 @@
 services:
   shadowflow:
-    build:
-      context: .
-    image: ${SHADOWFLOW_IMAGE:-ghcr.io/roiding/shadowflow:latest}
+    image: ghcr.io/roiding/shadowflow:latest
     container_name: shadowflow
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"
-    environment:
-      TZ: Asia/Shanghai
-      SHADOWFLOW_DATABASE_PATH: /data/shadowflow.db
-      SHADOWFLOW_CALENDAR_PATH: /app/config/trading_calendar.json
-      SHADOWFLOW_CALENDAR_AUTO_UPDATE: "true"
-      SHADOWFLOW_CALENDAR_REFRESH_LEAD_DAYS: "45"
-      SHADOWFLOW_STATIC_DIR: /app/web
-      SHADOWFLOW_PAGE_SIZE: "100"
-      SHADOWFLOW_REQUEST_TIMEOUT_SECONDS: "5"
-      SHADOWFLOW_SCHEDULER_ENABLED: "true"
-      SHADOWFLOW_AUTH_ENABLED: "${SHADOWFLOW_AUTH_ENABLED:-false}"
-      SHADOWFLOW_API_TOKEN: "${SHADOWFLOW_API_TOKEN:-}"
-      SHADOWFLOW_LISTEN_ADDR: 0.0.0.0:8080
-      SHADOWFLOW_RATE_LIMIT_PER_MINUTE: "${SHADOWFLOW_RATE_LIMIT_PER_MINUTE:-120}"
-      SHADOWFLOW_EXPORT_RATE_LIMIT_PER_MINUTE: "${SHADOWFLOW_EXPORT_RATE_LIMIT_PER_MINUTE:-10}"
-      SHADOWFLOW_SCAN_RATE_LIMIT_PER_MINUTE: "${SHADOWFLOW_SCAN_RATE_LIMIT_PER_MINUTE:-30}"
-      SHADOWFLOW_UPSTREAM_MAX_CONCURRENCY: "${SHADOWFLOW_UPSTREAM_MAX_CONCURRENCY:-4}"
-      SHADOWFLOW_UPSTREAM_RATE_PER_SECOND: "${SHADOWFLOW_UPSTREAM_RATE_PER_SECOND:-8}"
-      SHADOWFLOW_SQLITE_READ_CONNS: "${SHADOWFLOW_SQLITE_READ_CONNS:-4}"
+      - "8081:8080"
     volumes:
-      - ${SHADOWFLOW_DATA_DIR:-./data}:/data
-      - ${SHADOWFLOW_BACKUP_DIR:-./backups}:/backups
-    mem_limit: ${SHADOWFLOW_MEMORY_LIMIT:-512m}
+      - /mnt/data/shadowflow/data:/data
+      - /mnt/data/shadowflow/backups:/backups
+    mem_limit: 256m
     logging:
       driver: json-file
       options:
