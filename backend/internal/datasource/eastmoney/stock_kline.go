@@ -18,13 +18,6 @@ import (
 	"github.com/roiding/shadowflow/internal/graymarket"
 )
 
-type stockKlineResponse struct {
-	ReturnCode int `json:"rc"`
-	Data       *struct {
-		Klines []string `json:"klines"`
-	} `json:"data"`
-}
-
 type stockTrendResponse struct {
 	ReturnCode int `json:"rc"`
 	Data       *struct {
@@ -52,15 +45,14 @@ func (c *Client) FetchStockKlines5m(ctx context.Context, snapshot graymarket.Ran
 	return points, nil
 }
 
-// FetchStockKlines5mIncremental fetches one complete 48-point curve at a time
-// and invokes persist immediately. The callback is called serially, so callers
+// FetchStockKlines5mIncremental fetches the 241-point one-minute curve for each
+// stock, aggregates it into one complete 48-point five-minute curve, and
+// invokes persist immediately. The callback is called serially, so callers
 // can safely write each batch in its own transaction.
 func (c *Client) FetchStockKlines5mIncremental(ctx context.Context, snapshot graymarket.RankSnapshot, persist func([]graymarket.StockKlinePoint) error) (int, error) {
 	if snapshot.RankType != graymarket.RankStock || snapshot.TradeDate == "" || len(snapshot.Records) == 0 {
 		return 0, fmt.Errorf("invalid stock kline snapshot")
 	}
-	c.stockKlineFailures.Store(0)
-	c.stockKlineDisabled.Store(false)
 	parentCtx := ctx
 	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
@@ -83,7 +75,7 @@ func (c *Client) FetchStockKlines5mIncremental(ctx context.Context, snapshot gra
 					return
 				case <-limiter.C:
 				}
-				points, err := c.fetchStockKlineWithRetry(ctx, snapshot.TradeDate, stock)
+				points, err := c.fetchStockKlineFromTrendsWithRetry(ctx, snapshot.TradeDate, stock)
 				select {
 				case results <- stockKlineResult{points: points, err: err}:
 				case <-parentCtx.Done():
@@ -143,10 +135,10 @@ func (c *Client) FetchStockKlines5mIncremental(ctx context.Context, snapshot gra
 	return completedStocks, nil
 }
 
-func (c *Client) fetchStockKlineWithRetry(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
+func (c *Client) fetchStockKlineFromTrendsWithRetry(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
 	var lastErr error
 	for attempt := 1; attempt <= 4; attempt++ {
-		points, err := c.fetchStockKlineWithFallback(ctx, tradeDate, stock)
+		points, err := c.fetchStockKlineFromTrends(ctx, tradeDate, stock)
 		if err == nil {
 			return points, nil
 		}
@@ -160,88 +152,6 @@ func (c *Client) fetchStockKlineWithRetry(ctx context.Context, tradeDate string,
 		}
 	}
 	return nil, fmt.Errorf("fetch %s kline: %w", stock.Code, lastErr)
-}
-
-func (c *Client) fetchStockKlineWithFallback(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
-	var primaryErr error
-	if !c.stockKlineDisabled.Load() {
-		points, err := c.fetchStockKline(ctx, tradeDate, stock)
-		if err == nil {
-			c.stockKlineFailures.Store(0)
-			return points, nil
-		}
-		primaryErr = fmt.Errorf("five-minute endpoint: %w", err)
-		if c.stockKlineFailures.Add(1) >= 8 {
-			c.stockKlineDisabled.Store(true)
-		}
-	}
-	points, trendErr := c.fetchStockKlineFromTrends(ctx, tradeDate, stock)
-	if trendErr == nil {
-		return points, nil
-	}
-	trendErr = fmt.Errorf("one-minute fallback: %w", trendErr)
-	if primaryErr == nil {
-		return nil, trendErr
-	}
-	return nil, errors.Join(primaryErr, trendErr)
-}
-
-func (c *Client) fetchStockKline(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
-	dateToken := strings.ReplaceAll(tradeDate, "-", "")
-	params := url.Values{
-		"secid": {fmt.Sprintf("%d.%s", stock.Market, stock.Code)}, "klt": {"5"}, "fqt": {"0"},
-		"beg": {dateToken}, "end": {dateToken}, "fields1": {"f1,f2,f3,f4,f5,f6"},
-		"fields2": {"f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"},
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.stockKlineBaseURL+"?"+params.Encode(), nil)
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "Mozilla/5.0 ShadowFlow/0.1")
-	request.Header.Set("Referer", "https://quote.eastmoney.com/")
-	response, err := c.guard.Do(ctx, request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, response.Body)
-		return nil, fmt.Errorf("upstream returned HTTP %d", response.StatusCode)
-	}
-	var payload stockKlineResponse
-	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("%w: %v", graymarket.ErrDecode, err)
-	}
-	if payload.ReturnCode != 0 || payload.Data == nil || len(payload.Data.Klines) != 48 {
-		count := 0
-		if payload.Data != nil {
-			count = len(payload.Data.Klines)
-		}
-		return nil, fmt.Errorf("expected 48 klines, got %d", count)
-	}
-	fetchedAt := time.Now().UTC()
-	points := make([]graymarket.StockKlinePoint, 0, 48)
-	for _, raw := range payload.Data.Klines {
-		fields, err := csv.NewReader(strings.NewReader(raw)).Read()
-		if err != nil || len(fields) != 11 {
-			return nil, fmt.Errorf("invalid kline row %q", raw)
-		}
-		at, err := time.ParseInLocation("2006-01-02 15:04", fields[0], snapshotLocation(stock.SnapshotAt))
-		if err != nil || at.Format("2006-01-02") != tradeDate {
-			return nil, fmt.Errorf("kline date mismatch %q", fields[0])
-		}
-		if _, ok := researchMinuteIndexForSource(at); !ok {
-			return nil, fmt.Errorf("unexpected kline time %s", fields[0])
-		}
-		points = append(points, graymarket.StockKlinePoint{
-			TradeDate: tradeDate, SnapshotAt: at, Market: stock.Market, Code: stock.Code, Source: graymarket.KlineSourceFiveMinute,
-			OpenPrice: decimal(fields[1]), ClosePrice: decimal(fields[2]), HighPrice: decimal(fields[3]), LowPrice: decimal(fields[4]),
-			Volume: integer(fields[5]), Turnover: integer(fields[6]), Amplitude: percent(fields[7]), ChangePct: percent(fields[8]),
-			ChangeValue: decimal(fields[9]), TurnoverRate: percent(fields[10]), FetchedAt: fetchedAt,
-		})
-	}
-	return points, nil
 }
 
 type aggregatedTrendBar struct {

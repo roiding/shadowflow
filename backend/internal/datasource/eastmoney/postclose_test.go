@@ -43,48 +43,18 @@ func TestFetchMoney5mReturns48RevisedPoints(t *testing.T) {
 	}
 }
 
-func TestFetchStockKlines5mMapsUnadjusted48Bars(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("fqt") != "0" || r.URL.Query().Get("klt") != "5" || r.URL.Query().Get("secid") != "1.600001" {
-			t.Fatalf("unexpected query %s", r.URL.RawQuery)
-		}
-		rows := make([]string, 0, 48)
-		for _, clock := range archiveClocks() {
-			rows = append(rows, fmt.Sprintf("2026-08-14 %02d:%02d,10.10,10.20,10.30,10.00,1234,567890.00,3.00,1.50,0.15,2.50", clock/100, clock%100))
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"rc": 0, "data": map[string]any{"klines": rows}})
-	}))
-	defer server.Close()
-	location := time.FixedZone("Asia/Shanghai", 8*60*60)
-	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
-	snapshot := graymarket.RankSnapshot{TradeDate: "2026-08-14", RankType: graymarket.RankStock, SnapshotAt: closeAt,
-		Records: []graymarket.RankRecord{{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Market: 1, Code: "600001"}}}
-	points, err := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL).FetchStockKlines5m(context.Background(), snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(points) != 48 || points[47].SnapshotAt.Format("15:04") != "15:00" {
-		t.Fatalf("unexpected kline points: %+v", points)
-	}
-	first := points[0]
-	if first.Source != graymarket.KlineSourceFiveMinute || first.OpenPrice != 10.10 || first.ClosePrice != 10.20 || first.HighPrice != 10.30 || first.LowPrice != 10 || first.Volume != 1234 || first.Turnover != 567890 || first.Amplitude != 0.03 || first.ChangePct != 0.015 || first.ChangeValue != 0.15 || first.TurnoverRate != 0.025 {
-		t.Fatalf("unexpected mapped kline: %+v", first)
-	}
-}
-
 func TestFetchStockKlines5mReturnsCompletedStocksWithBatchError(t *testing.T) {
 	var failedRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/trends2/") {
+			t.Fatalf("frozen five-minute endpoint was requested: %s", r.URL.Path)
+		}
 		if r.URL.Query().Get("secid") == "0.000001" {
 			failedRequests.Add(1)
 			_, _ = w.Write([]byte("{"))
 			return
 		}
-		rows := make([]string, 0, 48)
-		for _, clock := range archiveClocks() {
-			rows = append(rows, fmt.Sprintf("2026-08-14 %02d:%02d,10.10,10.20,10.30,10.00,1234,567890.00,3.00,1.50,0.15,2.50", clock/100, clock%100))
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"rc": 0, "data": map[string]any{"klines": rows}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"rc": 0, "data": map[string]any{"trends": uniformTrendRows("2026-08-14")}})
 	}))
 	defer server.Close()
 	location := time.FixedZone("Asia/Shanghai", 8*60*60)
@@ -92,9 +62,9 @@ func TestFetchStockKlines5mReturnsCompletedStocksWithBatchError(t *testing.T) {
 	snapshot := graymarket.RankSnapshot{TradeDate: "2026-08-14", RankType: graymarket.RankStock, SnapshotAt: closeAt,
 		Records: []graymarket.RankRecord{
 			{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Market: 0, Code: "000001"},
-			{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Market: 1, Code: "600001"},
+			{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Market: 1, Code: "600001", OpenPrice: 10, HighPrice: 10, LowPrice: 10, ClosePrice: 10, PreviousClose: 10, Volume: 241, Turnover: 24100, TurnoverRate: 0.01, QuoteAvailable: true},
 		}}
-	client := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL).
+	client := NewClient("unused", server.Client(), 100).
 		WithStockTrendBaseURLs([]string{server.URL + "/api/qt/stock/trends2/get"})
 	client.stockKlineRetryGap = 0
 	points, err := client.FetchStockKlines5m(context.Background(), snapshot)
@@ -105,11 +75,11 @@ func TestFetchStockKlines5mReturnsCompletedStocksWithBatchError(t *testing.T) {
 		t.Fatalf("completed stock was discarded: points=%d first=%+v", len(points), points[0])
 	}
 	if failedRequests.Load() < 4 {
-		t.Fatalf("failed stock should retry the fallback endpoint, got %d requests", failedRequests.Load())
+		t.Fatalf("failed stock should retry the one-minute endpoint, got %d requests", failedRequests.Load())
 	}
 }
 
-func TestFetchStockKlines5mAggregatesOneMinuteFallback(t *testing.T) {
+func TestFetchStockKlines5mAggregatesOneMinuteData(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/trends2/") {
 			rows := make([]string, 0, 241)
@@ -141,7 +111,7 @@ func TestFetchStockKlines5mAggregatesOneMinuteFallback(t *testing.T) {
 		Records: []graymarket.RankRecord{{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock,
 			Market: 1, Code: "600001", OpenPrice: 10, HighPrice: 10, LowPrice: 10, ClosePrice: 10, PreviousClose: 9,
 			Volume: 241, Turnover: 60000120, TurnoverRate: 0.0241, QuoteAvailable: true}}}
-	client := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL).
+	client := NewClient("unused", server.Client(), 100).
 		WithStockTrendBaseURLs([]string{server.URL + "/api/qt/stock/trends2/get"})
 	client.stockKlineRetryGap = 0
 	points, err := client.FetchStockKlines5m(context.Background(), snapshot)
@@ -149,10 +119,10 @@ func TestFetchStockKlines5mAggregatesOneMinuteFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(points) != 48 || points[0].SnapshotAt.Format("15:04") != "09:35" || points[47].SnapshotAt.Format("15:04") != "15:00" {
-		t.Fatalf("unexpected fallback bars: count=%d first=%s last=%s", len(points), points[0].SnapshotAt, points[len(points)-1].SnapshotAt)
+		t.Fatalf("unexpected aggregated bars: count=%d first=%s last=%s", len(points), points[0].SnapshotAt, points[len(points)-1].SnapshotAt)
 	}
 	if points[0].Source != graymarket.KlineSourceTrend241 {
-		t.Fatalf("fallback source was not recorded: %+v", points[0])
+		t.Fatalf("one-minute aggregation source was not recorded: %+v", points[0])
 	}
 	if points[0].OpenPrice != 10 || points[0].LowPrice != 10 || points[0].Volume != 5 || points[1].Volume != 5 || points[0].Turnover != 1250000 || math.Abs(points[0].TurnoverRate-0.0005) > 0.0000001 {
 		t.Fatalf("unexpected first aggregated bars: first=%+v second=%+v", points[0], points[1])
@@ -208,7 +178,7 @@ func TestFetchStockKlines5mUsesZeroVolumeOpeningAuctionPrice(t *testing.T) {
 		Records: []graymarket.RankRecord{{TradeDate: "2026-08-21", SnapshotAt: closeAt, RankType: graymarket.RankStock,
 			Market: 0, Code: "920221", OpenPrice: 12.63, HighPrice: 12.84, LowPrice: 12.63, ClosePrice: 12.70, PreviousClose: 12.74,
 			Volume: 246, Turnover: 312420, TurnoverRate: 0.0085, QuoteAvailable: true}}}
-	client := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL).
+	client := NewClient("unused", server.Client(), 100).
 		WithStockTrendBaseURLs([]string{server.URL + "/api/qt/stock/trends2/get"})
 	client.stockKlineRetryGap = 0
 	points, err := client.FetchStockKlines5m(context.Background(), snapshot)
@@ -266,7 +236,7 @@ func TestFetchStockKlines5mAllowsZeroVolumeClosingAuctionCloseMismatch(t *testin
 		Records: []graymarket.RankRecord{{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock,
 			Market: 1, Code: "600543", OpenPrice: 3.93, HighPrice: 4.01, LowPrice: 3.93, ClosePrice: 4.01, PreviousClose: 3.94,
 			Volume: 240, Turnover: 24000, TurnoverRate: 0.01, QuoteAvailable: true}}}
-	client := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL).
+	client := NewClient("unused", server.Client(), 100).
 		WithStockTrendBaseURLs([]string{server.URL + "/api/qt/stock/trends2/get"})
 	client.stockKlineRetryGap = 0
 	points, err := client.FetchStockKlines5m(context.Background(), snapshot)
@@ -276,6 +246,25 @@ func TestFetchStockKlines5mAllowsZeroVolumeClosingAuctionCloseMismatch(t *testin
 	if len(points) != 48 || points[47].ClosePrice != 4.00 {
 		t.Fatalf("unexpected zero-volume closing-auction handling: count=%d last=%+v", len(points), points[len(points)-1])
 	}
+}
+
+func uniformTrendRows(tradeDate string) []string {
+	rows := make([]string, 0, 241)
+	cumulativeVolume := 0
+	cumulativeTurnover := 0
+	appendRow := func(minute int) {
+		cumulativeVolume++
+		cumulativeTurnover += 100
+		rows = append(rows, fmt.Sprintf("%s %02d:%02d,10.00,10.00,10.00,10.00,1,100.00,10.000,0,0.00,%d,%d.00",
+			tradeDate, minute/60, minute%60, cumulativeVolume, cumulativeTurnover))
+	}
+	for minute := 9*60 + 30; minute <= 11*60+30; minute++ {
+		appendRow(minute)
+	}
+	for minute := 13*60 + 1; minute <= 15*60; minute++ {
+		appendRow(minute)
+	}
+	return rows
 }
 
 func archiveClocks() []int {
