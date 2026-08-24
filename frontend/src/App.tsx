@@ -56,6 +56,21 @@ function formatTime(value?: string) {
   return Number.isNaN(date.getTime()) ? value.slice(11, 16) : date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Shanghai' })
 }
 
+function shanghaiDateTimeKey(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value.slice(0, 16).replace(' ', 'T')
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(date)
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? ''
+  return `${part('year')}-${part('month')}-${part('day')}T${part('hour')}:${part('minute')}`
+}
+
+function shanghaiTime(value: string) {
+  return shanghaiDateTimeKey(value).slice(11, 16)
+}
+
 function formatNumber(value: number, digits = 0) {
   if (!Number.isFinite(value)) return '--'
   return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(value)
@@ -288,7 +303,7 @@ function MonitorView(props: MonitorProps) {
       <div className="table-footer"><span><Check size={14} />来源排名保持原始顺序</span><span>{requestMs !== undefined ? `${requestMs} ms · ` : ''}筛选后 {records.length} 条</span></div>
     </section>
     <section className={`trend-panel panel-section ${mobilePane === 'ranks' ? 'mobile-hidden' : ''}`}>
-	  <div className="section-heading trend-heading"><div><p className="eyebrow">分钟序列</p><h2>{selected?.name ?? '选择一个板块'}</h2><span className="subline">{selected ? `${selected.code} · ${BOARD_LABELS[boardType]} · ${tradeDate} 采集至 ${formatTime(series.at(-1)?.snapshot_at ?? selected.snapshot_at)}${series.at(-1)?.snapshot_at.slice(11, 16) === '15:00' ? '（日终快照）' : ''}` : '点击左侧榜单查看当日连续序列'}</span></div><ExportLink href={selected ? api.exportURL(boardType, selected.code, tradeDate, tradeDate) : undefined} title="导出研究数据"><Download size={15} />导出</ExportLink></div>
+	  <div className="section-heading trend-heading"><div><p className="eyebrow">分钟序列</p><h2>{selected?.name ?? '选择一个板块'}</h2><span className="subline">{selected ? `${selected.code} · ${BOARD_LABELS[boardType]} · ${tradeDate} 采集至 ${formatTime(series.at(-1)?.snapshot_at ?? selected.snapshot_at)}${series.at(-1) && shanghaiTime(series.at(-1)!.snapshot_at) === '15:00' ? '（日终快照）' : ''}` : '点击左侧榜单查看当日连续序列'}</span></div><ExportLink href={selected ? api.exportURL(boardType, selected.code, tradeDate, tradeDate) : undefined} title="导出研究数据"><Download size={15} />导出</ExportLink></div>
       <MetricToolbar metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} />
       {seriesError && <InlineNotice kind="error" text="分钟序列读取失败，请稍后重试。" />}
 	      <Chart series={series} metric={metric} secondaryMetric={secondaryMetric} loading={loading} emptyLabel={seriesError ? '分钟序列读取失败' : '选择板块后加载分钟数据'} />
@@ -384,11 +399,11 @@ function Chart({ series, metric, secondaryMetric, loading, emptyLabel }: { serie
 }
 
 function completeTimeline(series: RankRecord[], intervalMinutes: number) {
-  const byTime = new Map(series.map((item) => [item.snapshot_at.slice(0, 16), item]))
+  const byTime = new Map(series.map((item) => [shanghaiDateTimeKey(item.snapshot_at), item]))
   const tradeDates = [...new Set(series.map((item) => item.trade_date))]
   const multiDay = tradeDates.length > 1
   const points: Array<{ label: string; record: RankRecord | null }> = []
-  const hasDailyClose = series.some((item) => item.snapshot_at.slice(11, 16) === '15:00')
+  const hasDailyClose = series.some((item) => shanghaiTime(item.snapshot_at) === '15:00')
   const ranges = intervalMinutes === 1 ? [['09:31', '11:30'], ['13:01', '15:00']] : [['09:35', '11:30'], ['13:05', hasDailyClose ? '15:00' : '14:55']]
   for (const date of tradeDates) {
     for (const [start, end] of ranges) {
