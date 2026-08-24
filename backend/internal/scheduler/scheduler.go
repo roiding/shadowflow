@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/roiding/shadowflow/internal/graymarket"
 	"github.com/roiding/shadowflow/internal/repository"
 	"github.com/roiding/shadowflow/internal/tradingcalendar"
 )
@@ -27,6 +28,11 @@ type collectorService interface {
 	HasStockKlineArchive(context.Context, string) (bool, error)
 	CollectStockBoardRelations(context.Context, string) error
 	HasStockBoardRelations(context.Context, string) (bool, error)
+}
+
+type archivePartCollector interface {
+	CollectEndOfDayPart(context.Context, time.Time, graymarket.RankType) error
+	HasEndOfDayPart(context.Context, string, graymarket.RankType) (bool, error)
 }
 
 type Options struct {
@@ -136,7 +142,9 @@ func (s *Scheduler) enqueueReplayableJobs(ctx context.Context, now time.Time) {
 	}{
 		{"cleanup", "09:00"}, {"maintenance", "09:05"},
 		{"relations", "08:00"}, {"relations", "08:50"}, {"relations", "09:15"},
-		{"end-of-day", "16:00"}, {"end-of-day", "16:05"}, {"end-of-day", "16:10"},
+		{"end-of-day-industry", "16:00"}, {"end-of-day-industry", "16:05"}, {"end-of-day-industry", "16:10"},
+		{"end-of-day-concept", "16:00"}, {"end-of-day-concept", "16:05"}, {"end-of-day-concept", "16:10"},
+		{"end-of-day-stock", "16:00"}, {"end-of-day-stock", "16:05"}, {"end-of-day-stock", "16:10"},
 		{"stock-kline", "16:15"}, {"stock-kline", "17:30"}, {"stock-kline", "20:00"},
 	}
 	for _, plan := range plans {
@@ -167,6 +175,14 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 	kind := jobKind(current)
 	if kind == "" || kind != "cleanup" && kind != "maintenance" && !s.calendar.IsTradingDay(current) {
 		return
+	}
+	if kind == "end-of-day" {
+		if _, ok := s.collector.(archivePartCollector); ok {
+			for _, partKind := range []string{"end-of-day-industry", "end-of-day-concept", "end-of-day-stock"} {
+				s.startJob(ctx, partKind, current, current.Format("2006-01-02"))
+			}
+			return
+		}
 	}
 	s.startJob(ctx, kind, current, current.Format("2006-01-02"))
 }
@@ -302,6 +318,20 @@ func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current ti
 	case "minute":
 		return s.collector.CollectBoards(ctx, job.PlannedAt)
 	case "end-of-day":
+		if part, ok := s.collector.(archivePartCollector); ok {
+			for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept, graymarket.RankStock} {
+				exists, partErr := part.HasEndOfDayPart(ctx, tradeDate, rankType)
+				if partErr != nil {
+					return partErr
+				}
+				if !exists {
+					if partErr = part.CollectEndOfDayPart(ctx, parseShanghaiTime(tradeDate, "16:00", current), rankType); partErr != nil {
+						return partErr
+					}
+				}
+			}
+			return nil
+		}
 		exists, err := s.collector.HasEndOfDayArchive(ctx, tradeDate)
 		if err != nil {
 			return err
@@ -311,6 +341,26 @@ func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current ti
 			return nil
 		}
 		return s.collector.CollectEndOfDay(ctx, parseShanghaiTime(tradeDate, "16:00", current))
+	case "end-of-day-industry", "end-of-day-concept", "end-of-day-stock":
+		part, ok := s.collector.(archivePartCollector)
+		if !ok {
+			return fmt.Errorf("archive part collector is unavailable")
+		}
+		rankType := graymarket.RankStock
+		if job.Kind == "end-of-day-industry" {
+			rankType = graymarket.RankIndustry
+		}
+		if job.Kind == "end-of-day-concept" {
+			rankType = graymarket.RankConcept
+		}
+		exists, err := part.HasEndOfDayPart(ctx, tradeDate, rankType)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return nil
+		}
+		return part.CollectEndOfDayPart(ctx, parseShanghaiTime(tradeDate, "16:00", current), rankType)
 	case "cleanup":
 		return s.collector.CleanupArchivedIntraday(ctx, tradeDate)
 	case "maintenance":
@@ -414,6 +464,12 @@ func jobLane(kind string) string {
 		return "relations"
 	case "maintenance":
 		return "maintenance"
+	case "end-of-day-industry":
+		return "archive-industry"
+	case "end-of-day-concept":
+		return "archive-concept"
+	case "end-of-day-stock":
+		return "archive-stock"
 	default:
 		return "archive"
 	}

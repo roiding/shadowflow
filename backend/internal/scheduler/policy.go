@@ -14,6 +14,10 @@ func policyFor(kind string) jobPolicy {
 		return jobPolicy{timeout: 50 * time.Second, maxAttempts: 2, retryAfter: 15 * time.Second}
 	case "end-of-day":
 		return jobPolicy{timeout: 15 * time.Minute, maxAttempts: 5, retryAfter: time.Minute}
+	case "end-of-day-industry", "end-of-day-concept":
+		return jobPolicy{timeout: 15 * time.Minute, maxAttempts: 5, retryAfter: time.Minute}
+	case "end-of-day-stock":
+		return jobPolicy{timeout: 30 * time.Minute, maxAttempts: 5, retryAfter: time.Minute}
 	case "stock-kline":
 		return jobPolicy{timeout: 90 * time.Minute, maxAttempts: 4, retryAfter: 5 * time.Minute}
 	case "relations":

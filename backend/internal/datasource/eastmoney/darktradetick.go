@@ -36,8 +36,30 @@ type boardTickResult struct {
 }
 
 func (c *Client) FetchMoney5m(ctx context.Context, snapshot graymarket.RankSnapshot, includeClose bool) ([]graymarket.MoneyPoint, error) {
+	points := make([]graymarket.MoneyPoint, 0, len(snapshot.Records)*moneyPointsPerCode(includeClose))
+	_, err := c.FetchMoney5mIncremental(ctx, snapshot, includeClose, func(curve []graymarket.MoneyPoint) error {
+		points = append(points, curve...)
+		return nil
+	})
+	assignMoneyRanks(points)
+	if err != nil {
+		if len(points) == 0 {
+			return nil, err
+		}
+		return points, err
+	}
+	return points, nil
+}
+
+// FetchMoney5mIncremental emits each complete security curve as soon as it is
+// fetched. Rank values are finalized by the archive store after all curves
+// have been persisted, because a rank is relative to the complete universe.
+func (c *Client) FetchMoney5mIncremental(ctx context.Context, snapshot graymarket.RankSnapshot, includeClose bool, emit func([]graymarket.MoneyPoint) error) (int, error) {
 	if snapshot.TradeDate == "" || len(snapshot.Records) == 0 {
-		return nil, graymarket.ErrNoData
+		return 0, graymarket.ErrNoData
+	}
+	if emit == nil {
+		return 0, fmt.Errorf("money curve callback is nil")
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -78,12 +100,8 @@ func (c *Client) FetchMoney5m(ctx context.Context, snapshot graymarket.RankSnaps
 		close(results)
 	}()
 
-	pointsPerCode := 47
-	if includeClose {
-		pointsPerCode = 48
-	}
-	points := make([]graymarket.MoneyPoint, 0, len(snapshot.Records)*pointsPerCode)
 	var firstErr error
+	completed := 0
 	for result := range results {
 		if result.err != nil {
 			if firstErr == nil {
@@ -94,16 +112,29 @@ func (c *Client) FetchMoney5m(ctx context.Context, snapshot graymarket.RankSnaps
 			// mark the missing money rows explicitly instead of aborting all.
 			continue
 		}
-		points = append(points, result.points...)
+		completed++
+		if err := emit(result.points); err != nil {
+			cancel()
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
 	}
-	assignMoneyRanks(points)
-	if len(points) == 0 && firstErr != nil {
-		return nil, firstErr
+	if completed == 0 && firstErr != nil {
+		return 0, firstErr
 	}
 	if firstErr != nil {
-		return points, fmt.Errorf("completed %d/%d money curves: %w", len(points)/pointsPerCode, len(snapshot.Records), firstErr)
+		return completed, fmt.Errorf("completed %d/%d money curves: %w", completed, len(snapshot.Records), firstErr)
 	}
-	return points, nil
+	return completed, nil
+}
+
+func moneyPointsPerCode(includeClose bool) int {
+	if includeClose {
+		return 48
+	}
+	return 47
 }
 
 func (c *Client) fetchMoney5m(ctx context.Context, tradeDate string, board graymarket.RankRecord, includeClose bool) ([]graymarket.MoneyPoint, error) {

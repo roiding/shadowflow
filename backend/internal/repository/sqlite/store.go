@@ -854,6 +854,163 @@ updated_at=excluded.updated_at`,
 	return tx.Commit()
 }
 
+// SaveBoardArchiveBatch persists one incremental batch. The first batch owns
+// replacement of the day's board close/archive rows; later batches only add
+// money curves. The final batch refreshes quality and the manifest.
+func (s *Store) SaveBoardArchiveBatch(ctx context.Context, runID string, snapshot graymarket.RankSnapshot, points []graymarket.MoneyPoint, first, final bool) error {
+	if snapshot.RankType != graymarket.RankIndustry && snapshot.RankType != graymarket.RankConcept {
+		return fmt.Errorf("invalid board rank type %s", snapshot.RankType)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if first {
+		for _, q := range []string{
+			`DELETE FROM board_money_5m WHERE trade_date=? AND rank_type=?`,
+			`DELETE FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type=?`,
+			`DELETE FROM raw_response WHERE substr(snapshot_at,1,10)=? AND snapshot_kind='daily_close' AND rank_type=?`,
+		} {
+			if _, err := tx.ExecContext(ctx, q, snapshot.TradeDate, string(snapshot.RankType)); err != nil {
+				return err
+			}
+		}
+		for _, record := range snapshot.Records {
+			if err := insertRecord(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), record); err != nil {
+				return err
+			}
+		}
+		for _, page := range snapshot.RawPages {
+			if err := insertRawPage(ctx, tx, runID, snapshot.SnapshotAt, graymarket.SnapshotDailyClose, snapshot.RankType, page); err != nil {
+				return err
+			}
+		}
+	}
+	for _, point := range points {
+		minute := point.SnapshotAt.Format("15:04")
+		if point.TradeDate != snapshot.TradeDate || point.RankType != snapshot.RankType || (!isResearchMinute(minute) && minute != "15:00") {
+			return fmt.Errorf("invalid %s board money point %s %s", snapshot.RankType, point.Code, point.SnapshotAt)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO board_money_5m
+(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,snapshot_at,rank_type,code) DO UPDATE SET
+dark_money=excluded.dark_money,regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow,money_available=1,source_time=excluded.source_time,fetched_at=excluded.fetched_at`,
+			runID, point.SnapshotAt.Format(timestampLayout), point.TradeDate, string(point.RankType), 0, point.Market, point.Code, point.Name, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1, point.SourceTime, point.FetchedAt.Format(timestampLayout)); err != nil {
+			return err
+		}
+	}
+	if !final {
+		return tx.Commit()
+	}
+	// Money-point rank is distinct from the daily darktrade leaderboard rank
+	// stored in rank_snapshot. It is derived only for the 5-minute funding
+	// series after the complete universe has been persisted.
+	if _, err := tx.ExecContext(ctx, `WITH ranked AS (
+SELECT trade_date,snapshot_at,rank_type,code,
+ROW_NUMBER() OVER (PARTITION BY trade_date,snapshot_at,rank_type ORDER BY dark_money DESC,code ASC) AS computed_rank
+FROM board_money_5m WHERE trade_date=? AND rank_type=?
+)
+UPDATE board_money_5m AS target SET rank=(SELECT computed_rank FROM ranked WHERE ranked.trade_date=target.trade_date AND ranked.snapshot_at=target.snapshot_at AND ranked.rank_type=target.rank_type AND ranked.code=target.code)
+WHERE target.trade_date=? AND target.rank_type=?`, snapshot.TradeDate, string(snapshot.RankType), snapshot.TradeDate, string(snapshot.RankType)); err != nil {
+		return err
+	}
+	minutes, err := snapshotMinutes(ctx, tx, "rank_intraday_work", snapshot.TradeDate, snapshot.RankType, "")
+	if err != nil {
+		return err
+	}
+	researchMinutes, err := snapshotMinutes(ctx, tx, "board_money_5m", snapshot.TradeDate, snapshot.RankType, "")
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	summary := repository.QualitySummary{TradeDate: snapshot.TradeDate, RankType: snapshot.RankType, ExpectedMinutes: 240, CollectedMinutes: len(minutes), ExpectedResearch: 48, CollectedResearch: len(researchMinutes), ExpectedDailyClose: 1, CollectedDailyClose: 1, MissingMinutes: missing(expectedMinuteTimes(), minutes), MissingResearch: missing(expectedResearchTimes(), researchMinutes), CompactedAt: &now}
+	if err := upsertQuality(ctx, tx, summary); err != nil {
+		return err
+	}
+	if err := refreshArchiveManifest(ctx, tx, snapshot.TradeDate); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SaveStockArchiveBatch is the incremental counterpart of SaveStockArchive.
+// It keeps only one archive copy and makes each 500-stock batch durable.
+func (s *Store) SaveStockArchiveBatch(ctx context.Context, runID string, snapshot graymarket.RankSnapshot, points []graymarket.MoneyPoint, first, final bool) error {
+	if snapshot.RankType != graymarket.RankStock || len(snapshot.Records) == 0 {
+		return fmt.Errorf("invalid stock archive batch")
+	}
+	records := quoteAvailableRecords(snapshot.Records)
+	if len(records) == 0 {
+		return fmt.Errorf("stock archive has no eligible records")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if first {
+		for _, q := range []string{
+			`DELETE FROM stock_research_5m WHERE trade_date=?`, `DELETE FROM stock_kline_source WHERE trade_date=?`,
+			`DELETE FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock'`,
+			`DELETE FROM raw_response WHERE substr(snapshot_at,1,10)=? AND snapshot_kind='daily_close' AND rank_type='stock'`,
+		} {
+			if _, err := tx.ExecContext(ctx, q, snapshot.TradeDate); err != nil {
+				return err
+			}
+		}
+		for _, record := range records {
+			if err := insertRecord(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), record); err != nil {
+				return err
+			}
+		}
+		for _, page := range snapshot.RawPages {
+			if err := insertRawPage(ctx, tx, runID, snapshot.SnapshotAt, graymarket.SnapshotDailyClose, snapshot.RankType, page); err != nil {
+				return err
+			}
+		}
+	}
+	for _, point := range points {
+		minuteIndex, ok := researchMinuteIndex(point.SnapshotAt)
+		if !ok || point.TradeDate != snapshot.TradeDate || point.RankType != graymarket.RankStock {
+			return fmt.Errorf("invalid stock money point %s %s", point.Code, point.SnapshotAt)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO stock_research_5m
+(trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available)
+VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,minute_index,market,code) DO UPDATE SET money_rank=excluded.money_rank,dark_money=excluded.dark_money,regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow,money_available=1`, point.TradeDate, minuteIndex, point.Market, point.Code, 0, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1); err != nil {
+			return err
+		}
+	}
+	if !final {
+		return tx.Commit()
+	}
+	if _, err := tx.ExecContext(ctx, `WITH ranked AS (
+SELECT trade_date,minute_index,market,code,
+ROW_NUMBER() OVER (PARTITION BY trade_date,minute_index ORDER BY dark_money DESC,code ASC) AS computed_rank
+FROM stock_research_5m WHERE trade_date=?
+)
+UPDATE stock_research_5m AS target SET money_rank=(SELECT computed_rank FROM ranked WHERE ranked.trade_date=target.trade_date AND ranked.minute_index=target.minute_index AND ranked.market=target.market AND ranked.code=target.code)
+WHERE target.trade_date=?`, snapshot.TradeDate, snapshot.TradeDate); err != nil {
+		return err
+	}
+	var moneyRows, klineRows int
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(sum(money_available),0) FROM stock_research_5m WHERE trade_date=?`, snapshot.TradeDate).Scan(&moneyRows); err != nil {
+		return err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM stock_research_5m WHERE trade_date=? AND kline_available=1`, snapshot.TradeDate).Scan(&klineRows); err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(timestampLayout)
+	expected := len(records)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO stock_archive_quality (trade_date,expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,daily_close_rows,daily_kline_rows,money_archived_at,updated_at) VALUES (?,?,48,?,?,?,?,?,?,?) ON CONFLICT(trade_date) DO UPDATE SET expected_stocks=excluded.expected_stocks,expected_points=48,expected_kline_stocks=excluded.expected_kline_stocks,money_rows=excluded.money_rows,kline_rows=excluded.kline_rows,daily_close_rows=excluded.daily_close_rows,daily_kline_rows=excluded.daily_kline_rows,money_archived_at=excluded.money_archived_at,updated_at=excluded.updated_at`, snapshot.TradeDate, expected, expected, moneyRows, klineRows, expected, expected, now, now); err != nil {
+		return err
+	}
+	if err := refreshArchiveManifest(ctx, tx, snapshot.TradeDate); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) SaveStockKlines(ctx context.Context, runID string, points []graymarket.StockKlinePoint) error {
 	if len(points) == 0 {
 		return graymarket.ErrNoData

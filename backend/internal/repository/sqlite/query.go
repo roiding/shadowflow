@@ -418,6 +418,28 @@ AND (SELECT coalesce(sum(money_available),0) FROM stock_research_5m WHERE trade_
 	return stockClose == 1 && boardCloses == 2 && curveTypes == 2 && stockMoney == 1, nil
 }
 
+func (s *Store) HasBoardArchive(ctx context.Context, tradeDate string, rankType graymarket.RankType) (bool, error) {
+	if rankType != graymarket.RankIndustry && rankType != graymarket.RankConcept {
+		return false, fmt.Errorf("invalid board rank type %s", rankType)
+	}
+	var closeRows, curveRows int
+	if err := s.readDB().QueryRowContext(ctx, `SELECT
+(SELECT count(*) FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type=?),
+(SELECT coalesce((SELECT count(*) FROM board_money_5m WHERE trade_date=? AND rank_type=? GROUP BY rank_type HAVING count(DISTINCT snapshot_at)=48),0))`, tradeDate, string(rankType), tradeDate, string(rankType)).Scan(&closeRows, &curveRows); err != nil {
+		return false, err
+	}
+	return closeRows > 0 && curveRows == 1, nil
+}
+
+func (s *Store) HasStockMoneyArchive(ctx context.Context, tradeDate string) (bool, error) {
+	var exists int
+	err := s.readDB().QueryRowContext(ctx, `SELECT EXISTS(
+SELECT 1 FROM stock_archive_quality
+WHERE trade_date=? AND daily_close_rows=expected_stocks
+AND money_rows=expected_kline_stocks*expected_points)`, tradeDate).Scan(&exists)
+	return exists == 1, err
+}
+
 func (s *Store) HasStockKlineArchive(ctx context.Context, tradeDate string) (bool, error) {
 	var exists int
 	err := s.readDB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM stock_archive_quality WHERE trade_date=?

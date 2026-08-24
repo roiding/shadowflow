@@ -34,6 +34,13 @@ type BoardMoneySource interface {
 	FetchMoney5m(context.Context, graymarket.RankSnapshot, bool) ([]graymarket.MoneyPoint, error)
 }
 
+// IncrementalMoneySource emits one complete money curve at a time. The
+// collector batches those curves before handing them to the store, so a large
+// archive does not have to remain in memory until every upstream request ends.
+type IncrementalMoneySource interface {
+	FetchMoney5mIncremental(context.Context, graymarket.RankSnapshot, bool, func([]graymarket.MoneyPoint) error) (int, error)
+}
+
 type StockKlineSource interface {
 	FetchStockKlines5m(context.Context, graymarket.RankSnapshot) ([]graymarket.StockKlinePoint, error)
 }
@@ -44,7 +51,18 @@ type IncrementalStockKlineSource interface {
 	FetchStockKlines5mIncremental(context.Context, graymarket.RankSnapshot, func([]graymarket.StockKlinePoint) error) (int, error)
 }
 
+type IncrementalArchiveStore interface {
+	SaveBoardArchiveBatch(context.Context, string, graymarket.RankSnapshot, []graymarket.MoneyPoint, bool, bool) error
+	SaveStockArchiveBatch(context.Context, string, graymarket.RankSnapshot, []graymarket.MoneyPoint, bool, bool) error
+}
+
+type ArchivePartStore interface {
+	HasBoardArchive(context.Context, string, graymarket.RankType) (bool, error)
+	HasStockMoneyArchive(context.Context, string) (bool, error)
+}
+
 const stockKlinePersistBatchStocks = 500
+const moneyPersistBatchStocks = 500
 
 type store interface {
 	SaveIntraday(context.Context, string, graymarket.RankSnapshot, bool) error
@@ -116,9 +134,9 @@ func (s *Service) CollectEndOfDay(ctx context.Context, runAt time.Time) error {
 	errCh := make(chan error, 3)
 	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept} {
 		rankType := rankType
-		go func() { errCh <- s.collectBoardArchive(ctx, rankType, date, closeAt, runAt) }()
+		go func() { errCh <- s.collectMoneyArchive(ctx, rankType, date, closeAt, runAt) }()
 	}
-	go func() { errCh <- s.collectStockArchive(ctx, date, closeAt, runAt) }()
+	go func() { errCh <- s.collectMoneyArchive(ctx, graymarket.RankStock, date, closeAt, runAt) }()
 	var combined error
 	for range 3 {
 		combined = errors.Join(combined, <-errCh)
@@ -134,6 +152,138 @@ func (s *Service) CollectEndOfDay(ctx context.Context, runAt time.Time) error {
 		}
 	}
 	return combined
+}
+
+func (s *Service) CollectEndOfDayPart(ctx context.Context, runAt time.Time, rankType graymarket.RankType) error {
+	closeAt := time.Date(runAt.Year(), runAt.Month(), runAt.Day(), 15, 0, 0, 0, runAt.Location())
+	return s.collectMoneyArchive(ctx, rankType, runAt.Format("20060102"), closeAt, runAt)
+}
+
+func (s *Service) HasEndOfDayPart(ctx context.Context, tradeDate string, rankType graymarket.RankType) (bool, error) {
+	partStore, ok := s.store.(ArchivePartStore)
+	if !ok {
+		return false, fmt.Errorf("archive part status store is unavailable")
+	}
+	if rankType == graymarket.RankStock {
+		return partStore.HasStockMoneyArchive(ctx, tradeDate)
+	}
+	return partStore.HasBoardArchive(ctx, tradeDate, rankType)
+}
+
+func (s *Service) collectMoneyArchive(ctx context.Context, rankType graymarket.RankType, requestedDate string, closeAt, runAt time.Time) error {
+	if incremental, ok := s.source.(IncrementalMoneySource); ok {
+		moneyStore, storeOK := s.store.(IncrementalArchiveStore)
+		if !storeOK {
+			return fmt.Errorf("incremental archive store is unavailable")
+		}
+		return s.collectMoneyArchiveIncremental(ctx, rankType, requestedDate, closeAt, runAt, incremental, moneyStore)
+	}
+	if rankType == graymarket.RankStock {
+		return s.collectStockArchive(ctx, requestedDate, closeAt, runAt)
+	}
+	return s.collectBoardArchive(ctx, rankType, requestedDate, closeAt, runAt)
+}
+
+func (s *Service) collectMoneyArchiveIncremental(ctx context.Context, rankType graymarket.RankType, requestedDate string, closeAt, runAt time.Time, source IncrementalMoneySource, store IncrementalArchiveStore) error {
+	runID := newRunID()
+	startedAt := time.Now().UTC()
+	run := repository.CollectionRun{RunID: runID, SnapshotAt: runAt, SnapshotKind: graymarket.SnapshotResearch5m, RankType: rankType, Status: repository.RunRunning, RequestedDate: formatDate(requestedDate), AttemptCount: 1, StartedAt: startedAt}
+	if err := s.store.StartRun(ctx, run); err != nil {
+		return err
+	}
+	finish := func(resultErr error) error {
+		finishedAt := time.Now().UTC()
+		run.FinishedAt = &finishedAt
+		run.DurationMS = finishedAt.Sub(startedAt).Milliseconds()
+		if err := s.store.FinishRun(context.WithoutCancel(ctx), run); err != nil {
+			resultErr = errors.Join(resultErr, err)
+		}
+		return resultErr
+	}
+	snapshot, err := s.source.FetchAll(ctx, rankType, requestedDate, closeAt)
+	if err != nil {
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, errorCode(err), err.Error()
+		return finish(err)
+	}
+	if snapshot.TradeDate != formatDate(requestedDate) {
+		err = fmt.Errorf("upstream trade date %s does not match requested date %s", snapshot.TradeDate, formatDate(requestedDate))
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "date_mismatch", err.Error()
+		return finish(err)
+	}
+	if rankType == graymarket.RankIndustry || rankType == graymarket.RankConcept {
+		if err = s.enrichBoardDailyClose(ctx, &snapshot); err != nil {
+			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
+			return finish(err)
+		}
+	} else {
+		if err = s.enrichStockDailyClose(ctx, &snapshot); err != nil {
+			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
+			return finish(err)
+		}
+		snapshot.Records = eligibleStockRecords(snapshot.Records)
+	}
+	if len(snapshot.Records) == 0 {
+		err = fmt.Errorf("%s archive has no eligible records", rankType)
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "no_eligible_records", err.Error()
+		return finish(err)
+	}
+	run.ExpectedTotal = len(snapshot.Records) * 48
+	run.PageCount = len(snapshot.RawPages) + len(snapshot.Records)
+	pending := make([]graymarket.MoneyPoint, 0, moneyPersistBatchStocks*48)
+	pendingCurves := 0
+	first := true
+	flush := func(final bool) error {
+		if pendingCurves == 0 && !final {
+			return nil
+		}
+		var saveErr error
+		if rankType == graymarket.RankStock {
+			saveErr = store.SaveStockArchiveBatch(ctx, runID, snapshot, pending, first, final)
+		} else {
+			saveErr = store.SaveBoardArchiveBatch(ctx, runID, snapshot, pending, first, final)
+		}
+		if saveErr == nil {
+			run.FetchedTotal += len(pending)
+			first = false
+			pending = pending[:0]
+			pendingCurves = 0
+		}
+		return saveErr
+	}
+	completed, fetchErr := source.FetchMoney5mIncremental(ctx, snapshot, true, func(curve []graymarket.MoneyPoint) error {
+		pending = append(pending, curve...)
+		pendingCurves++
+		if pendingCurves >= moneyPersistBatchStocks {
+			return flush(false)
+		}
+		return nil
+	})
+	_ = completed
+	if fetchErr != nil {
+		// Preserve the last partial batch, but do not seal quality/manifest as
+		// complete; the next independent retry will continue from the durable
+		// rows.
+		if err = flush(false); err != nil {
+			fetchErr = errors.Join(fetchErr, err)
+		}
+	} else if err = flush(true); err != nil {
+		fetchErr = errors.Join(fetchErr, err)
+	}
+	if fetchErr != nil {
+		run.Status = repository.RunPartial
+		if run.FetchedTotal == 0 {
+			run.Status = repository.RunFailed
+		}
+		run.ErrorCode, run.ErrorMessage = errorCode(fetchErr), fetchErr.Error()
+		return finish(fetchErr)
+	}
+	if run.FetchedTotal != run.ExpectedTotal {
+		err = fmt.Errorf("incomplete %s money archive: expected %d rows, got %d", rankType, run.ExpectedTotal, run.FetchedTotal)
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "incomplete", err.Error()
+		return finish(err)
+	}
+	run.Status = repository.RunSuccess
+	return finish(nil)
 }
 
 func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error {
