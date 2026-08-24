@@ -410,16 +410,33 @@ func (s *Scheduler) recoverLatestArchive(ctx context.Context, current time.Time)
 }
 
 func (s *Scheduler) recoverArchive(ctx context.Context, tradeDate string, current time.Time) error {
-	exists, err := s.collector.HasEndOfDayArchive(ctx, tradeDate)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		if err := s.collector.CollectEndOfDay(ctx, parseShanghaiTime(tradeDate, "16:00", current)); err != nil {
+	var exists bool
+	if part, ok := s.collector.(archivePartCollector); ok {
+		for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept, graymarket.RankStock} {
+			exists, err := part.HasEndOfDayPart(ctx, tradeDate, rankType)
+			if err != nil {
+				return err
+			}
+			if exists {
+				s.logger.Info("startup archive part already available; skipping", "trade_date", tradeDate, "rank_type", rankType)
+				continue
+			}
+			if err := part.CollectEndOfDayPart(ctx, parseShanghaiTime(tradeDate, "16:00", current), rankType); err != nil {
+				return err
+			}
+		}
+	} else {
+		exists, err := s.collector.HasEndOfDayArchive(ctx, tradeDate)
+		if err != nil {
 			return err
 		}
+		if !exists {
+			if err := s.collector.CollectEndOfDay(ctx, parseShanghaiTime(tradeDate, "16:00", current)); err != nil {
+				return err
+			}
+		}
 	}
-	exists, err = s.collector.HasStockKlineArchive(ctx, tradeDate)
+	exists, err := s.collector.HasStockKlineArchive(ctx, tradeDate)
 	if err != nil {
 		return err
 	}
@@ -464,12 +481,8 @@ func jobLane(kind string) string {
 		return "relations"
 	case "maintenance":
 		return "maintenance"
-	case "end-of-day-industry":
-		return "archive-industry"
-	case "end-of-day-concept":
-		return "archive-concept"
-	case "end-of-day-stock":
-		return "archive-stock"
+	case "end-of-day-industry", "end-of-day-concept", "end-of-day-stock":
+		return "archive"
 	default:
 		return "archive"
 	}
