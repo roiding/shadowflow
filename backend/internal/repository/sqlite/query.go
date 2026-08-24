@@ -425,7 +425,7 @@ func (s *Store) HasBoardArchive(ctx context.Context, tradeDate string, rankType 
 	var closeRows, curveRows int
 	if err := s.readDB().QueryRowContext(ctx, `SELECT
 (SELECT count(*) FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type=?),
-(SELECT coalesce((SELECT count(*) FROM board_money_5m WHERE trade_date=? AND rank_type=? GROUP BY rank_type HAVING count(DISTINCT snapshot_at)=48),0))`, tradeDate, string(rankType), tradeDate, string(rankType)).Scan(&closeRows, &curveRows); err != nil {
+(SELECT EXISTS(SELECT 1 FROM board_money_5m WHERE trade_date=? AND rank_type=? GROUP BY rank_type HAVING count(DISTINCT snapshot_at)=48))`, tradeDate, string(rankType), tradeDate, string(rankType)).Scan(&closeRows, &curveRows); err != nil {
 		return false, err
 	}
 	return closeRows > 0 && curveRows == 1, nil
