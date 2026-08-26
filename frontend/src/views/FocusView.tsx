@@ -181,8 +181,31 @@ function RulePanel({ title, match, conditions, setMatch, setConditions }: {
   const update = (index: number, condition: FocusCondition) => setConditions(conditions.map((item, itemIndex) => itemIndex === index ? condition : item))
   return <section className="rule-panel"><div className="rule-panel-head"><strong>{title}</strong><select value={match} onChange={(event) => setMatch(event.target.value as FocusMatchMode)}><option value="all">全部满足</option><option value="any">任一满足</option></select></div><div className="rule-list">{conditions.map((condition, index) => {
     const meta = focusField(condition.field)
-    return <div className="rule-row" key={`${condition.field}-${index}`}><select value={condition.field} onChange={(event) => update(index, { field: event.target.value as FocusField, operator: condition.operator, value: 0, ...(condition.operator === 'between' ? { max_value: 0 } : {}) })}>{FOCUS_FIELDS.map((field) => <option value={field.field} key={field.field}>{field.label}</option>)}</select><select value={condition.operator} onChange={(event) => { const operator = event.target.value as FocusOperator; update(index, { ...condition, operator, ...(operator === 'between' ? { max_value: condition.max_value ?? condition.value } : { max_value: undefined }) }) }}>{FOCUS_OPERATORS.map((operator) => <option value={operator.value} key={operator.value}>{operator.label}</option>)}</select><label className="rule-value"><input type="number" step={meta.step} value={displayConditionValue(condition.value, meta.factor)} onChange={(event) => update(index, { ...condition, value: Number(event.target.value) * meta.factor })} /><span>{meta.unit}</span></label>{condition.operator === 'between' && <><i>至</i><label className="rule-value"><input type="number" step={meta.step} value={displayConditionValue(condition.max_value ?? condition.value, meta.factor)} onChange={(event) => update(index, { ...condition, max_value: Number(event.target.value) * meta.factor })} /><span>{meta.unit}</span></label></>}<button className="rule-remove" title="删除条件" onClick={() => setConditions(conditions.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={15} /></button></div>
+    return <div className="rule-row" key={`${condition.field}-${index}`}><select value={condition.field} onChange={(event) => update(index, { field: event.target.value as FocusField, operator: condition.operator, value: 0, ...(condition.operator === 'between' ? { max_value: 0 } : {}) })}>{FOCUS_FIELDS.map((field) => <option value={field.field} key={field.field}>{field.label}</option>)}</select><select value={condition.operator} onChange={(event) => { const operator = event.target.value as FocusOperator; update(index, { ...condition, operator, ...(operator === 'between' ? { max_value: condition.max_value ?? condition.value } : { max_value: undefined }) }) }}>{FOCUS_OPERATORS.map((operator) => <option value={operator.value} key={operator.value}>{operator.label}</option>)}</select><ConditionValueInput value={condition.value} factor={meta.factor} unit={meta.unit} onCommit={(value) => update(index, { ...condition, value })} />{condition.operator === 'between' && <><i>至</i><ConditionValueInput value={condition.max_value ?? condition.value} factor={meta.factor} unit={meta.unit} onCommit={(value) => update(index, { ...condition, max_value: value })} /></>}<button className="rule-remove" title="删除条件" onClick={() => setConditions(conditions.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={15} /></button></div>
   })}</div><button className="rule-add" onClick={() => setConditions([...conditions, { field: 'turnover', operator: 'gt', value: 0 }])}><Plus size={14} />添加条件</button></section>
+}
+
+// A text input with a string intermediate state: <input type="number"> wipes
+// transitional text like "3." (its value reads as ""), so typing 3.5 into a
+// numeric field silently became 0.05 after the factor conversion — a wrong
+// order of magnitude in the filter condition.
+function ConditionValueInput({ value, factor, unit, onCommit }: { value: number; factor: number; unit: string; onCommit: (value: number) => void }) {
+  const [raw, setRaw] = useState<string | null>(null)
+  return <label className="rule-value">
+    <input
+      type="text"
+      inputMode="decimal"
+      value={raw ?? String(displayConditionValue(value, factor))}
+      onChange={(event) => {
+        const text = event.target.value
+        setRaw(text)
+        const parsed = Number(text)
+        if (text !== '' && Number.isFinite(parsed)) onCommit(parsed * factor)
+      }}
+      onBlur={() => setRaw(null)}
+    />
+    <span>{unit}</span>
+  </label>
 }
 
 function focusField(field: FocusField) {

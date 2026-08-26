@@ -71,6 +71,17 @@ function shanghaiTime(value: string) {
   return shanghaiDateTimeKey(value).slice(11, 16)
 }
 
+// Interval detection must use the Shanghai wall clock, not the browser's
+// local minutes, and an unparseable timestamp (NaN) must not masquerade as
+// one-minute evidence — that would stretch an archived 48-point series over
+// a 240-slot grid and render an almost-empty chart.
+function isFiveMinuteSeries(series: RankRecord[]) {
+  return !series.some((item) => {
+    const minute = Number(shanghaiTime(item.snapshot_at).slice(3))
+    return Number.isFinite(minute) && minute % 5 !== 0
+  })
+}
+
 function formatNumber(value: number, digits = 0) {
   if (!Number.isFinite(value)) return '--'
   return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(value)
@@ -371,7 +382,14 @@ function Pagination({ page, pages, setPage, compact = false }: { page: number; p
 }
 
 function MetricToolbar({ metric, setMetric, secondaryMetric, setSecondaryMetric, metrics = METRICS }: { metric: Metric; setMetric: (value: Metric) => void; secondaryMetric: Metric | 'none'; setSecondaryMetric: (value: Metric | 'none') => void; metrics?: Metric[] }) {
-  return <div className="metric-toolbar"><label><span>主指标</span><select value={metric} onChange={(event) => setMetric(event.target.value as Metric)}>{metrics.map((item) => <option key={item} value={item}>{METRIC_LABELS[item]}</option>)}</select></label><label><span>叠加指标</span><select value={secondaryMetric} onChange={(event) => setSecondaryMetric(event.target.value as Metric | 'none')}><option value="none">不叠加</option>{metrics.filter((item) => item !== metric).map((item) => <option key={item} value={item}>{METRIC_LABELS[item]}</option>)}</select></label></div>
+  // Switching the primary metric onto the current overlay must demote the
+  // overlay: otherwise the overlay <select> holds a value absent from its
+  // option list (rendered blank) and the chart draws two identical series.
+  const changeMetric = (value: Metric) => {
+    setMetric(value)
+    if (secondaryMetric === value) setSecondaryMetric('none')
+  }
+  return <div className="metric-toolbar"><label><span>主指标</span><select value={metric} onChange={(event) => changeMetric(event.target.value as Metric)}>{metrics.map((item) => <option key={item} value={item}>{METRIC_LABELS[item]}</option>)}</select></label><label><span>叠加指标</span><select value={secondaryMetric} onChange={(event) => setSecondaryMetric(event.target.value as Metric | 'none')}><option value="none">不叠加</option>{metrics.filter((item) => item !== metric).map((item) => <option key={item} value={item}>{METRIC_LABELS[item]}</option>)}</select></label></div>
 }
 
 function Chart({ series, metric, secondaryMetric, loading, emptyLabel }: { series: RankRecord[]; metric: Metric; secondaryMetric: Metric | 'none'; loading: boolean; emptyLabel: string }) {
@@ -384,7 +402,7 @@ function Chart({ series, metric, secondaryMetric, loading, emptyLabel }: { serie
 	  if (!metricAvailable(record, selectedMetric)) return null
 	  return ['change_pct', 'dark_inflow_ratio', 'dark_activity'].includes(selectedMetric) ? metricValue(record, selectedMetric) * 100 : metricValue(record, selectedMetric)
 	}
-	const intervalMinutes = series.some((item) => new Date(item.snapshot_at).getMinutes() % 5 !== 0) ? 1 : 5
+	const intervalMinutes = isFiveMinuteSeries(series) ? 5 : 1
 	const points = completeTimeline(series, intervalMinutes)
 	const primaryValues = continuousMetricValues(points, metric, chartValue)
 	const secondaryValues = secondaryMetric === 'none' ? [] : continuousMetricValues(points, secondaryMetric, chartValue)
@@ -424,7 +442,7 @@ function TrendStats({ selected, series, status }: { selected?: RankRecord; serie
   const first = series[0]
   const last = series.at(-1)
   const delta = first && last ? metricValue(last, 'dark_money') - metricValue(first, 'dark_money') : 0
-	const fiveMinuteSeries = series.length > 0 && series.every((item) => new Date(item.snapshot_at).getMinutes() % 5 === 0)
+	const fiveMinuteSeries = series.length > 0 && isFiveMinuteSeries(series)
 	const expectedPoints = fiveMinuteSeries ? 48 : 240
   return <div className="stat-strip"><div><span>当前排名</span><strong>{selected?.rank ?? '--'}</strong></div><div><span>暗盘资金</span><strong className={signedClass(selected?.dark_money ?? 0)}>{selected ? formatMoney(selected.dark_money) : '--'}</strong></div><div><span>日内变化</span><strong className={signedClass(delta)}>{series.length ? `${delta > 0 ? '+' : ''}${formatMoney(delta)}` : '--'}</strong></div><div><span>有效点数</span><strong>{series.length || '--'}<small> / {expectedPoints}</small></strong></div><div><span>市场状态</span><strong>{status?.market_status === 'open' ? '交易中' : status?.market_status === 'lunch_break' ? '午休' : '已收市'}</strong></div></div>
 }
@@ -432,7 +450,11 @@ function TrendStats({ selected, series, status }: { selected?: RankRecord; serie
 function HistoryView({ boardType, setBoardType, selected, historyRanks, historyCode, setHistoryCode, historyDate, setHistoryDate, historyAt, setHistoryAt, metric, setMetric, secondaryMetric, setSecondaryMetric, series, loading, error, from, to, setFrom, setTo }: { boardType: BoardType; setBoardType: (value: BoardType) => void; selected?: RankRecord; historyRanks: RankRecord[]; historyCode: string; setHistoryCode: (value: string) => void; historyDate: string; setHistoryDate: (value: string) => void; historyAt: string; setHistoryAt: (value: string) => void; metric: Metric; setMetric: (value: Metric) => void; secondaryMetric: Metric | 'none'; setSecondaryMetric: (value: Metric | 'none') => void; series: RankRecord[]; loading: boolean; error: Error | null; from: string; to: string; setFrom: (value: string) => void; setTo: (value: string) => void }) {
 	useEffect(() => {
 		if (!RESEARCH_METRICS.includes(metric)) setMetric('dark_money')
-		if (secondaryMetric !== 'none' && !RESEARCH_METRICS.includes(secondaryMetric)) setSecondaryMetric('main_money_inflow')
+		if (secondaryMetric !== 'none' && !RESEARCH_METRICS.includes(secondaryMetric)) {
+			// Pick a research metric that differs from the primary; hardcoding one
+			// could collide with it and duplicate the series in the chart.
+			setSecondaryMetric(RESEARCH_METRICS.find((item) => item !== metric) ?? 'none')
+		}
 	}, [metric, secondaryMetric, setMetric, setSecondaryMetric])
 	  return <section className="history-page panel-section"><div className="section-heading"><div><p className="eyebrow">研究数据</p><h1>板块趋势回看</h1><span className="subline">多日累计资金以前一交易日收盘为基准连续增减；单日原值保留在 tooltip 中。</span></div><div className="section-actions"><ExportLink href={selected ? api.exportURL(boardType, selected.code, from, to) : undefined}><Download size={15} />研究序列</ExportLink><ExportLink href={api.dailyCloseExportURL(historyDate)}><Download size={15} />日终三榜</ExportLink></div></div><div className="history-controls"><label>榜单<select value={boardType} onChange={(event) => setBoardType(event.target.value as BoardType)}><option value="industry">行业</option><option value="concept">概念</option></select></label><label>交易日<input type="date" value={historyDate} onChange={(event) => setHistoryDate(event.target.value)} /></label><label>快照<select value={historyAt} onChange={(event) => setHistoryAt(event.target.value)}><option value="09:35">09:35</option><option value="10:00">10:00</option><option value="11:30">11:30</option><option value="13:05">13:05</option><option value="14:00">14:00</option><option value="15:00">15:00（日终截面）</option></select></label><label>板块<select value={historyCode} onChange={(event) => setHistoryCode(event.target.value)}><option value="">选择板块</option>{historyRanks.map((item) => <option key={item.code} value={item.code}>{item.name} ({item.code})</option>)}</select></label><label>趋势起点<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>趋势终点<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><span className="history-hint">{selected ? `${historyAt === '15:00' ? '日终截面' : '资金点'}排名 ${selected.rank > 0 ? selected.rank : '--'} · ${selected.money_available ? formatMoney(selected.dark_money) : '--'}` : '请选择已归档交易日和板块'}</span></div>{error && <InlineNotice kind="error" text="历史数据读取失败。" />}<MetricToolbar metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} metrics={RESEARCH_METRICS} /><Chart series={series} metric={metric} secondaryMetric={secondaryMetric} loading={loading} emptyLabel="暂无历史研究数据" /><div className="history-summary"><span><CalendarDays size={15} />{from} 至 {to}</span><span>{series.length} 个盘后修订五分钟资金点</span></div></section>
 }
@@ -452,16 +474,31 @@ function StockView({ date, setDate, records, total, query, setQuery, sort, onSor
 
 function ExportLink({ href, title, children }: { href?: string; title?: string; children: React.ReactNode }) {
   const [error, setError] = useState('')
+  // Deliberately not a real hyperlink: an href would let middle-click, "open
+  // in new tab" or "copy link" bypass the token-bearing fetch and land on a
+  // bare 401 page (or navigate the SPA away). Running the download even
+  // without a stored token lets the 401 trigger the Token Gate properly.
+  const run = () => {
+    if (!href) return
+    setError('')
+    api.download(href).catch((downloadError: unknown) => setError(downloadError instanceof Error ? downloadError.message : '导出失败'))
+  }
   return (
     <a
       className="export-link"
-      href={href}
+      role="button"
+      tabIndex={href ? 0 : -1}
+      aria-disabled={!href}
       title={error || title}
       onClick={(event) => {
-        if (!href || !getToken()) return
         event.preventDefault()
-        setError('')
-        api.download(href).catch((downloadError: unknown) => setError(downloadError instanceof Error ? downloadError.message : '导出失败'))
+        run()
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          run()
+        }
       }}
     >
       {children}

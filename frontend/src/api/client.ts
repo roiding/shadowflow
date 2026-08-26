@@ -11,15 +11,18 @@ async function request<T, M = Record<string, unknown>>(path: string, init?: Requ
   try {
     const response = await fetch(path, { ...init, headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init?.headers }, signal: controller.signal })
     const body = await response.text()
+    // Judge the status code before parsing: a gateway or proxy may answer 401
+    // with an HTML page, and failing on the parse first would leave the Token
+    // Gate permanently hidden.
+    if (response.status === 401) {
+      notifyUnauthorized(token)
+      throw new Error('访问令牌无效或已过期')
+    }
     let payload: ApiEnvelope<T, M>
     try {
       payload = body ? JSON.parse(body) as ApiEnvelope<T, M> : {}
     } catch {
       throw new Error(`服务返回了无法识别的响应 (${response.status})`)
-    }
-    if (response.status === 401) {
-      notifyUnauthorized(token)
-      throw new Error('访问令牌无效或已过期')
     }
     if (!response.ok || payload.error) {
       throw new Error(payload.error?.message ?? `请求失败 (${response.status})`)
@@ -99,7 +102,16 @@ export const api = {
       const blob = await response.blob()
       const disposition = response.headers.get('Content-Disposition') ?? ''
       const match = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i)
-      const filename = decodeURIComponent(match?.[1] || match?.[2] || path.split('/').pop()?.split('?')[0] || 'shadowflow-export.csv')
+      // Only the filename*=UTF-8'' form is percent-encoded; decoding the plain
+      // filename= form would throw on a literal '%' and fail the whole export.
+      let filename = match?.[2] || path.split('/').pop()?.split('?')[0] || 'shadowflow-export.csv'
+      if (match?.[1]) {
+        try {
+          filename = decodeURIComponent(match[1])
+        } catch {
+          filename = match[1]
+        }
+      }
       const url = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = url
@@ -107,7 +119,9 @@ export const api = {
       document.body.appendChild(anchor)
       anchor.click()
       anchor.remove()
-      URL.revokeObjectURL(url)
+      // Firefox/Safari may not have committed the download yet; revoking
+      // synchronously can abort large blobs.
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') throw new Error('导出超时，请缩小日期范围')
       throw error
