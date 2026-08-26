@@ -81,7 +81,9 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	readConns, err := envInt("SHADOWFLOW_SQLITE_READ_CONNS", 4)
+	// SQLite has one writer and this service does not need a reader fan-out;
+	// keep a single read connection by default to avoid cache/IO contention.
+	readConns, err := envInt("SHADOWFLOW_SQLITE_READ_CONNS", 1)
 	if err != nil {
 		return Config{}, err
 	}

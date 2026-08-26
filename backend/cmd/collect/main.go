@@ -64,6 +64,10 @@ func main() {
 	// boards. Keep the manual command aligned with the scheduled-job budget.
 	if task == "relations" {
 		timeout = 45 * time.Minute
+	} else if task == "end-of-day" {
+		// The full archive is intentionally sequential to avoid saturating the
+		// upstream guard and SQLite writer.
+		timeout = 90 * time.Minute
 	} else if task == "stock-kline" {
 		timeout = 90 * time.Minute
 	}

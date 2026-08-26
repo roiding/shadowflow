@@ -494,6 +494,156 @@ FROM board_money_5m WHERE trade_date=? AND rank_type='concept'`, record.TradeDat
 	}
 }
 
+func TestSaveBoardArchiveBatchFinalizesRankPerSnapshot(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	closeAt := time.Date(2026, 8, 25, 15, 0, 0, 0, location)
+	records := []graymarket.RankRecord{
+		{TradeDate: "2026-08-25", SnapshotAt: closeAt, RankType: graymarket.RankConcept, Rank: 1, Market: 90, Code: "BK001", Name: "概念A", FetchedAt: closeAt},
+		{TradeDate: "2026-08-25", SnapshotAt: closeAt, RankType: graymarket.RankConcept, Rank: 2, Market: 90, Code: "BK002", Name: "概念B", FetchedAt: closeAt},
+	}
+	snapshot := graymarket.RankSnapshot{TradeDate: "2026-08-25", RankType: graymarket.RankConcept, SnapshotAt: closeAt, Records: records}
+	at := func(clock string) time.Time {
+		value, _ := time.ParseInLocation("2006-01-02 15:04", snapshot.TradeDate+" "+clock, location)
+		return value
+	}
+	point := func(clock, code string, darkMoney int64) graymarket.MoneyPoint {
+		return graymarket.MoneyPoint{TradeDate: snapshot.TradeDate, SnapshotAt: at(clock), RankType: snapshot.RankType,
+			Market: 90, Code: code, Name: code, DarkMoney: darkMoney, FetchedAt: closeAt}
+	}
+	// BK001 arrives in the first batch, BK002 in the final batch; a per-batch
+	// rank pass would wrongly rank BK001 first everywhere.
+	first := []graymarket.MoneyPoint{
+		point("10:00", "BK001", 100),
+		point("10:05", "BK001", 300),
+		point("10:10", "BK001", 200),
+	}
+	final := []graymarket.MoneyPoint{
+		point("10:00", "BK002", 200),
+		point("10:05", "BK002", 100),
+		point("10:10", "BK002", 200),
+	}
+	if err := store.SaveBoardArchiveBatch(ctx, "rank-batch", snapshot, first, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveBoardArchiveBatch(ctx, "rank-batch", snapshot, final, false, true); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.db.QueryContext(ctx, `SELECT snapshot_at, code, rank FROM board_money_5m
+WHERE trade_date=? AND rank_type='concept' ORDER BY snapshot_at, rank`, snapshot.TradeDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	type row struct {
+		snapshotAt string
+		code       string
+		rank       int64
+	}
+	var got []row
+	for rows.Next() {
+		var item row
+		if err := rows.Scan(&item.snapshotAt, &item.code, &item.rank); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, item)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []row{
+		{"2026-08-25T10:00:00+08:00", "BK002", 1}, {"2026-08-25T10:00:00+08:00", "BK001", 2},
+		{"2026-08-25T10:05:00+08:00", "BK001", 1}, {"2026-08-25T10:05:00+08:00", "BK002", 2},
+		// Equal dark_money is broken by ascending code.
+		{"2026-08-25T10:10:00+08:00", "BK001", 1}, {"2026-08-25T10:10:00+08:00", "BK002", 2},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected board rank rows: %+v", got)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("rank mismatch at %d: got %+v want %+v", index, got[index], want[index])
+		}
+	}
+}
+
+func TestSaveStockArchiveBatchFinalizesMoneyRankPerMinute(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	closeAt := time.Date(2026, 8, 25, 15, 0, 0, 0, location)
+	records := []graymarket.RankRecord{
+		{TradeDate: "2026-08-25", SnapshotAt: closeAt, RankType: graymarket.RankStock, Rank: 1, Market: 0, Code: "000001", Name: "甲", QuoteAvailable: true, OpenPrice: 10, HighPrice: 11, LowPrice: 9, ClosePrice: 10.5, FetchedAt: closeAt},
+		{TradeDate: "2026-08-25", SnapshotAt: closeAt, RankType: graymarket.RankStock, Rank: 2, Market: 1, Code: "600001", Name: "乙", QuoteAvailable: true, OpenPrice: 20, HighPrice: 21, LowPrice: 19, ClosePrice: 20.5, FetchedAt: closeAt},
+	}
+	snapshot := graymarket.RankSnapshot{TradeDate: "2026-08-25", RankType: graymarket.RankStock, SnapshotAt: closeAt, Records: records}
+	at := func(clock string) time.Time {
+		value, _ := time.ParseInLocation("2006-01-02 15:04", snapshot.TradeDate+" "+clock, location)
+		return value
+	}
+	point := func(clock string, record graymarket.RankRecord, darkMoney int64) graymarket.MoneyPoint {
+		return graymarket.MoneyPoint{TradeDate: snapshot.TradeDate, SnapshotAt: at(clock), RankType: snapshot.RankType,
+			Market: record.Market, Code: record.Code, Name: record.Name, DarkMoney: darkMoney, FetchedAt: closeAt}
+	}
+	first := []graymarket.MoneyPoint{
+		point("10:00", records[0], 100),
+		point("10:05", records[0], 300),
+	}
+	final := []graymarket.MoneyPoint{
+		point("10:00", records[1], 200),
+		point("10:05", records[1], 100),
+	}
+	if err := store.SaveStockArchiveBatch(ctx, "rank-stock-batch", snapshot, first, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveStockArchiveBatch(ctx, "rank-stock-batch", snapshot, final, false, true); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.db.QueryContext(ctx, `SELECT minute_index, code, money_rank FROM stock_research_5m
+WHERE trade_date=? ORDER BY minute_index, money_rank`, snapshot.TradeDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	type row struct {
+		minuteIndex int
+		code        string
+		rank        int64
+	}
+	var got []row
+	for rows.Next() {
+		var item row
+		if err := rows.Scan(&item.minuteIndex, &item.code, &item.rank); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, item)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []row{
+		{5, "600001", 1}, {5, "000001", 2},
+		{6, "000001", 1}, {6, "600001", 2},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected stock rank rows: %+v", got)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("rank mismatch at %d: got %+v want %+v", index, got[index], want[index])
+		}
+	}
+}
+
 func TestSaveStockArchivePersists48MoneyBarsAndDailyK(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {

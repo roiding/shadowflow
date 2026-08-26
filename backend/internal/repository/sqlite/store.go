@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -41,7 +42,7 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	return OpenWithReadConns(path, 4)
+	return OpenWithReadConns(path, 1)
 }
 
 func OpenWithReadConns(path string, readConns int) (*Store, error) {
@@ -555,23 +556,23 @@ SELECT run_id,snapshot_at,trade_date,requested_date,'daily_close',rank_type,rank
 latest_price_raw,change_pct,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at,created_at
 FROM rank_snapshot WHERE snapshot_kind='research_5m' AND rank_type IN ('industry','concept')
-AND substr(snapshot_at,12,5)='15:00'`)
+AND strftime('%H:%M', snapshot_at, '+8 hours')='15:00'`)
 	if err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM rank_snapshot WHERE snapshot_kind='research_5m'
-AND rank_type IN ('industry','concept') AND substr(snapshot_at,12,5)='15:00'`); err != nil {
+AND rank_type IN ('industry','concept') AND strftime('%H:%M', snapshot_at, '+8 hours')='15:00'`); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO raw_response
 (run_id,snapshot_at,snapshot_kind,rank_type,page,content_encoding,compression,body,fetched_at)
 SELECT run_id,snapshot_at,'daily_close',rank_type,page,content_encoding,compression,body,fetched_at
 FROM raw_response WHERE snapshot_kind='research_5m' AND rank_type IN ('industry','concept')
-AND substr(snapshot_at,12,5)='15:00'`); err != nil {
+	AND strftime('%H:%M', snapshot_at, '+8 hours')='15:00'`); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM raw_response WHERE snapshot_kind='research_5m'
-AND rank_type IN ('industry','concept') AND substr(snapshot_at,12,5)='15:00'`); err != nil {
+	AND rank_type IN ('industry','concept') AND strftime('%H:%M', snapshot_at, '+8 hours')='15:00'`); err != nil {
 		return err
 	}
 
@@ -701,7 +702,7 @@ func (s *Store) SaveBoardArchive(ctx context.Context, runID string, snapshot gra
 	if _, err := tx.ExecContext(ctx, `DELETE FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type=?`, snapshot.TradeDate, string(snapshot.RankType)); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM raw_response WHERE substr(snapshot_at,1,10)=? AND snapshot_kind='daily_close' AND rank_type=?`, snapshot.TradeDate, string(snapshot.RankType)); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM raw_response WHERE date(snapshot_at,'+8 hours')=? AND snapshot_kind='daily_close' AND rank_type=?`, snapshot.TradeDate, string(snapshot.RankType)); err != nil {
 		return err
 	}
 	for _, record := range snapshot.Records {
@@ -784,7 +785,7 @@ func (s *Store) SaveStockArchive(ctx context.Context, runID string, snapshot gra
 	if _, err := tx.ExecContext(ctx, `DELETE FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock'`, snapshot.TradeDate); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM raw_response WHERE substr(snapshot_at,1,10)=? AND snapshot_kind='daily_close' AND rank_type='stock'`, snapshot.TradeDate); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM raw_response WHERE date(snapshot_at,'+8 hours')=? AND snapshot_kind='daily_close' AND rank_type='stock'`, snapshot.TradeDate); err != nil {
 		return err
 	}
 	expectedKlineStocks := len(records)
@@ -870,7 +871,7 @@ func (s *Store) SaveBoardArchiveBatch(ctx context.Context, runID string, snapsho
 		for _, q := range []string{
 			`DELETE FROM board_money_5m WHERE trade_date=? AND rank_type=?`,
 			`DELETE FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type=?`,
-			`DELETE FROM raw_response WHERE substr(snapshot_at,1,10)=? AND snapshot_kind='daily_close' AND rank_type=?`,
+			`DELETE FROM raw_response WHERE date(snapshot_at,'+8 hours')=? AND snapshot_kind='daily_close' AND rank_type=?`,
 		} {
 			if _, err := tx.ExecContext(ctx, q, snapshot.TradeDate, string(snapshot.RankType)); err != nil {
 				return err
@@ -896,23 +897,14 @@ func (s *Store) SaveBoardArchiveBatch(ctx context.Context, runID string, snapsho
 (run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,snapshot_at,rank_type,code) DO UPDATE SET
 dark_money=excluded.dark_money,regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow,money_available=1,source_time=excluded.source_time,fetched_at=excluded.fetched_at`,
-			runID, point.SnapshotAt.Format(timestampLayout), point.TradeDate, string(point.RankType), 0, point.Market, point.Code, point.Name, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1, point.SourceTime, point.FetchedAt.Format(timestampLayout)); err != nil {
+			runID, point.SnapshotAt.Format(timestampLayout), point.TradeDate, string(point.RankType), point.Rank, point.Market, point.Code, point.Name, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1, point.SourceTime, point.FetchedAt.Format(timestampLayout)); err != nil {
 			return err
 		}
 	}
 	if !final {
 		return tx.Commit()
 	}
-	// Money-point rank is distinct from the daily darktrade leaderboard rank
-	// stored in rank_snapshot. It is derived only for the 5-minute funding
-	// series after the complete universe has been persisted.
-	if _, err := tx.ExecContext(ctx, `WITH ranked AS (
-SELECT trade_date,snapshot_at,rank_type,code,
-ROW_NUMBER() OVER (PARTITION BY trade_date,snapshot_at,rank_type ORDER BY dark_money DESC,code ASC) AS computed_rank
-FROM board_money_5m WHERE trade_date=? AND rank_type=?
-)
-UPDATE board_money_5m AS target SET rank=(SELECT computed_rank FROM ranked WHERE ranked.trade_date=target.trade_date AND ranked.snapshot_at=target.snapshot_at AND ranked.rank_type=target.rank_type AND ranked.code=target.code)
-WHERE target.trade_date=? AND target.rank_type=?`, snapshot.TradeDate, string(snapshot.RankType), snapshot.TradeDate, string(snapshot.RankType)); err != nil {
+	if err := finalizeBoardArchiveRanks(ctx, tx, snapshot.TradeDate, snapshot.RankType); err != nil {
 		return err
 	}
 	minutes, err := snapshotMinutes(ctx, tx, "rank_intraday_work", snapshot.TradeDate, snapshot.RankType, "")
@@ -953,7 +945,7 @@ func (s *Store) SaveStockArchiveBatch(ctx context.Context, runID string, snapsho
 		for _, q := range []string{
 			`DELETE FROM stock_research_5m WHERE trade_date=?`, `DELETE FROM stock_kline_source WHERE trade_date=?`,
 			`DELETE FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock'`,
-			`DELETE FROM raw_response WHERE substr(snapshot_at,1,10)=? AND snapshot_kind='daily_close' AND rank_type='stock'`,
+			`DELETE FROM raw_response WHERE date(snapshot_at,'+8 hours')=? AND snapshot_kind='daily_close' AND rank_type='stock'`,
 		} {
 			if _, err := tx.ExecContext(ctx, q, snapshot.TradeDate); err != nil {
 				return err
@@ -977,20 +969,14 @@ func (s *Store) SaveStockArchiveBatch(ctx context.Context, runID string, snapsho
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO stock_research_5m
 (trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available)
-VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,minute_index,market,code) DO UPDATE SET money_rank=excluded.money_rank,dark_money=excluded.dark_money,regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow,money_available=1`, point.TradeDate, minuteIndex, point.Market, point.Code, 0, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1); err != nil {
+VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,minute_index,market,code) DO UPDATE SET money_rank=excluded.money_rank,dark_money=excluded.dark_money,regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow,money_available=1`, point.TradeDate, minuteIndex, point.Market, point.Code, point.Rank, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1); err != nil {
 			return err
 		}
 	}
 	if !final {
 		return tx.Commit()
 	}
-	if _, err := tx.ExecContext(ctx, `WITH ranked AS (
-SELECT trade_date,minute_index,market,code,
-ROW_NUMBER() OVER (PARTITION BY trade_date,minute_index ORDER BY dark_money DESC,code ASC) AS computed_rank
-FROM stock_research_5m WHERE trade_date=?
-)
-UPDATE stock_research_5m AS target SET money_rank=(SELECT computed_rank FROM ranked WHERE ranked.trade_date=target.trade_date AND ranked.minute_index=target.minute_index AND ranked.market=target.market AND ranked.code=target.code)
-WHERE target.trade_date=?`, snapshot.TradeDate, snapshot.TradeDate); err != nil {
+	if err := finalizeStockArchiveRanks(ctx, tx, snapshot.TradeDate); err != nil {
 		return err
 	}
 	var moneyRows, klineRows int
@@ -1009,6 +995,127 @@ WHERE target.trade_date=?`, snapshot.TradeDate, snapshot.TradeDate); err != nil 
 		return err
 	}
 	return tx.Commit()
+}
+
+// finalizeBoardArchiveRanks recomputes the per-snapshot money rank for the
+// complete board universe in memory and writes it back. Only one 5-minute
+// slice is held at a time; loading the whole day's archive is unnecessary.
+// The derivation matches the pre-streaming implementation: per snapshot,
+// dark_money descending, code ascending.
+func finalizeBoardArchiveRanks(ctx context.Context, tx *sql.Tx, tradeDate string, rankType graymarket.RankType) error {
+	type archivePoint struct {
+		code      string
+		darkMoney int64
+	}
+	snapshots, err := tx.QueryContext(ctx, `SELECT DISTINCT snapshot_at FROM board_money_5m WHERE trade_date=? AND rank_type=? ORDER BY snapshot_at`, tradeDate, string(rankType))
+	if err != nil {
+		return err
+	}
+	var snapshotAts []string
+	for snapshots.Next() {
+		var snapshotAt string
+		if err := snapshots.Scan(&snapshotAt); err != nil {
+			snapshots.Close()
+			return err
+		}
+		snapshotAts = append(snapshotAts, snapshotAt)
+	}
+	if err := snapshots.Err(); err != nil {
+		snapshots.Close()
+		return err
+	}
+	if err := snapshots.Close(); err != nil {
+		return err
+	}
+	update, err := tx.PrepareContext(ctx, `UPDATE board_money_5m SET rank=? WHERE trade_date=? AND snapshot_at=? AND rank_type=? AND code=?`)
+	if err != nil {
+		return err
+	}
+	defer update.Close()
+	for _, snapshotAt := range snapshotAts {
+		rows, err := tx.QueryContext(ctx, `SELECT code, dark_money FROM board_money_5m WHERE trade_date=? AND snapshot_at=? AND rank_type=?`, tradeDate, snapshotAt, string(rankType))
+		if err != nil {
+			return err
+		}
+		points := make([]archivePoint, 0, 512)
+		for rows.Next() {
+			var point archivePoint
+			if err := rows.Scan(&point.code, &point.darkMoney); err != nil {
+				rows.Close()
+				return err
+			}
+			points = append(points, point)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		sort.Slice(points, func(i, j int) bool {
+			if points[i].darkMoney == points[j].darkMoney {
+				return points[i].code < points[j].code
+			}
+			return points[i].darkMoney > points[j].darkMoney
+		})
+		for rank, point := range points {
+			if _, err := update.ExecContext(ctx, rank+1, tradeDate, snapshotAt, string(rankType), point.code); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// finalizeStockArchiveRanks is the stock counterpart of
+// finalizeBoardArchiveRanks: only one five-minute universe is loaded at a
+// time, rather than all 48 slices (up to 256k rows), before sorting.
+func finalizeStockArchiveRanks(ctx context.Context, tx *sql.Tx, tradeDate string) error {
+	type archivePoint struct {
+		market    int64
+		code      string
+		darkMoney int64
+	}
+	update, err := tx.PrepareContext(ctx, `UPDATE stock_research_5m SET money_rank=? WHERE trade_date=? AND minute_index=? AND market=? AND code=?`)
+	if err != nil {
+		return err
+	}
+	defer update.Close()
+	for minuteIndex := 0; minuteIndex < 48; minuteIndex++ {
+		rows, err := tx.QueryContext(ctx, `SELECT market, code, dark_money FROM stock_research_5m WHERE trade_date=? AND minute_index=? AND money_available=1`, tradeDate, minuteIndex)
+		if err != nil {
+			return err
+		}
+		points := make([]archivePoint, 0, 6000)
+		for rows.Next() {
+			var point archivePoint
+			if err := rows.Scan(&point.market, &point.code, &point.darkMoney); err != nil {
+				rows.Close()
+				return err
+			}
+			points = append(points, point)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		sort.Slice(points, func(i, j int) bool {
+			if points[i].darkMoney == points[j].darkMoney {
+				return points[i].code < points[j].code
+			}
+			return points[i].darkMoney > points[j].darkMoney
+		})
+		for rank, point := range points {
+			if _, err := update.ExecContext(ctx, rank+1, tradeDate, minuteIndex, point.market, point.code); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Store) SaveStockKlines(ctx context.Context, runID string, points []graymarket.StockKlinePoint) error {
@@ -1225,9 +1332,10 @@ money_available,source_time,fetched_at)
 SELECT run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,
 money_available,CAST(CASE WHEN quote_time GLOB '[0-9]*' THEN quote_time ELSE '0' END AS INTEGER),fetched_at
 FROM rank_intraday_work
-WHERE trade_date=? AND rank_type=? AND substr(snapshot_at,15,2) IN ('00','05','10','15','20','25','30','35','40','45','50','55')
-AND ((substr(snapshot_at,12,5) BETWEEN '09:35' AND '11:30')
-OR (substr(snapshot_at,12,5) BETWEEN '13:05' AND '15:00'))`, tradeDate, string(rankType))
+WHERE trade_date=? AND rank_type=?
+AND CAST(strftime('%M', snapshot_at, '+8 hours') AS INTEGER) % 5 = 0
+AND ((strftime('%H:%M', snapshot_at, '+8 hours') BETWEEN '09:35' AND '11:30')
+OR (strftime('%H:%M', snapshot_at, '+8 hours') BETWEEN '13:05' AND '15:00'))`, tradeDate, string(rankType))
 		if err != nil {
 			return nil, fmt.Errorf("compact %s: %w", rankType, err)
 		}
@@ -1240,7 +1348,7 @@ SELECT run_id,snapshot_at,trade_date,trade_date,'daily_close',rank_type,rank,mar
 latest_price_raw,change_pct,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at
 FROM rank_intraday_work
-WHERE trade_date=? AND rank_type=? AND substr(snapshot_at,12,5)='15:00'`, tradeDate, string(rankType))
+WHERE trade_date=? AND rank_type=? AND strftime('%H:%M', snapshot_at, '+8 hours')='15:00'`, tradeDate, string(rankType))
 		if err != nil {
 			return nil, fmt.Errorf("archive %s daily close: %w", rankType, err)
 		}
@@ -1318,7 +1426,7 @@ AND quality.collected_daily_close=quality.expected_daily_close)=2
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM raw_response AS raw WHERE snapshot_kind='research_5m' AND `+
-		strings.ReplaceAll(complete, "date_value", "substr(raw.snapshot_at,1,10)"), beforeDate); err != nil {
+		strings.ReplaceAll(complete, "date_value", "date(raw.snapshot_at,'+8 hours')"), beforeDate); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1327,7 +1435,9 @@ AND quality.collected_daily_close=quality.expected_daily_close)=2
 func snapshotMinutes(ctx context.Context, queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, table, tradeDate string, rankType graymarket.RankType, kind string) ([]string, error) {
-	query := "SELECT DISTINCT substr(snapshot_at,12,5) FROM " + table + " WHERE trade_date=? AND rank_type=?"
+	// Stored timestamps may be offset-aware or normalized to UTC by the
+	// SQLite driver. Always compare them in the Shanghai trading timezone.
+	query := "SELECT DISTINCT strftime('%H:%M', snapshot_at, '+8 hours') FROM " + table + " WHERE trade_date=? AND rank_type=?"
 	args := []any{tradeDate, string(rankType)}
 	if kind != "" {
 		query += " AND snapshot_kind=?"

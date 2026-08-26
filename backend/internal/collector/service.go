@@ -131,15 +131,12 @@ func (s *Service) CollectEndOfDay(ctx context.Context, runAt time.Time) error {
 	date := runAt.Format("20060102")
 	tradeDate := runAt.Format("2006-01-02")
 	revisionID := "eod-" + newRunID()
-	errCh := make(chan error, 3)
-	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept} {
-		rankType := rankType
-		go func() { errCh <- s.collectMoneyArchive(ctx, rankType, date, closeAt, runAt) }()
-	}
-	go func() { errCh <- s.collectMoneyArchive(ctx, graymarket.RankStock, date, closeAt, runAt) }()
 	var combined error
-	for range 3 {
-		combined = errors.Join(combined, <-errCh)
+	// These scans share the same upstream endpoint and SQLite writer. Running
+	// all three at once amplifies throttling and lock contention, so keep the
+	// manual/full-service path sequential while still attempting every part.
+	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept, graymarket.RankStock} {
+		combined = errors.Join(combined, s.collectMoneyArchive(ctx, rankType, date, closeAt, runAt))
 	}
 	if combined == nil {
 		klineComplete, err := s.store.HasStockKlineArchive(ctx, tradeDate)

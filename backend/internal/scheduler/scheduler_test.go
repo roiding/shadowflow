@@ -63,15 +63,17 @@ func TestScheduledJobBoundaries(t *testing.T) {
 type schedulerCollector struct {
 	mu         sync.Mutex
 	calls      []string
+	minuteAt   time.Time
 	endStarted chan struct{}
 	endRelease chan struct{}
 	hasEnd     bool
 	hasKline   bool
 }
 
-func (c *schedulerCollector) CollectBoards(context.Context, time.Time) error {
+func (c *schedulerCollector) CollectBoards(_ context.Context, at time.Time) error {
 	c.mu.Lock()
 	c.calls = append(c.calls, "minute")
+	c.minuteAt = at
 	c.mu.Unlock()
 	return nil
 }
@@ -163,6 +165,30 @@ func TestSchedulerUsesIndependentIntradayAndArchiveLanes(t *testing.T) {
 	defer fake.mu.Unlock()
 	if len(fake.calls) != 2 || fake.calls[0] != "end-of-day" || fake.calls[1] != "minute" {
 		t.Fatalf("unexpected lane calls: %v", fake.calls)
+	}
+}
+
+func TestDueMinuteJobRestoresShanghaiLocation(t *testing.T) {
+	calendar, err := tradingcalendar.Load(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &schedulerCollector{}
+	s, err := New(fake, calendar, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	localAt := time.Date(2026, 8, 17, 9, 31, 0, 0, location)
+	job := ScheduledJob{Kind: "minute", PlannedAt: localAt.UTC()}
+	if err := s.executeJob(context.Background(), job, localAt.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	got := fake.minuteAt
+	fake.mu.Unlock()
+	if got.Format("2006-01-02 15:04") != "2026-08-17 09:31" || got.Location().String() != "Asia/Shanghai" {
+		t.Fatalf("minute job used %s (%s), want Shanghai 09:31", got.Format("2006-01-02 15:04"), got.Location())
 	}
 }
 

@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,7 +40,7 @@ func (c *Client) FetchMoney5m(ctx context.Context, snapshot graymarket.RankSnaps
 		points = append(points, curve...)
 		return nil
 	})
-	assignMoneyRanks(points)
+	graymarket.AssignMoneyRanks(points)
 	if err != nil {
 		if len(points) == 0 {
 			return nil, err
@@ -79,9 +78,11 @@ func (c *Client) FetchMoney5mIncremental(ctx context.Context, snapshot graymarke
 				case <-ctx.Done():
 					return
 				}
-				if err != nil {
-					return
-				}
+				// Do not abort the worker on a single board's error. Some active
+				// securities (new/special/BSE instruments) never expose
+				// darktradetick; the consumer records their errors and keeps the
+				// successful curves. Returning here would drain the worker pool and
+				// silently drop every remaining board in jobs.
 			}
 		}()
 	}
@@ -248,27 +249,4 @@ func snapshotLocation(value time.Time) *time.Location {
 		return value.Location()
 	}
 	return time.Local
-}
-
-func assignMoneyRanks(points []graymarket.MoneyPoint) {
-	sort.Slice(points, func(i, j int) bool {
-		if points[i].SnapshotAt.Equal(points[j].SnapshotAt) {
-			if points[i].DarkMoney == points[j].DarkMoney {
-				return points[i].Code < points[j].Code
-			}
-			return points[i].DarkMoney > points[j].DarkMoney
-		}
-		return points[i].SnapshotAt.Before(points[j].SnapshotAt)
-	})
-	var current time.Time
-	var rank int64
-	for index := range points {
-		if !points[index].SnapshotAt.Equal(current) {
-			current = points[index].SnapshotAt
-			rank = 1
-		} else {
-			rank++
-		}
-		points[index].Rank = rank
-	}
 }

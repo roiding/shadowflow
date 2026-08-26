@@ -8,3 +8,7 @@ backups
 *.db
 *.db-shm
 *.db-wal
+
+backend/backfill_concept
+backend/backfill_minutes
+backend/backfill_stock

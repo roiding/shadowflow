@@ -14,6 +14,17 @@ func TestLoadSchedulerEnabledByDefault(t *testing.T) {
 	}
 }
 
+func TestLoadSQLiteReadConnsDefaultsToOne(t *testing.T) {
+	t.Setenv("SHADOWFLOW_SQLITE_READ_CONNS", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SQLiteReadConns != 1 {
+		t.Fatalf("SQLiteReadConns=%d, want 1", cfg.SQLiteReadConns)
+	}
+}
+
 func TestLoadSchedulerEnabled(t *testing.T) {
 	t.Setenv("SHADOWFLOW_SCHEDULER_ENABLED", "false")
 

@@ -173,7 +173,7 @@ FROM stock_research_5m WHERE trade_date=? ORDER BY market,code,minute_index`},
 		{"stock_kline_source", `SELECT trade_date,market,code,source,point_count,parser_version
 FROM stock_kline_source WHERE trade_date=? ORDER BY market,code`},
 		{"raw_response", `SELECT snapshot_at,snapshot_kind,rank_type,page,content_encoding,
-compression,body FROM raw_response WHERE substr(snapshot_at,1,10)=? AND snapshot_kind='daily_close'
+compression,body FROM raw_response WHERE date(snapshot_at,'+8 hours')=? AND snapshot_kind='daily_close'
 ORDER BY snapshot_kind,snapshot_at,rank_type,page`},
 	}
 	for _, item := range queries {

@@ -190,12 +190,21 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 func (s *Scheduler) startJob(ctx context.Context, kind string, current time.Time, tradeDate string) bool {
 	lane := jobLane(kind)
 	key := jobKey(current, kind, tradeDate)
+
+	// Persist the job before contending for the lane. Jobs that share a lane
+	// (e.g. the industry/concept/stock end-of-day parts) would otherwise be
+	// dropped without a trace when the lane is busy; by enqueuing first, a
+	// rejected job stays queued in the store and startDueJobs picks it up once
+	// the lane frees. EnsureScheduledJob is idempotent (INSERT ... DO NOTHING),
+	// so calling it every tick is safe.
+	job := newScheduledJob(kind, current.Truncate(time.Minute), tradeDate)
+	if err := s.jobs.EnsureScheduledJob(ctx, job); err != nil {
+		s.logger.Error("ensure scheduled job", "kind", kind, "job_key", key, "error", err)
+		return false
+	}
+
 	s.mu.Lock()
 	if s.running[lane] {
-		if _, seen := s.lastKeys[key]; seen {
-			s.mu.Unlock()
-			return false
-		}
 		s.mu.Unlock()
 		return false
 	}
@@ -207,12 +216,6 @@ func (s *Scheduler) startJob(ctx context.Context, kind string, current time.Time
 	s.running[lane] = true
 	s.mu.Unlock()
 
-	job := newScheduledJob(kind, current.Truncate(time.Minute), tradeDate)
-	if err := s.jobs.EnsureScheduledJob(ctx, job); err != nil {
-		s.release(lane, key, current)
-		s.logger.Error("ensure scheduled job", "kind", kind, "job_key", key, "error", err)
-		return false
-	}
 	leaseUntil := current.Add(policyFor(kind).timeout + 30*time.Second)
 	claimed, ok, err := s.jobs.ClaimScheduledJob(ctx, job, s.owner, current, leaseUntil)
 	if err != nil {
@@ -316,7 +319,10 @@ func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current ti
 	tradeDate := job.TradeDate
 	switch job.Kind {
 	case "minute":
-		return s.collector.CollectBoards(ctx, job.PlannedAt)
+		// Scheduled timestamps are persisted in UTC. Collection timestamps are
+		// part of the Shanghai trading-day contract, so restore that location
+		// before deriving the requested date and minute.
+		return s.collector.CollectBoards(ctx, job.PlannedAt.In(s.location))
 	case "end-of-day":
 		if part, ok := s.collector.(archivePartCollector); ok {
 			for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept, graymarket.RankStock} {
@@ -410,40 +416,56 @@ func (s *Scheduler) recoverLatestArchive(ctx context.Context, current time.Time)
 }
 
 func (s *Scheduler) recoverArchive(ctx context.Context, tradeDate string, current time.Time) error {
+	var combined error
 	var exists bool
+	var err error
 	if part, ok := s.collector.(archivePartCollector); ok {
 		for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept, graymarket.RankStock} {
 			exists, err := part.HasEndOfDayPart(ctx, tradeDate, rankType)
 			if err != nil {
-				return err
+				combined = errors.Join(combined, fmt.Errorf("check %s archive: %w", rankType, err))
+				continue
 			}
 			if exists {
 				s.logger.Info("startup archive part already available; skipping", "trade_date", tradeDate, "rank_type", rankType)
 				continue
 			}
 			if err := part.CollectEndOfDayPart(ctx, parseShanghaiTime(tradeDate, "16:00", current), rankType); err != nil {
-				return err
+				// The other archive parts are independently retryable.
+				combined = errors.Join(combined, fmt.Errorf("recover %s archive: %w", rankType, err))
 			}
 		}
 	} else {
 		exists, err := s.collector.HasEndOfDayArchive(ctx, tradeDate)
 		if err != nil {
-			return err
+			combined = errors.Join(combined, err)
 		}
-		if !exists {
+		if err == nil && !exists {
 			if err := s.collector.CollectEndOfDay(ctx, parseShanghaiTime(tradeDate, "16:00", current)); err != nil {
-				return err
+				combined = errors.Join(combined, err)
 			}
 		}
 	}
-	exists, err := s.collector.HasStockKlineArchive(ctx, tradeDate)
+	exists, err = s.collector.HasStockKlineArchive(ctx, tradeDate)
 	if err != nil {
-		return err
+		return errors.Join(combined, err)
 	}
 	if !exists {
-		if err := s.collector.CollectStockKlines(ctx, parseShanghaiTime(tradeDate, "16:15", current)); err != nil {
-			return err
+		// K-lines depend on the complete money archive. Do not launch them
+		// after a failed part and create a misleading second failure.
+		endExists, endErr := s.collector.HasEndOfDayArchive(ctx, tradeDate)
+		if endErr != nil {
+			return errors.Join(combined, endErr)
 		}
+		if !endExists {
+			return errors.Join(combined, fmt.Errorf("%w: end-of-day archive for %s", errDependencyUnavailable, tradeDate))
+		}
+		if err := s.collector.CollectStockKlines(ctx, parseShanghaiTime(tradeDate, "16:15", current)); err != nil {
+			return errors.Join(combined, err)
+		}
+	}
+	if combined != nil {
+		return combined
 	}
 	return s.collector.CleanupArchivedIntraday(ctx, current.Format("2006-01-02"))
 }

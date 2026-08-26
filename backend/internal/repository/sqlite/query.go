@@ -404,18 +404,16 @@ SELECT 1 FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' A
 }
 
 func (s *Store) HasEndOfDayArchive(ctx context.Context, tradeDate string) (bool, error) {
-	var stockClose, boardCloses, curveTypes, stockMoney int
-	if err := s.readDB().QueryRowContext(ctx, `SELECT
-(SELECT EXISTS(SELECT 1 FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock')),
-(SELECT count(DISTINCT rank_type) FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type IN ('industry','concept')),
-(SELECT count(*) FROM (SELECT rank_type FROM board_money_5m WHERE trade_date=? GROUP BY rank_type HAVING count(DISTINCT snapshot_at)=48)),
-(SELECT EXISTS(SELECT 1 FROM stock_archive_quality AS quality WHERE trade_date=?
-AND daily_close_rows=expected_stocks AND daily_kline_rows=expected_kline_stocks
-AND (SELECT coalesce(sum(money_available),0) FROM stock_research_5m WHERE trade_date=quality.trade_date)=expected_kline_stocks*expected_points))`,
-		tradeDate, tradeDate, tradeDate, tradeDate).Scan(&stockClose, &boardCloses, &curveTypes, &stockMoney); err != nil {
-		return false, err
+	// A partial incremental flush can contain all 48 timestamps while still
+	// containing only the first batch of codes. Completion must be checked
+	// against the daily-close universe, not just timestamp count.
+	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept} {
+		complete, err := s.HasBoardArchive(ctx, tradeDate, rankType)
+		if err != nil || !complete {
+			return false, err
+		}
 	}
-	return stockClose == 1 && boardCloses == 2 && curveTypes == 2 && stockMoney == 1, nil
+	return s.HasStockMoneyArchive(ctx, tradeDate)
 }
 
 func (s *Store) HasBoardArchive(ctx context.Context, tradeDate string, rankType graymarket.RankType) (bool, error) {
@@ -425,7 +423,15 @@ func (s *Store) HasBoardArchive(ctx context.Context, tradeDate string, rankType 
 	var closeRows, curveRows int
 	if err := s.readDB().QueryRowContext(ctx, `SELECT
 (SELECT count(*) FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type=?),
-(SELECT EXISTS(SELECT 1 FROM board_money_5m WHERE trade_date=? AND rank_type=? GROUP BY rank_type HAVING count(DISTINCT snapshot_at)=48))`, tradeDate, string(rankType), tradeDate, string(rankType)).Scan(&closeRows, &curveRows); err != nil {
+(SELECT EXISTS(
+    SELECT 1
+    FROM board_money_5m AS money
+    WHERE money.trade_date=? AND money.rank_type=? AND money.money_available=1
+    GROUP BY money.rank_type
+    HAVING count(DISTINCT money.snapshot_at)=48
+       AND count(*)=(SELECT count(*) FROM rank_snapshot
+                     WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type=?)*48
+))`, tradeDate, string(rankType), tradeDate, string(rankType), tradeDate, string(rankType)).Scan(&closeRows, &curveRows); err != nil {
 		return false, err
 	}
 	return closeRows > 0 && curveRows == 1, nil
