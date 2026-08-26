@@ -529,7 +529,9 @@ components:
         required_days: { type: integer }
         request: { $ref: "#/components/schemas/FocusScanRequest" }
         concepts: { type: array, items: { type: object } }
+        concepts_truncated: { type: boolean }
         stocks: { type: array, items: { type: object } }
+        stocks_truncated: { type: boolean }
         rejections:
           type: array
           items:

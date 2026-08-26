@@ -420,21 +420,25 @@ func (s *Store) HasBoardArchive(ctx context.Context, tradeDate string, rankType 
 	if rankType != graymarket.RankIndustry && rankType != graymarket.RankConcept {
 		return false, fmt.Errorf("invalid board rank type %s", rankType)
 	}
-	var closeRows, curveRows int
+	var closeRows, matchedRows int
+	// Completion is judged per board code: every daily-close board must have
+	// exactly 48 distinct five-minute points. A raw row-count comparison
+	// could be satisfied by surplus rows of one code compensating for a
+	// missing code. Keep this in sync with boardArchiveCompleteSQL
+	// (store.go), which mirrors it for the intraday cleanup gate.
 	if err := s.readDB().QueryRowContext(ctx, `SELECT
 (SELECT count(*) FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type=?),
-(SELECT EXISTS(
-    SELECT 1
-    FROM board_money_5m AS money
+(SELECT count(*) FROM rank_snapshot close_row
+ WHERE close_row.trade_date=? AND close_row.snapshot_kind='daily_close' AND close_row.rank_type=?
+ AND close_row.code IN (
+    SELECT money.code FROM board_money_5m money
     WHERE money.trade_date=? AND money.rank_type=? AND money.money_available=1
-    GROUP BY money.rank_type
+    GROUP BY money.code
     HAVING count(DISTINCT money.snapshot_at)=48
-       AND count(*)=(SELECT count(*) FROM rank_snapshot
-                     WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type=?)*48
-))`, tradeDate, string(rankType), tradeDate, string(rankType), tradeDate, string(rankType)).Scan(&closeRows, &curveRows); err != nil {
+))`, tradeDate, string(rankType), tradeDate, string(rankType), tradeDate, string(rankType)).Scan(&closeRows, &matchedRows); err != nil {
 		return false, err
 	}
-	return closeRows > 0 && curveRows == 1, nil
+	return closeRows > 0 && matchedRows == closeRows, nil
 }
 
 func (s *Store) HasStockMoneyArchive(ctx context.Context, tradeDate string) (bool, error) {

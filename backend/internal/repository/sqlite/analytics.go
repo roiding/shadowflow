@@ -471,8 +471,13 @@ SELECT stock_code,board_code FROM active WHERE source_rank=1 ORDER BY stock_code
 
 func loadArchiveCurves(ctx context.Context, tx *sql.Tx, tradeDate string) (map[featureKey]curveValues, error) {
 	result := make(map[featureKey]curveValues)
+	// Filter on money_available: kline backfill inserts placeholder rows with
+	// dark_money=0 for minutes without money data, and counting them as real
+	// observations fabricates drawdowns and sign reversals in the derived
+	// features. deriveCurve treats the resulting short curves (len != 48) as
+	// unavailable, which is the honest answer.
 	rows, err := tx.QueryContext(ctx, `SELECT rank_type,market,code,dark_money
-FROM board_money_5m WHERE trade_date=? ORDER BY rank_type,market,code,snapshot_at`, tradeDate)
+FROM board_money_5m WHERE trade_date=? AND money_available=1 ORDER BY rank_type,market,code,snapshot_at`, tradeDate)
 	if err != nil {
 		return nil, err
 	}
@@ -498,7 +503,7 @@ FROM board_money_5m WHERE trade_date=? ORDER BY rank_type,market,code,snapshot_a
 		return nil, err
 	}
 	rows, err = tx.QueryContext(ctx, `SELECT market,code,dark_money
-FROM stock_research_5m WHERE trade_date=? ORDER BY market,code,minute_index`, tradeDate)
+FROM stock_research_5m WHERE trade_date=? AND money_available=1 ORDER BY market,code,minute_index`, tradeDate)
 	if err != nil {
 		return nil, err
 	}

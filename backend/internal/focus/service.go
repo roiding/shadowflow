@@ -16,6 +16,11 @@ const (
 	maxConsecutiveDays = 60
 	maxConditions      = 20
 	maxRejections      = 200
+	// maxCandidates bounds the response body: every candidate carries one
+	// evaluation entry per day per condition, so an unbounded result over a
+	// 60-day window can reach hundreds of megabytes of JSON (which the
+	// request timeout handler additionally buffers in memory).
+	maxCandidates = 500
 )
 
 var ErrInvalidRequest = errors.New("invalid focus scan request")
@@ -202,7 +207,9 @@ type Result struct {
 	RequiredDays        int                  `json:"required_days"`
 	Request             ScanRequest          `json:"request"`
 	Concepts            []ConceptCandidate   `json:"concepts"`
+	ConceptsTruncated   bool                 `json:"concepts_truncated,omitempty"`
 	Stocks              []StockCandidate     `json:"stocks"`
+	StocksTruncated     bool                 `json:"stocks_truncated,omitempty"`
 	Rejections          []CandidateRejection `json:"rejections"`
 	RejectionsTruncated bool                 `json:"rejections_truncated"`
 	Stats               Stats                `json:"stats"`
@@ -248,8 +255,12 @@ func (s *Service) ScanWith(ctx context.Context, request ScanRequest) (Result, er
 	}
 	result.Ready, result.AsOf = true, dates[len(dates)-1]
 
-	conceptRows := make(map[string]map[string]graymarket.RankRecord, len(dates))
-	stockRows := make(map[string]map[string]graymarket.RankRecord, len(dates))
+	// dayRow keeps only what the evaluation needs. Retaining full RankRecord
+	// values for every stock on every requested day held 150-250MB for a
+	// 60-day scan; the per-day record slice is released right after
+	// conversion, so resident memory is bounded by these scalar rows.
+	conceptRows := make(map[string]map[string]dayRow, len(dates))
+	stockRows := make(map[string]map[string]dayRow, len(dates))
 	for _, date := range dates {
 		records, err := s.source.DailyCloseRecords(ctx, date)
 		if err != nil {
@@ -292,12 +303,20 @@ func (s *Service) ScanWith(ctx context.Context, request ScanRequest) (Result, er
 			}
 		}
 	} else {
-		for code, record := range stockRows[result.AsOf] {
-			universe[code] = graymarket.StockBoardRelation{StockMarket: record.Market, StockCode: code, StockName: record.Name}
+		for code, row := range stockRows[result.AsOf] {
+			universe[code] = graymarket.StockBoardRelation{StockMarket: row.market, StockCode: code, StockName: row.name}
 		}
 	}
 	result.Stocks, result.Stats = evaluateStocks(dates, stockRows, universe, memberships, request, result.Stats, rejections)
 	result.Rejections, result.RejectionsTruncated = rejections.items, rejections.truncated
+	if len(result.Concepts) > maxCandidates {
+		result.Concepts = result.Concepts[:maxCandidates]
+		result.ConceptsTruncated = true
+	}
+	if len(result.Stocks) > maxCandidates {
+		result.Stocks = result.Stocks[:maxCandidates]
+		result.StocksTruncated = true
+	}
 	return result, nil
 }
 
@@ -363,16 +382,16 @@ func validOperator(operator Operator) bool {
 	}
 }
 
-func evaluateConcepts(dates []string, records map[string]map[string]graymarket.RankRecord, request ScanRequest, rejections *rejectionBuffer) ([]ConceptCandidate, Stats) {
+func evaluateConcepts(dates []string, records map[string]map[string]dayRow, request ScanRequest, rejections *rejectionBuffer) ([]ConceptCandidate, Stats) {
 	var stats Stats
 	codes := commonCodes(dates, records)
 	stats.ConceptsEvaluated = len(codes)
 	result := make([]ConceptCandidate, 0)
 	for _, code := range codes {
-		candidate := ConceptCandidate{Code: code, Name: records[dates[len(dates)-1]][code].Name}
+		candidate := ConceptCandidate{Code: code, Name: records[dates[len(dates)-1]][code].name}
 		qualified := true
 		for _, date := range dates {
-			metric := metricFor(records[date][code])
+			metric := records[date][code].metric
 			candidate.Days = append(candidate.Days, metric)
 			evaluation := evaluateConditions(metric, request.ConceptConditions, request.ConceptMatch)
 			candidate.Evaluations = append(candidate.Evaluations, evaluation)
@@ -392,7 +411,7 @@ func evaluateConcepts(dates []string, records map[string]map[string]graymarket.R
 	return result, stats
 }
 
-func evaluateStocks(dates []string, records map[string]map[string]graymarket.RankRecord, universe map[string]graymarket.StockBoardRelation, memberships map[string][]ConceptRef, request ScanRequest, stats Stats, rejections *rejectionBuffer) ([]StockCandidate, Stats) {
+func evaluateStocks(dates []string, records map[string]map[string]dayRow, universe map[string]graymarket.StockBoardRelation, memberships map[string][]ConceptRef, request ScanRequest, stats Stats, rejections *rejectionBuffer) ([]StockCandidate, Stats) {
 	codes := make([]string, 0, len(universe))
 	for code := range universe {
 		codes = append(codes, code)
@@ -420,15 +439,17 @@ func evaluateStocks(dates []string, records map[string]map[string]graymarket.Ran
 		}
 		qualified := true
 		for _, date := range dates {
-			record, exists := records[date][code]
-			if !exists || !record.QuoteAvailable {
+			row, exists := records[date][code]
+			if !exists {
+				// indexRecords only retains quote-available records, so a
+				// missing entry covers the old !QuoteAvailable case too.
 				stats.MissingRecordExcluded++
 				qualified = false
 				rejections.add(CandidateRejection{Kind: "stock", Market: relation.StockMarket, Code: code,
 					Name: relation.StockName, Reason: "missing_daily_close", FailedDate: date})
 				break
 			}
-			metric := metricFor(record)
+			metric := row.metric
 			candidate.Days = append(candidate.Days, metric)
 			evaluation := evaluateConditions(metric, request.StockConditions, request.StockMatch)
 			candidate.Evaluations = append(candidate.Evaluations, evaluation)
@@ -449,17 +470,26 @@ func evaluateStocks(dates []string, records map[string]map[string]graymarket.Ran
 	return result, stats
 }
 
-func indexRecords(records []graymarket.RankRecord, rankType graymarket.RankType) map[string]graymarket.RankRecord {
-	result := make(map[string]graymarket.RankRecord)
+// dayRow is the memory-bounded per-day representation used by scans: the
+// candidate's display identity plus the scalar metric set, instead of the
+// full ~40-field RankRecord.
+type dayRow struct {
+	name   string
+	market int64
+	metric DailyMetric
+}
+
+func indexRecords(records []graymarket.RankRecord, rankType graymarket.RankType) map[string]dayRow {
+	result := make(map[string]dayRow)
 	for _, record := range records {
 		if record.RankType == rankType && record.QuoteAvailable {
-			result[record.Code] = record
+			result[record.Code] = dayRow{name: record.Name, market: record.Market, metric: metricFor(record)}
 		}
 	}
 	return result
 }
 
-func commonCodes(dates []string, records map[string]map[string]graymarket.RankRecord) []string {
+func commonCodes(dates []string, records map[string]map[string]dayRow) []string {
 	result := make([]string, 0)
 	for code := range records[dates[0]] {
 		present := true

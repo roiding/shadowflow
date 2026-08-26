@@ -91,7 +91,9 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 			switch {
 			case strings.HasPrefix(r.URL.Path, "/api/v1/research/") && strings.HasSuffix(r.URL.Path, "/export"):
 				limiter = export
-			case r.URL.Path == "/api/v1/focus/scan":
+			case r.URL.Path == "/api/v1/focus/scan", r.URL.Path == "/api/v1/focus/three-day":
+				// three-day runs the same multi-day scan pipeline as /scan and
+				// must share its stricter budget, not the normal read bucket.
 				limiter = scan
 			}
 			if !limiter.allow(clientIP(r)) {
@@ -111,7 +113,7 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 				return
 			}
 			timeout := 20 * time.Second
-			if r.URL.Path == "/api/v1/focus/scan" {
+			if r.URL.Path == "/api/v1/focus/scan" || r.URL.Path == "/api/v1/focus/three-day" {
 				timeout = 30 * time.Second
 			}
 			requestTimeout(timeout)(next).ServeHTTP(w, r)

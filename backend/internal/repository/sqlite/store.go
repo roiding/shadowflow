@@ -1516,20 +1516,25 @@ func (s *Store) CleanupIntraday(ctx context.Context, tradeDate string) error {
 }
 
 // boardArchiveCompleteSQL returns a predicate mirroring HasBoardArchive's
-// completion criteria for one rank type, correlated on date_value. Keep it in
-// sync with HasBoardArchive (query.go); CleanupArchivedIntraday must never be
-// more permissive than the archive check, or intraday work data could be
+// completion criteria for one rank type, correlated on date_value: every
+// daily-close board must have exactly 48 distinct five-minute points. Keep it
+// in sync with HasBoardArchive (query.go); CleanupArchivedIntraday must never
+// be more permissive than the archive check, or intraday work data could be
 // deleted while the long-term archive is still incomplete.
 func boardArchiveCompleteSQL(rankType string) string {
 	return `(SELECT count(*) FROM rank_snapshot close_check WHERE close_check.trade_date=date_value
 	AND close_check.snapshot_kind='daily_close' AND close_check.rank_type='` + rankType + `')>0
-	AND (SELECT count(DISTINCT money_check.snapshot_at) FROM board_money_5m money_check
-	WHERE money_check.trade_date=date_value AND money_check.rank_type='` + rankType + `'
-	AND money_check.money_available=1)=48
-	AND (SELECT count(*) FROM board_money_5m money_check WHERE money_check.trade_date=date_value
-	AND money_check.rank_type='` + rankType + `' AND money_check.money_available=1)=
+	AND (SELECT count(*) FROM rank_snapshot close_check WHERE close_check.trade_date=date_value
+	AND close_check.snapshot_kind='daily_close' AND close_check.rank_type='` + rankType + `'
+	AND close_check.code IN (
+	    SELECT money_check.code FROM board_money_5m money_check
+	    WHERE money_check.trade_date=date_value AND money_check.rank_type='` + rankType + `'
+	    AND money_check.money_available=1
+	    GROUP BY money_check.code
+	    HAVING count(DISTINCT money_check.snapshot_at)=48
+	))=
 	(SELECT count(*) FROM rank_snapshot close_check WHERE close_check.trade_date=date_value
-	AND close_check.snapshot_kind='daily_close' AND close_check.rank_type='` + rankType + `')*48`
+	AND close_check.snapshot_kind='daily_close' AND close_check.rank_type='` + rankType + `')`
 }
 
 func (s *Store) CleanupArchivedIntraday(ctx context.Context, beforeDate string) error {

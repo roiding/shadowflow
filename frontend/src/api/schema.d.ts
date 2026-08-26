@@ -972,7 +972,9 @@ export interface components {
             required_days?: number;
             request?: components["schemas"]["FocusScanRequest"];
             concepts?: Record<string, never>[];
+            concepts_truncated?: boolean;
             stocks?: Record<string, never>[];
+            stocks_truncated?: boolean;
             rejections?: {
                 /** @enum {string} */
                 kind?: "concept" | "stock";

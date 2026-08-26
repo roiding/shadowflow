@@ -398,7 +398,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "close-"+rankTy
 			_, err = store.db.ExecContext(ctx, `INSERT INTO board_money_5m
 (run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "archive-"+rankType, at.Format(timestampLayout), "2026-08-12", rankType, 1, 90,
-				"code-"+rankType, rankType, index, index, index*2, 1, 0, now)
+				"close-"+rankType, rankType, index, index, index*2, 1, 0, now)
 			if err != nil {
 				t.Fatal(err)
 			}
