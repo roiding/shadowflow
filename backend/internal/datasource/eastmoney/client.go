@@ -150,6 +150,21 @@ func (c *Client) FetchAll(ctx context.Context, rankType graymarket.RankType, dat
 	if result.ExpectedTotal > 0 && len(result.Records) != result.ExpectedTotal {
 		return graymarket.RankSnapshot{}, fmt.Errorf("incomplete %s snapshot: expected %d records, got %d", rankType, result.ExpectedTotal, len(result.Records))
 	}
+	// The ranking is sorted by dark money, so a snapshot where every record
+	// has zero money fields is physically impossible on a trading day — it
+	// means the upstream field numbering changed and intValue silently mapped
+	// every value to zero. Without this guard such a day would pass every
+	// count-based completeness check and be sealed as trusted all-zero data.
+	allZero := true
+	for _, record := range result.Records {
+		if record.DarkMoney != 0 || record.RegularMoney != 0 || record.MainMoneyInflow != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		return graymarket.RankSnapshot{}, fmt.Errorf("%s snapshot has zero money fields across all %d records; upstream field mapping may have changed", rankType, len(result.Records))
+	}
 	return result, nil
 }
 

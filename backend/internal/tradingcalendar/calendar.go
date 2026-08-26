@@ -170,19 +170,62 @@ func (c *Calendar) RefreshIfNeeded(ctx context.Context, client *http.Client, pat
 	if coverage.ValidThrough != "" && coverage.DaysRemaining >= leadDays {
 		return false, nil
 	}
+	// Derive the target year from the current coverage: once this year's
+	// schedule is loaded, the only useful fetch is next year's. Deriving it
+	// from the wall clock instead ("December means next year") made every
+	// refresh from mid-November until December re-download the already-known
+	// current year and rewrite the file daily without extending coverage.
 	year := now.Year()
-	if now.Month() == time.December {
-		year++
+	if coverage.ValidThrough != "" {
+		if valid, err := time.Parse("2006-01-02", coverage.ValidThrough); err == nil && valid.Year() >= year {
+			year = valid.Year() + 1
+		}
 	}
-	data, err := fetchAnnualSchedule(ctx, client, sourceURL, year, now)
+	fetched, err := fetchAnnualSchedule(ctx, client, sourceURL, year, now)
 	if err != nil {
 		return false, err
 	}
+	data := c.mergedWith(fetched, year)
 	if err := writeCalendar(path, data); err != nil {
 		return false, err
 	}
 	c.replace(data)
 	return true, nil
+}
+
+// mergedWith combines a freshly fetched one-year schedule with the entries
+// already loaded for other years. Refreshing next year's schedule in December
+// must not drop the current year's remaining holidays (e.g. the New Year
+// closure starting Dec 31) or manually maintained workday adjustments.
+func (c *Calendar) mergedWith(fetched fileData, year int) fileData {
+	prefix := fmt.Sprintf("%04d-", year)
+	newHolidays := make(map[string]struct{}, len(fetched.Holidays))
+	for _, day := range fetched.Holidays {
+		newHolidays[day] = struct{}{}
+	}
+	c.mu.RLock()
+	holidays := make([]string, 0, len(c.holiday)+len(fetched.Holidays))
+	for day := range c.holiday {
+		if !strings.HasPrefix(day, prefix) {
+			holidays = append(holidays, day)
+		}
+	}
+	workdays := make([]string, 0, len(c.workday))
+	for day := range c.workday {
+		if _, clash := newHolidays[day]; !clash {
+			workdays = append(workdays, day)
+		}
+	}
+	validThrough := c.validThrough
+	c.mu.RUnlock()
+	holidays = append(holidays, fetched.Holidays...)
+	sort.Strings(holidays)
+	sort.Strings(workdays)
+	if fetched.ValidThrough > validThrough {
+		validThrough = fetched.ValidThrough
+	}
+	return fileData{Holidays: holidays, Workdays: workdays, ValidThrough: validThrough,
+		UpdatedAt: fetched.UpdatedAt, Source: fetched.Source}
 }
 
 func fetchAnnualSchedule(ctx context.Context, client *http.Client, sourceURL string, year int, now time.Time) (fileData, error) {

@@ -69,6 +69,23 @@ func TestFetchAllMapsStockCodeSeparatelyFromQuoteTime(t *testing.T) {
 	}
 }
 
+func TestFetchAllRejectsAllZeroMoneySnapshot(t *testing.T) {
+	// Simulates an upstream field renumbering: keys "6"/"7"/"8" are gone, so
+	// every record silently maps to zero money. The snapshot must be rejected
+	// instead of being archived as trusted all-zero data.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"errid":0,"errmsg":"success","1":20260812,"2":2,"data":[
+{"3":90,"4":"BK0448","5":103105,"60":100,"70":200,"80":300,"16":"甲"},
+{"3":90,"4":"BK0002","5":103105,"60":90,"70":190,"80":280,"16":"乙"}]}`))
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, server.Client(), 10)
+	_, err := client.FetchAll(context.Background(), graymarket.RankIndustry, "20260812", time.Date(2026, 8, 12, 10, 31, 0, 0, time.Local))
+	if err == nil || !strings.Contains(err.Error(), "zero money fields") {
+		t.Fatalf("all-zero snapshot was not rejected: %v", err)
+	}
+}
+
 func TestFetchAllRejectsIncompleteSnapshot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"errid":0,"errmsg":"success","1":20260812,"2":2,"data":[{"3":90,"4":"BK1","6":100,"16":"one","21":1}]}`))

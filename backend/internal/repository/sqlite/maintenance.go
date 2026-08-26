@@ -59,6 +59,15 @@ WHERE (status='success' AND coalesce(finished_at,started_at)<?)
 OR (status!='success' AND coalesce(finished_at,started_at)<?)`, successCutoff, failureCutoff); err != nil {
 		return result, err
 	}
+	// Staged relations are only removed by a successful apply or an orderly
+	// failure; a crashed sync leaves its rows behind forever (Open cleans them
+	// too, but a long-running server never reopens the store). The 09:15
+	// relations job may be live while maintenance runs at 09:05 after a slow
+	// start, so rows of a currently running sync are kept.
+	if _, err = execDeleted(ctx, tx, `DELETE FROM stock_board_relation_stage
+WHERE run_id NOT IN (SELECT run_id FROM relation_sync_run WHERE status='running')`); err != nil {
+		return result, err
+	}
 	if result.ScheduledJobsDeleted, err = execDeleted(ctx, tx, `DELETE FROM scheduled_job
 WHERE (status IN ('succeeded','skipped') AND coalesce(finished_at,planned_at)<?)
 OR (status='failed' AND coalesce(finished_at,planned_at)<?)

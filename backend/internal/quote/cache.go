@@ -75,16 +75,39 @@ func (c *Cache) Snapshot(boardType graymarket.BoardType, boardCode string, relat
 	}
 	item.lastAccess = now
 	snapshot, status := c.visible(item, now)
-	shouldRefresh := !item.refreshing && (item.lastAttempt.IsZero() || now.Sub(item.lastAttempt) >= c.ttl(now))
+	// A refresh goroutine holds the flag for at most requestTimeout plus
+	// scheduling slack; beyond stuckAfter the marker is treated as leaked
+	// (e.g. a panicked goroutine) so the board can refresh again instead of
+	// being frozen forever.
+	stuck := item.refreshing && !item.lastAttempt.IsZero() && now.Sub(item.lastAttempt) > c.stuckAfter()
+	shouldRefresh := (!item.refreshing || stuck) && (item.lastAttempt.IsZero() || now.Sub(item.lastAttempt) >= c.ttl(now))
 	if shouldRefresh {
 		item.refreshing = true
 		item.lastAttempt = now
 	}
 	c.mu.Unlock()
 	if shouldRefresh {
-		go c.refresh(key, relations)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					if c.logger != nil {
+						c.logger.Error("board quote refresh panicked", "board", key, "panic", r)
+					}
+					c.mu.Lock()
+					if item := c.entries[key]; item != nil {
+						item.refreshing = false
+					}
+					c.mu.Unlock()
+				}
+			}()
+			c.refresh(key, relations)
+		}()
 	}
 	return snapshot, status
+}
+
+func (c *Cache) stuckAfter() time.Duration {
+	return c.requestTimeout * 6
 }
 
 func (c *Cache) visible(item *entry, now time.Time) (Snapshot, Status) {
@@ -161,10 +184,13 @@ func (c *Cache) trimLocked() {
 }
 
 func (c *Cache) evictOneLocked() bool {
+	now := time.Now()
 	var oldestKey string
 	var oldest time.Time
 	for key, item := range c.entries {
-		if item.refreshing {
+		// Keep entries with a live in-flight refresh, but do not let a leaked
+		// marker make an entry permanently unevictable.
+		if item.refreshing && now.Sub(item.lastAttempt) <= c.stuckAfter() {
 			continue
 		}
 		if oldestKey == "" || item.lastAccess.Before(oldest) {

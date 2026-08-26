@@ -125,3 +125,56 @@ func TestParseAnnualScheduleRejectsIncompletePage(t *testing.T) {
 		t.Fatal("expected incomplete official page to be rejected")
 	}
 }
+
+func TestRefreshMergesNextYearWithoutDroppingCurrentYear(t *testing.T) {
+	nextYear := `<html><body><h2>2027年休市安排</h2>
+<p>（一）元旦：1月1日至1月3日休市，1月4日起照常开市。</p>
+<p>（二）春节：2月5日至2月13日休市，2月14日起照常开市。</p>
+<p>（三）清明节：4月3日至4月5日休市，4月6日起照常开市。</p>
+<p>（四）劳动节：5月1日至5月5日休市，5月6日起照常开市。</p>
+<p>（五）端午节：6月9日至6月11日休市，6月12日起照常开市。</p>
+<p>（六）中秋节：9月15日至9月17日休市，9月18日起照常开市。</p>
+<p>（七）国庆节：10月1日至10月7日休市，10月8日起照常开市。</p>
+<h2>相关公告</h2></body></html>`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(nextYear))
+	}))
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "calendar.json")
+	seed := `{"holidays":["2026-10-01","2026-12-31"],"workdays":["2026-10-10"],"valid_through":"2026-12-31","updated_at":"2026-08-17T00:00:00Z"}`
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calendar, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	now := time.Date(2026, 12, 5, 8, 0, 0, 0, location)
+	updated, err := calendar.RefreshIfNeeded(t.Context(), server.Client(), path, server.URL, now, 45)
+	if err != nil || !updated {
+		t.Fatalf("calendar was not refreshed: updated=%v err=%v", updated, err)
+	}
+	if coverage := calendar.Coverage(now); coverage.ValidThrough != "2027-12-31" {
+		t.Fatalf("coverage was not extended: %+v", coverage)
+	}
+	for _, date := range []string{"2026-12-31", "2027-01-01", "2027-02-05"} {
+		value, _ := time.ParseInLocation("2006-01-02", date, location)
+		if calendar.IsTradingDay(value) {
+			t.Fatalf("%s should remain a holiday after the merge", date)
+		}
+	}
+	workday, _ := time.ParseInLocation("2006-01-02", "2026-10-10", location)
+	if !calendar.IsTradingDay(workday) {
+		t.Fatal("manually maintained workday was dropped by the merge")
+	}
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{"2026-12-31", "2027-01-01", "2026-10-10"} {
+		if !strings.Contains(string(persisted), fragment) {
+			t.Fatalf("persisted calendar lost %s: %s", fragment, persisted)
+		}
+	}
+}
