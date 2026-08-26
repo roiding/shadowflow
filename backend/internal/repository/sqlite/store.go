@@ -578,6 +578,18 @@ func migrateResearchCloseModel(db *sql.DB) error {
 		}
 	}
 
+	// The column additions above must run on every open (fresh databases),
+	// but the data move and per-day quality recompute below scan the largest
+	// tables and grow linearly with archived history; run them exactly once.
+	var migrated int
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM database_maintenance
+WHERE name='research_close_model_v1')`).Scan(&migrated); err != nil {
+		return err
+	}
+	if migrated == 1 {
+		return nil
+	}
+
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -655,6 +667,10 @@ WHERE trade_date=? AND rank_type=?`, len(researchMinutes), len(filterDailyCloseM
 			string(missingResearch), string(missingClose), key.tradeDate, key.rankType); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at) VALUES ('research_close_model_v1',?)
+ON CONFLICT(name) DO UPDATE SET completed_at=excluded.completed_at`, time.Now().UTC().Format(timestampLayout)); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

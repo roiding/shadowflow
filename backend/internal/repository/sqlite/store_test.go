@@ -268,6 +268,11 @@ missing_research_json TEXT NOT NULL, compacted_at TEXT NOT NULL, PRIMARY KEY (tr
 		"2026-08-12", "industry", 240, 240, 48, 48, "[]", "[]", at); err != nil {
 		t.Fatal(err)
 	}
+	// A real legacy database has never run this migration, so it carries no
+	// done marker; the fresh Open above already wrote one.
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM database_maintenance WHERE name='research_close_model_v1'`); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}

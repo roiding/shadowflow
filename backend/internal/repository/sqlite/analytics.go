@@ -646,6 +646,24 @@ func rebuildFutureLabels(ctx context.Context, tx *sql.Tx, changedDate string) er
 		}
 		return records, err
 	}
+	// Relative-industry returns need an industry close per stock. Index each
+	// day's industry closes by code once; scanning the full close map per
+	// stock (5000 stocks x 5 horizons x 21 days x ~5500 map entries) made the
+	// sealing transaction hold the single write connection for minutes.
+	industryCloseCache := make(map[string]map[string]float64)
+	industryCloseFor := func(tradeDate string, records map[featureKey]float64) map[string]float64 {
+		if index, ok := industryCloseCache[tradeDate]; ok {
+			return index
+		}
+		index := make(map[string]float64, 128)
+		for key, closePrice := range records {
+			if key.rankType == graymarket.RankIndustry {
+				index[key.code] = closePrice
+			}
+		}
+		industryCloseCache[tradeDate] = index
+		return index
+	}
 	generatedAt := time.Now().UTC().Format(timestampLayout)
 	statement, err := tx.PrepareContext(ctx, `INSERT INTO future_return_label
 (signal_revision_id,target_revision_id,signal_date,target_date,horizon,rank_type,market,code,
@@ -710,8 +728,8 @@ WHERE signal_revision_id=? AND target_revision_id=? AND horizon=?`,
 				var relative any
 				if key.rankType == graymarket.RankStock {
 					if industryCode := industries[key.code]; industryCode != "" {
-						signalIndustry, signalOK := closeByTypeCode(signalRecords, graymarket.RankIndustry, industryCode)
-						targetIndustry, targetOK := closeByTypeCode(targetRecords, graymarket.RankIndustry, industryCode)
+						signalIndustry, signalOK := industryCloseFor(signalRef.TradeDate, signalRecords)[industryCode]
+						targetIndustry, targetOK := industryCloseFor(targetRef.TradeDate, targetRecords)[industryCode]
 						if signalOK && targetOK && signalIndustry > 0 && targetIndustry > 0 {
 							value := returnRate - (targetIndustry/signalIndustry - 1)
 							relative = value
@@ -796,15 +814,6 @@ AND (rank_type!='stock' OR quote_available=1)`, tradeDate)
 		result[featureKey{rankType: graymarket.RankType(rankTypeValue), market: market, code: code}] = closePrice
 	}
 	return result, rows.Err()
-}
-
-func closeByTypeCode(records map[featureKey]float64, rankType graymarket.RankType, code string) (float64, bool) {
-	for key, closePrice := range records {
-		if key.rankType == rankType && key.code == code {
-			return closePrice, true
-		}
-	}
-	return 0, false
 }
 
 func migrateAnalytics(store *Store) error {
