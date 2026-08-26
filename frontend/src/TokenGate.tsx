@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { KeyRound } from 'lucide-react'
-import { clearToken, setToken } from './auth'
+import { setToken } from './auth'
 import { api } from './api/client'
 
 export function TokenGate({ onAuthenticated }: { onAuthenticated: () => void }) {
@@ -14,15 +14,18 @@ export function TokenGate({ onAuthenticated }: { onAuthenticated: () => void }) 
         <form
           onSubmit={async (event) => {
             event.preventDefault()
-            if (!value.trim()) { setError('请输入访问令牌'); return }
+            const candidate = value.trim()
+            if (!candidate) { setError('请输入访问令牌'); return }
             setSubmitting(true)
             setError('')
-            setToken(value)
             try {
-              await api.status()
+              // Verify before persisting: writing sessionStorage first let a
+              // concurrent background poll see the unverified token, unmount
+              // the gate, and swallow the error message when it bounced.
+              await api.validateToken(candidate)
+              setToken(candidate)
               onAuthenticated()
             } catch (authError) {
-              clearToken()
               setError(authError instanceof Error ? authError.message : '访问令牌验证失败')
             } finally {
               setSubmitting(false)

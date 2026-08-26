@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Activity, AlertTriangle, BarChart3, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Download, Gauge, Info, LineChart, RefreshCw, Search, Server, Table2, Wifi, WifiOff } from 'lucide-react'
 import { api } from './api/client'
-import { getToken, UNAUTHORIZED_EVENT } from './auth'
+import { UNAUTHORIZED_EVENT } from './auth'
 import { TokenGate } from './TokenGate'
 import type { BoardStockQuote, FocusResult, FocusScanRequest, RankRecord, RankType, SystemStatus } from './api/types'
 import { continuousMetricValues } from './continuousSeries'
@@ -145,9 +145,12 @@ function App() {
   const [debouncedStockQuery, setDebouncedStockQuery] = useState('')
 
   const refreshInterval = useMemo(() => autoRefresh ? jitterInterval(refreshSeconds * 1000) : false, [autoRefresh, refreshSeconds])
-  const statusQuery = useQuery({ queryKey: ['system-status'], queryFn: async () => (await api.status()).data as SystemStatus, refetchInterval: refreshInterval, refetchIntervalInBackground: false })
+  // While the Token Gate is shown every query keeps polling into 401s (and
+  // the retry doubles them), needlessly consuming the backend rate budget;
+  // gate all queries on !authRequired.
+  const statusQuery = useQuery({ queryKey: ['system-status'], queryFn: async ({ signal }) => (await api.status(signal)).data as SystemStatus, enabled: !authRequired, refetchInterval: refreshInterval, refetchIntervalInBackground: false })
   const latestTradingDay = statusQuery.data?.latest_trading_day ?? ''
-  const rankQuery = useQuery({ queryKey: ['latest', boardType], queryFn: async () => { const started = performance.now(); const result = await api.latest(boardType); return { records: result.data ?? [], requestMs: Math.round(performance.now() - started) } }, refetchInterval: refreshInterval, refetchIntervalInBackground: false })
+  const rankQuery = useQuery({ queryKey: ['latest', boardType], queryFn: async ({ signal }) => { const started = performance.now(); const result = await api.latest(boardType, signal); return { records: result.data ?? [], requestMs: Math.round(performance.now() - started) } }, enabled: !authRequired, refetchInterval: refreshInterval, refetchIntervalInBackground: false })
   const records = useMemo(() => rankQuery.data?.records ?? [], [rankQuery.data?.records])
   const selected = records.find((item) => item.code === selectedCode) ?? records[0]
   const selectedId = selected?.code ?? ''
@@ -156,56 +159,56 @@ function App() {
   const nonTradingToday = statusQuery.data?.trading_day === false
   const intradayQuery = useQuery({
     queryKey: ['intraday', boardType, selectedId, monitorDate],
-    queryFn: async () => (await api.intraday(boardType, selectedId, monitorDate)).data ?? [],
-    enabled: Boolean(selectedId && monitorDate) && view === 'monitor',
+    queryFn: async ({ signal }) => (await api.intraday(boardType, selectedId, monitorDate, signal)).data ?? [],
+    enabled: !authRequired && Boolean(selectedId && monitorDate) && view === 'monitor',
     refetchInterval: refreshInterval, refetchIntervalInBackground: false,
   })
   const boardQuotesQuery = useQuery({
     queryKey: ['board-quotes', boardType, selectedId, monitorDate],
-    queryFn: async () => api.boardQuotes(boardType, selectedId, monitorDate),
-    enabled: Boolean(selectedId && monitorDate) && view === 'monitor',
+    queryFn: async ({ signal }) => api.boardQuotes(boardType, selectedId, monitorDate, signal),
+    enabled: !authRequired && Boolean(selectedId && monitorDate) && view === 'monitor',
     refetchInterval: refreshInterval, refetchIntervalInBackground: false,
   })
   const trendQuery = useQuery({
     queryKey: ['trend', boardType, historyCode, historyFrom, historyTo],
-    queryFn: async () => (await api.trend(boardType, historyCode, historyFrom, historyTo)).data ?? [],
-    enabled: Boolean(historyCode && historyFrom && historyTo) && view === 'history',
+    queryFn: async ({ signal }) => (await api.trend(boardType, historyCode, historyFrom, historyTo, undefined, signal)).data ?? [],
+    enabled: !authRequired && Boolean(historyCode && historyFrom && historyTo) && view === 'history',
   })
   const historyRanksQuery = useQuery({
     queryKey: ['history-ranks', boardType, historyDate, historyAt],
-    queryFn: async () => (await api.rankAt(boardType, historyDate, historyAt)).data ?? [],
-    enabled: view === 'history' && Boolean(historyDate),
+    queryFn: async ({ signal }) => (await api.rankAt(boardType, historyDate, historyAt, signal)).data ?? [],
+    enabled: !authRequired && view === 'history' && Boolean(historyDate),
   })
   const historyTradingDaysQuery = useQuery({
     queryKey: ['history-trading-days', historyFrom, historyTo],
-    queryFn: async () => (await api.tradingDays(historyFrom, historyTo)).data ?? [],
-    enabled: view === 'history' && Boolean(historyFrom && historyTo),
+    queryFn: async ({ signal }) => (await api.tradingDays(historyFrom, historyTo, signal)).data ?? [],
+    enabled: !authRequired && view === 'history' && Boolean(historyFrom && historyTo),
   })
   const historyStartDate = historyTradingDaysQuery.data?.[0] ?? ''
   const historyStartRanksQuery = useQuery({
     queryKey: ['history-start-ranks', boardType, historyStartDate, historyAt],
-    queryFn: async () => (await api.rankAt(boardType, historyStartDate, historyAt)).data ?? [],
-    enabled: view === 'history' && Boolean(historyStartDate),
+    queryFn: async ({ signal }) => (await api.rankAt(boardType, historyStartDate, historyAt, signal)).data ?? [],
+    enabled: !authRequired && view === 'history' && Boolean(historyStartDate),
   })
   const stocksQuery = useQuery({
     queryKey: ['daily-close', stockDate, debouncedStockQuery, stockSort.key, stockSort.direction, stockPage],
-    queryFn: async () => api.dailyClose('stock', stockDate, debouncedStockQuery, stockSort.key, stockSort.direction, stockPage, 100),
-    enabled: view === 'stocks' && Boolean(stockDate),
+    queryFn: async ({ signal }) => api.dailyClose('stock', stockDate, debouncedStockQuery, stockSort.key, stockSort.direction, stockPage, 100, undefined, signal),
+    enabled: !authRequired && view === 'stocks' && Boolean(stockDate),
     placeholderData: (previous) => previous,
   })
-  const qualityQuery = useQuery({ queryKey: ['quality', qualityDate], queryFn: async () => api.quality(qualityDate), enabled: view === 'quality' && Boolean(qualityDate) })
-  const runsQuery = useQuery({ queryKey: ['runs', qualityDate], queryFn: async () => (await api.runs(qualityDate)).data ?? [], enabled: view === 'quality' && Boolean(qualityDate) })
+  const qualityQuery = useQuery({ queryKey: ['quality', qualityDate], queryFn: async ({ signal }) => api.quality(qualityDate, signal), enabled: !authRequired && view === 'quality' && Boolean(qualityDate) })
+  const runsQuery = useQuery({ queryKey: ['runs', qualityDate], queryFn: async ({ signal }) => (await api.runs(qualityDate, signal)).data ?? [], enabled: !authRequired && view === 'quality' && Boolean(qualityDate) })
   const focusScan = useMutation({
     mutationFn: async (request: FocusScanRequest) => (await api.focusScan(request)).data as FocusResult,
   })
 
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === 'visible') void queryClient.invalidateQueries()
+      if (document.visibilityState === 'visible' && !authRequired) void queryClient.invalidateQueries()
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => document.removeEventListener('visibilitychange', onVisible)
-  }, [queryClient])
+  }, [queryClient, authRequired])
 
   useEffect(() => {
     if (!latestTradingDay) return
@@ -250,7 +253,7 @@ function App() {
   const stockMeta = stocksQuery.data?.meta
   const onStockSort = (key: keyof RankRecord) => { setStockSort((current) => ({ key, direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc' })); setStockPage(1) }
 
-  if (authRequired && !getToken()) {
+  if (authRequired) {
     return <TokenGate onAuthenticated={() => { setAuthRequired(false); void queryClient.invalidateQueries() }} />
   }
 
@@ -394,10 +397,11 @@ function MetricToolbar({ metric, setMetric, secondaryMetric, setSecondaryMetric,
 
 function Chart({ series, metric, secondaryMetric, loading, emptyLabel }: { series: RankRecord[]; metric: Metric; secondaryMetric: Metric | 'none'; loading: boolean; emptyLabel: string }) {
   const [element, setElement] = useState<HTMLDivElement | null>(null)
+  const handleRef = useRef<import('./chartRuntime').LineChartHandle | null>(null)
+  const elementRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
 	if (!element || !series.length) return
-	let disposed = false
-	let cleanup = () => {}
+	let cancelled = false
 	const chartValue = (record: RankRecord, selectedMetric: Metric) => {
 	  if (!metricAvailable(record, selectedMetric)) return null
 	  return ['change_pct', 'dark_inflow_ratio', 'dark_activity'].includes(selectedMetric) ? metricValue(record, selectedMetric) * 100 : metricValue(record, selectedMetric)
@@ -407,12 +411,23 @@ function Chart({ series, metric, secondaryMetric, loading, emptyLabel }: { serie
 	const primaryValues = continuousMetricValues(points, metric, chartValue)
 	const secondaryValues = secondaryMetric === 'none' ? [] : continuousMetricValues(points, secondaryMetric, chartValue)
 	const sameUnit = secondaryMetric !== 'none' && (['change_pct', 'dark_inflow_ratio', 'dark_activity'].includes(metric) === ['change_pct', 'dark_inflow_ratio', 'dark_activity'].includes(secondaryMetric))
+	const options = { points, primaryValues, secondaryValues, metric, secondaryMetric, sameUnit }
 	void import('./chartRuntime').then(({ createLineChart }) => {
-	  if (disposed) return
-	  cleanup = createLineChart(element, { points, primaryValues, secondaryValues, metric, secondaryMetric, sameUnit })
+	  if (cancelled) return
+	  // Reuse the live instance when only the data changed: disposing and
+	  // re-initializing on every poll flashed the chart and reset tooltip
+	  // state once a minute.
+	  if (handleRef.current && elementRef.current === element) {
+		handleRef.current.update(options)
+		return
+	  }
+	  handleRef.current?.dispose()
+	  elementRef.current = element
+	  handleRef.current = createLineChart(element, options)
 	})
-	return () => { disposed = true; cleanup() }
+	return () => { cancelled = true }
   }, [element, series, metric, secondaryMetric])
+  useEffect(() => () => { handleRef.current?.dispose(); handleRef.current = null; elementRef.current = null }, [])
   return <div className="chart-frame">{loading && <div className="chart-overlay">正在读取分钟序列…</div>}{!loading && !series.length && <EmptyState icon={<BarChart3 size={24} />} title={emptyLabel} detail="盘中数据按分钟积累；盘后保留 48 个五分钟资金点。" />}{series.length > 0 && <div className="chart-canvas" ref={setElement} />}</div>
 }
 

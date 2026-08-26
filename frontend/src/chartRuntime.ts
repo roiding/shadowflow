@@ -55,22 +55,44 @@ function formatCompact(value: number, metric: Metric) {
   return ['change_pct', 'dark_inflow_ratio', 'dark_activity'].includes(metric) ? `${formatNumber(value, 1)}%` : formatNumber(value)
 }
 
-export function createLineChart(element: HTMLDivElement, options: {
+export type LineChartOptions = {
   points: TimelinePoint[]
   primaryValues: Array<number | null>
   secondaryValues: Array<number | null>
   metric: Metric
   secondaryMetric: Metric | 'none'
   sameUnit: boolean
-}) {
+}
+
+export type LineChartHandle = {
+  update: (options: LineChartOptions) => void
+  dispose: () => void
+}
+
+function applyLineChartOptions(chart: echarts.ECharts, options: LineChartOptions) {
   const { points, primaryValues, secondaryValues, metric, secondaryMetric, sameUnit } = options
   const multiDay = new Set(points.flatMap((point) => point.record ? [point.record.trade_date] : [])).size > 1
+  chart.setOption({ animation: false, grid: { left: 48, right: secondaryMetric === 'none' ? 20 : 48, top: 20, bottom: 42 }, tooltip: { trigger: 'axis', formatter: (raw: unknown) => { const params = (Array.isArray(raw) ? raw : [raw]) as TooltipPoint[]; const point = points[params[0]?.dataIndex ?? 0]; if (!point?.record) return `<strong>${params[0]?.axisValue ?? ''}</strong><br/>缺少采集点`; return `<strong>${params[0]?.axisValue ?? ''}</strong><br/>${params.map((item) => { const selectedMetric = item.seriesName === METRIC_LABELS[metric] ? metric : secondaryMetric as Metric; const plotted = metricDisplayValue(Number(item.value), selectedMetric); const daily = metricDisplay(point.record!, selectedMetric); return `${item.marker}${item.seriesName}: ${plotted}${multiDay && isCumulativeMetric(selectedMetric) ? ` <small>（当日 ${daily}）</small>` : ''}` }).join('<br/>')}` } }, xAxis: { type: 'category', boundaryGap: false, data: points.map((item) => item.label), axisLabel: { color: '#8a929e', interval: Math.max(0, Math.floor(points.length / 8) - 1) }, axisLine: { lineStyle: { color: '#dfe4ea' } } }, yAxis: [{ type: 'value', name: METRIC_LABELS[metric], scale: true, axisLabel: { color: '#8a929e', formatter: (value: number) => ['change_pct', 'dark_inflow_ratio', 'dark_activity'].includes(metric) ? `${value}%` : formatCompact(value, metric) }, splitLine: { lineStyle: { color: '#edf0f3' } } }, ...(secondaryMetric !== 'none' && !sameUnit ? [{ type: 'value', name: METRIC_LABELS[secondaryMetric], scale: true, position: 'right', axisLabel: { color: '#8a929e', formatter: (value: number) => formatCompact(value, secondaryMetric) }, splitLine: { show: false } }] : [])], series: [{ name: METRIC_LABELS[metric], type: 'line', connectNulls: false, smooth: 0.22, showSymbol: false, lineStyle: { width: 2.5, color: '#1d6ee8' }, itemStyle: { color: '#1d6ee8' }, areaStyle: { color: 'rgba(29,110,232,.08)' }, data: primaryValues }, ...(secondaryMetric !== 'none' ? [{ name: METRIC_LABELS[secondaryMetric], type: 'line', connectNulls: false, yAxisIndex: sameUnit ? 0 : 1, smooth: 0.22, showSymbol: false, lineStyle: { width: 2, color: '#e07a31' }, itemStyle: { color: '#e07a31' }, data: secondaryValues }] : [])] }, { notMerge: true })
+}
+
+export function createLineChart(element: HTMLDivElement, options: LineChartOptions): LineChartHandle {
   const chart = echarts.init(element)
-  chart.setOption({ animation: false, grid: { left: 48, right: secondaryMetric === 'none' ? 20 : 48, top: 20, bottom: 42 }, tooltip: { trigger: 'axis', formatter: (raw: unknown) => { const params = (Array.isArray(raw) ? raw : [raw]) as TooltipPoint[]; const point = points[params[0]?.dataIndex ?? 0]; if (!point?.record) return `<strong>${params[0]?.axisValue ?? ''}</strong><br/>缺少采集点`; return `<strong>${params[0]?.axisValue ?? ''}</strong><br/>${params.map((item) => { const selectedMetric = item.seriesName === METRIC_LABELS[metric] ? metric : secondaryMetric as Metric; const plotted = metricDisplayValue(Number(item.value), selectedMetric); const daily = metricDisplay(point.record!, selectedMetric); return `${item.marker}${item.seriesName}: ${plotted}${multiDay && isCumulativeMetric(selectedMetric) ? ` <small>（当日 ${daily}）</small>` : ''}` }).join('<br/>')}` } }, xAxis: { type: 'category', boundaryGap: false, data: points.map((item) => item.label), axisLabel: { color: '#8a929e', interval: Math.max(0, Math.floor(points.length / 8) - 1) }, axisLine: { lineStyle: { color: '#dfe4ea' } } }, yAxis: [{ type: 'value', name: METRIC_LABELS[metric], scale: true, axisLabel: { color: '#8a929e', formatter: (value: number) => ['change_pct', 'dark_inflow_ratio', 'dark_activity'].includes(metric) ? `${value}%` : formatCompact(value, metric) }, splitLine: { lineStyle: { color: '#edf0f3' } } }, ...(secondaryMetric !== 'none' && !sameUnit ? [{ type: 'value', name: METRIC_LABELS[secondaryMetric], scale: true, position: 'right', axisLabel: { color: '#8a929e', formatter: (value: number) => formatCompact(value, secondaryMetric) }, splitLine: { show: false } }] : [])], series: [{ name: METRIC_LABELS[metric], type: 'line', connectNulls: false, smooth: 0.22, showSymbol: false, lineStyle: { width: 2.5, color: '#1d6ee8' }, itemStyle: { color: '#1d6ee8' }, areaStyle: { color: 'rgba(29,110,232,.08)' }, data: primaryValues }, ...(secondaryMetric !== 'none' ? [{ name: METRIC_LABELS[secondaryMetric], type: 'line', connectNulls: false, yAxisIndex: sameUnit ? 0 : 1, smooth: 0.22, showSymbol: false, lineStyle: { width: 2, color: '#e07a31' }, itemStyle: { color: '#e07a31' }, data: secondaryValues }] : [])] })
+  applyLineChartOptions(chart, options)
   const resize = () => chart.resize()
   const observer = new ResizeObserver(resize)
   observer.observe(element)
   window.addEventListener('resize', resize)
-  requestAnimationFrame(resize)
-  return () => { observer.disconnect(); window.removeEventListener('resize', resize); chart.dispose() }
+  const raf = requestAnimationFrame(resize)
+  return {
+    // Updating in place preserves the instance and its canvas: disposing and
+    // re-initializing on every poll made the chart flash and reset tooltip
+    // state once a minute.
+    update: (next) => applyLineChartOptions(chart, next),
+    dispose: () => {
+      cancelAnimationFrame(raf)
+      observer.disconnect()
+      window.removeEventListener('resize', resize)
+      chart.dispose()
+    },
+  }
 }

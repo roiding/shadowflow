@@ -8,8 +8,15 @@ async function request<T, M = Record<string, unknown>>(path: string, init?: Requ
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
   const token = getToken()
+  // Merge the caller's signal (react-query cancels stale queries through it)
+  // with the timeout controller; spreading init after `signal:` used to drop
+  // the caller's signal entirely, so switching boards left the old request
+  // running until the 25s timeout.
+  const signal = init?.signal && typeof AbortSignal.any === 'function'
+    ? AbortSignal.any([controller.signal, init.signal])
+    : init?.signal ?? controller.signal
   try {
-    const response = await fetch(path, { ...init, headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init?.headers }, signal: controller.signal })
+    const response = await fetch(path, { ...init, headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init?.headers }, signal })
     const body = await response.text()
     // Judge the status code before parsing: a gateway or proxy may answer 401
     // with an HTML page, and failing on the parse first would leave the Token
@@ -39,24 +46,24 @@ async function request<T, M = Record<string, unknown>>(path: string, init?: Requ
 }
 
 export const api = {
-  latest: (type: Exclude<RankType, 'stock'>) => request<RankRecord[]>(`/api/v1/ranks/latest?type=${type}`),
-  rankAt: (type: Exclude<RankType, 'stock'>, date: string, at: string) =>
-    request<RankRecord[]>(`/api/v1/ranks?type=${type}&trade_date=${date}&at=${at}`),
-  intraday: (type: Exclude<RankType, 'stock'>, code: string, date: string) =>
-    request<RankRecord[]>(`/api/v1/boards/${type}/${encodeURIComponent(code)}/intraday?trade_date=${date}`),
-  boardQuotes: (type: Exclude<RankType, 'stock'>, code: string, asOf: string) =>
-    request<BoardStockQuote[], { as_of: string; quote_source: string; quote_available: boolean; quoted_count?: number; quote_error?: string; quote_status: string; stale: boolean; cache_age_ms?: number; dark_data_available: boolean; dark_data_count: number }>(`/api/v1/boards/${type}/${encodeURIComponent(code)}/quotes?as_of=${asOf}`),
-  trend: (type: Exclude<RankType, 'stock'>, code: string, from: string, to: string, revisionId?: string) => {
+  latest: (type: Exclude<RankType, 'stock'>, signal?: AbortSignal) => request<RankRecord[]>(`/api/v1/ranks/latest?type=${type}`, { signal }),
+  rankAt: (type: Exclude<RankType, 'stock'>, date: string, at: string, signal?: AbortSignal) =>
+    request<RankRecord[]>(`/api/v1/ranks?type=${type}&trade_date=${date}&at=${at}`, { signal }),
+  intraday: (type: Exclude<RankType, 'stock'>, code: string, date: string, signal?: AbortSignal) =>
+    request<RankRecord[]>(`/api/v1/boards/${type}/${encodeURIComponent(code)}/intraday?trade_date=${date}`, { signal }),
+  boardQuotes: (type: Exclude<RankType, 'stock'>, code: string, asOf: string, signal?: AbortSignal) =>
+    request<BoardStockQuote[], { as_of: string; quote_source: string; quote_available: boolean; quoted_count?: number; quote_error?: string; quote_status: string; stale: boolean; cache_age_ms?: number; dark_data_available: boolean; dark_data_count: number }>(`/api/v1/boards/${type}/${encodeURIComponent(code)}/quotes?as_of=${asOf}`, { signal }),
+  trend: (type: Exclude<RankType, 'stock'>, code: string, from: string, to: string, revisionId?: string, signal?: AbortSignal) => {
     const params = new URLSearchParams({ from, to, interval: '5m' })
     if (revisionId) params.set('revision_id', revisionId)
-    return request<RankRecord[]>(`/api/v1/boards/${type}/${encodeURIComponent(code)}/trend?${params}`)
+    return request<RankRecord[]>(`/api/v1/boards/${type}/${encodeURIComponent(code)}/trend?${params}`, { signal })
   },
-  dailyClose: (type: RankType, date: string, query: string, sort: string, direction: 'asc' | 'desc', page: number, pageSize: number, revisionId?: string) => {
+  dailyClose: (type: RankType, date: string, query: string, sort: string, direction: 'asc' | 'desc', page: number, pageSize: number, revisionId?: string, signal?: AbortSignal) => {
     const params = new URLSearchParams({ type, trade_date: date, q: query, sort, direction, page: String(page), page_size: String(pageSize) })
     if (revisionId) params.set('revision_id', revisionId)
-    return request<RankRecord[], PageMeta>(`/api/v1/ranks/daily-close?${params}`)
+    return request<RankRecord[], PageMeta>(`/api/v1/ranks/daily-close?${params}`, { signal })
   },
-  quality: (date: string) => request<QualitySummary[], QualityMeta>(`/api/v1/research/quality?trade_date=${date}`),
+  quality: (date: string, signal?: AbortSignal) => request<QualitySummary[], QualityMeta>(`/api/v1/research/quality?trade_date=${date}`, { signal }),
   revisions: (date: string) => request<ArchiveRevision[], { trade_date: string; count: number; current_revision_id?: string }>(`/api/v1/research/revisions?trade_date=${date}`),
   features: (date: string, type?: RankType, revisionId?: string) => {
     const params = new URLSearchParams({ trade_date: date })
@@ -77,9 +84,13 @@ export const api = {
     if (revisionId) params.set('revision_id', revisionId)
     return request<StockResearchPoint[]>(`/api/v1/stocks/${encodeURIComponent(code)}/research-5m?${params}`)
   },
-  runs: (date: string) => request<CollectionRun[]>(`/api/v1/collection-runs?trade_date=${date}&limit=120`),
-  status: () => request<SystemStatus>('/api/v1/system/status'),
-  tradingDays: (from: string, to: string) => request<string[]>(`/api/v1/trading-days?from=${from}&to=${to}`),
+  runs: (date: string, signal?: AbortSignal) => request<CollectionRun[]>(`/api/v1/collection-runs?trade_date=${date}&limit=120`, { signal }),
+  status: (signal?: AbortSignal) => request<SystemStatus>('/api/v1/system/status', { signal }),
+  // Validates a candidate token without persisting it: the Token Gate must
+  // not write sessionStorage before verification, or a background poll can
+  // observe the unverified token mid-flight and unmount the gate.
+  validateToken: (token: string) => request<SystemStatus>('/api/v1/system/status', { headers: { Authorization: `Bearer ${token}` } }),
+  tradingDays: (from: string, to: string, signal?: AbortSignal) => request<string[]>(`/api/v1/trading-days?from=${from}&to=${to}`, { signal }),
   threeDayFocus: (asOf: string) => request<FocusResult>(`/api/v1/focus/three-day?as_of=${asOf}`),
   focusScan: (scan: FocusScanRequest) => request<FocusResult>('/api/v1/focus/scan', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scan),
