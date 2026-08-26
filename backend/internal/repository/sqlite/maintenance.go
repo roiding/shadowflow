@@ -78,7 +78,11 @@ OR (status IN ('queued','running') AND planned_at<?)`, successCutoff, failureCut
 		return result, err
 	}
 
-	if err := s.db.QueryRowContext(ctx, `PRAGMA wal_checkpoint(PASSIVE)`).
+	// TRUNCATE instead of PASSIVE: maintenance runs at 09:05 before the
+	// market opens, so blocking briefly to reset the WAL to zero bytes is
+	// safe and keeps the file from sitting at its end-of-day high-water mark
+	// for the whole trading day.
+	if err := s.db.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).
 		Scan(&result.WALBusy, &result.WALLogFrames, &result.WALCheckpointedFrames); err != nil {
 		return result, fmt.Errorf("checkpoint WAL: %w", err)
 	}

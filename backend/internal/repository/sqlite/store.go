@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -180,6 +179,11 @@ func configureSQLite(db *sql.DB, path string) error {
 		`PRAGMA busy_timeout=30000`,
 		`PRAGMA synchronous=NORMAL`,
 		`PRAGMA foreign_keys=ON`,
+		// Cap the WAL file: bulk migrations and end-of-day batches push it to
+		// a high-water mark of ~100MB+, and without a size limit a checkpoint
+		// reuses but never shrinks it. Oversized WALs slow every reader and
+		// writer that has to consult the wal-index.
+		`PRAGMA journal_size_limit=67108864`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			return err
@@ -727,10 +731,8 @@ func (s *Store) SaveIntraday(ctx context.Context, runID string, snapshot graymar
 		return err
 	}
 	defer tx.Rollback()
-	for _, record := range snapshot.Records {
-		if err := insertRecord(ctx, tx, "rank_intraday_work", runID, "", "", record); err != nil {
-			return err
-		}
+	if err := insertRecords(ctx, tx, "rank_intraday_work", runID, "", "", snapshot.Records); err != nil {
+		return err
 	}
 	if keepRaw {
 		rawKind := graymarket.SnapshotResearch5m
@@ -765,10 +767,8 @@ func (s *Store) SaveDailyClose(ctx context.Context, runID string, snapshot graym
 	if len(records) == 0 {
 		return fmt.Errorf("daily close snapshot has no eligible records for %s", snapshot.RankType)
 	}
-	for _, record := range records {
-		if err := insertRecord(ctx, tx, "rank_snapshot", runID, snapshot.RequestedDate, string(graymarket.SnapshotDailyClose), record); err != nil {
-			return err
-		}
+	if err := insertRecords(ctx, tx, "rank_snapshot", runID, snapshot.RequestedDate, string(graymarket.SnapshotDailyClose), records); err != nil {
+		return err
 	}
 	for _, page := range snapshot.RawPages {
 		if err := insertRawPage(ctx, tx, runID, snapshot.SnapshotAt, graymarket.SnapshotDailyClose, snapshot.RankType, page); err != nil {
@@ -803,10 +803,8 @@ func (s *Store) SaveBoardArchive(ctx context.Context, runID string, snapshot gra
 	if _, err := tx.ExecContext(ctx, `DELETE FROM raw_response WHERE date(snapshot_at,'+8 hours')=? AND snapshot_kind='daily_close' AND rank_type=?`, snapshot.TradeDate, string(snapshot.RankType)); err != nil {
 		return err
 	}
-	for _, record := range snapshot.Records {
-		if err := insertRecord(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), record); err != nil {
-			return err
-		}
+	if err := insertRecords(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), snapshot.Records); err != nil {
+		return err
 	}
 	for _, page := range snapshot.RawPages {
 		if err := insertRawPage(ctx, tx, runID, snapshot.SnapshotAt, graymarket.SnapshotDailyClose, snapshot.RankType, page); err != nil {
@@ -891,9 +889,9 @@ func (s *Store) SaveStockArchive(ctx context.Context, runID string, snapshot gra
 	eligible := make(map[stockKey]struct{}, len(snapshot.Records))
 	for _, record := range records {
 		eligible[stockKey{market: record.Market, code: record.Code}] = struct{}{}
-		if err := insertRecord(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), record); err != nil {
-			return err
-		}
+	}
+	if err := insertRecords(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), records); err != nil {
+		return err
 	}
 	for _, page := range snapshot.RawPages {
 		if err := insertRawPage(ctx, tx, runID, snapshot.SnapshotAt, graymarket.SnapshotDailyClose, snapshot.RankType, page); err != nil {
@@ -972,10 +970,8 @@ func (s *Store) SaveBoardArchiveBatch(ctx context.Context, runID string, snapsho
 				return err
 			}
 		}
-		for _, record := range snapshot.Records {
-			if err := insertRecord(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), record); err != nil {
-				return err
-			}
+		if err := insertRecords(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), snapshot.Records); err != nil {
+			return err
 		}
 		for _, page := range snapshot.RawPages {
 			if err := insertRawPage(ctx, tx, runID, snapshot.SnapshotAt, graymarket.SnapshotDailyClose, snapshot.RankType, page); err != nil {
@@ -983,15 +979,20 @@ func (s *Store) SaveBoardArchiveBatch(ctx context.Context, runID string, snapsho
 			}
 		}
 	}
+	moneyStmt, err := tx.PrepareContext(ctx, `INSERT INTO board_money_5m
+(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,snapshot_at,rank_type,code) DO UPDATE SET
+dark_money=excluded.dark_money,regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow,money_available=1,source_time=excluded.source_time,fetched_at=excluded.fetched_at`)
+	if err != nil {
+		return err
+	}
+	defer moneyStmt.Close()
 	for _, point := range points {
 		minute := point.SnapshotAt.Format("15:04")
 		if point.TradeDate != snapshot.TradeDate || point.RankType != snapshot.RankType || (!isResearchMinute(minute) && minute != "15:00") {
 			return fmt.Errorf("invalid %s board money point %s %s", snapshot.RankType, point.Code, point.SnapshotAt)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO board_money_5m
-(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,snapshot_at,rank_type,code) DO UPDATE SET
-dark_money=excluded.dark_money,regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow,money_available=1,source_time=excluded.source_time,fetched_at=excluded.fetched_at`,
+		if _, err := moneyStmt.ExecContext(ctx,
 			runID, formatTimestamp(point.SnapshotAt), point.TradeDate, string(point.RankType), point.Rank, point.Market, point.Code, point.Name, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1, point.SourceTime, formatTimestamp(point.FetchedAt)); err != nil {
 			return err
 		}
@@ -1046,10 +1047,8 @@ func (s *Store) SaveStockArchiveBatch(ctx context.Context, runID string, snapsho
 				return err
 			}
 		}
-		for _, record := range records {
-			if err := insertRecord(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), record); err != nil {
-				return err
-			}
+		if err := insertRecords(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), records); err != nil {
+			return err
 		}
 		for _, page := range snapshot.RawPages {
 			if err := insertRawPage(ctx, tx, runID, snapshot.SnapshotAt, graymarket.SnapshotDailyClose, snapshot.RankType, page); err != nil {
@@ -1057,14 +1056,19 @@ func (s *Store) SaveStockArchiveBatch(ctx context.Context, runID string, snapsho
 			}
 		}
 	}
+	pointStmt, err := tx.PrepareContext(ctx, `INSERT INTO stock_research_5m
+(trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available)
+VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,minute_index,market,code) DO UPDATE SET money_rank=excluded.money_rank,dark_money=excluded.dark_money,regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow,money_available=1`)
+	if err != nil {
+		return err
+	}
+	defer pointStmt.Close()
 	for _, point := range points {
 		minuteIndex, ok := researchMinuteIndex(point.SnapshotAt)
 		if !ok || point.TradeDate != snapshot.TradeDate || point.RankType != graymarket.RankStock {
 			return fmt.Errorf("invalid stock money point %s %s", point.Code, point.SnapshotAt)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO stock_research_5m
-(trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available)
-VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,minute_index,market,code) DO UPDATE SET money_rank=excluded.money_rank,dark_money=excluded.dark_money,regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow,money_available=1`, point.TradeDate, minuteIndex, point.Market, point.Code, point.Rank, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1); err != nil {
+		if _, err := pointStmt.ExecContext(ctx, point.TradeDate, minuteIndex, point.Market, point.Code, point.Rank, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1); err != nil {
 			return err
 		}
 	}
@@ -1100,11 +1104,12 @@ updated_at=excluded.updated_at`, snapshot.TradeDate, expected, expected, moneyRo
 // slice is held at a time; loading the whole day's archive is unnecessary.
 // The derivation matches the pre-streaming implementation: per snapshot,
 // dark_money descending, code ascending.
+// finalizeBoardArchiveRanks recomputes the per-snapshot money rank with one
+// windowed UPDATE per five-minute slice. The previous per-row UPDATE version
+// executed tens of thousands of statements inside the final batch
+// transaction, dominating the end-of-day wall clock and inflating the WAL.
+// Memory stays bounded: SQLite materializes one slice at a time.
 func finalizeBoardArchiveRanks(ctx context.Context, tx *sql.Tx, tradeDate string, rankType graymarket.RankType) error {
-	type archivePoint struct {
-		code      string
-		darkMoney int64
-	}
 	snapshots, err := tx.QueryContext(ctx, `SELECT DISTINCT snapshot_at FROM board_money_5m WHERE trade_date=? AND rank_type=? ORDER BY snapshot_at`, tradeDate, string(rankType))
 	if err != nil {
 		return err
@@ -1125,42 +1130,18 @@ func finalizeBoardArchiveRanks(ctx context.Context, tx *sql.Tx, tradeDate string
 	if err := snapshots.Close(); err != nil {
 		return err
 	}
-	update, err := tx.PrepareContext(ctx, `UPDATE board_money_5m SET rank=? WHERE trade_date=? AND snapshot_at=? AND rank_type=? AND code=?`)
+	update, err := tx.PrepareContext(ctx, `UPDATE board_money_5m AS target SET rank=ranked.new_rank
+FROM (SELECT market, code, ROW_NUMBER() OVER (ORDER BY dark_money DESC, code ASC) AS new_rank
+      FROM board_money_5m WHERE trade_date=?1 AND rank_type=?2 AND snapshot_at=?3) AS ranked
+WHERE target.trade_date=?1 AND target.rank_type=?2 AND target.snapshot_at=?3
+  AND target.market=ranked.market AND target.code=ranked.code`)
 	if err != nil {
 		return err
 	}
 	defer update.Close()
 	for _, snapshotAt := range snapshotAts {
-		rows, err := tx.QueryContext(ctx, `SELECT code, dark_money FROM board_money_5m WHERE trade_date=? AND snapshot_at=? AND rank_type=?`, tradeDate, snapshotAt, string(rankType))
-		if err != nil {
+		if _, err := update.ExecContext(ctx, tradeDate, string(rankType), snapshotAt); err != nil {
 			return err
-		}
-		points := make([]archivePoint, 0, 512)
-		for rows.Next() {
-			var point archivePoint
-			if err := rows.Scan(&point.code, &point.darkMoney); err != nil {
-				rows.Close()
-				return err
-			}
-			points = append(points, point)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		if err := rows.Close(); err != nil {
-			return err
-		}
-		sort.Slice(points, func(i, j int) bool {
-			if points[i].darkMoney == points[j].darkMoney {
-				return points[i].code < points[j].code
-			}
-			return points[i].darkMoney > points[j].darkMoney
-		})
-		for rank, point := range points {
-			if _, err := update.ExecContext(ctx, rank+1, tradeDate, snapshotAt, string(rankType), point.code); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
@@ -1169,48 +1150,23 @@ func finalizeBoardArchiveRanks(ctx context.Context, tx *sql.Tx, tradeDate string
 // finalizeStockArchiveRanks is the stock counterpart of
 // finalizeBoardArchiveRanks: only one five-minute universe is loaded at a
 // time, rather than all 48 slices (up to 256k rows), before sorting.
+// finalizeStockArchiveRanks mirrors finalizeBoardArchiveRanks for the stock
+// archive: one windowed UPDATE per minute slice instead of ~5000 per-row
+// statements per slice. Only money-available rows participate, matching the
+// completeness checks.
 func finalizeStockArchiveRanks(ctx context.Context, tx *sql.Tx, tradeDate string) error {
-	type archivePoint struct {
-		market    int64
-		code      string
-		darkMoney int64
-	}
-	update, err := tx.PrepareContext(ctx, `UPDATE stock_research_5m SET money_rank=? WHERE trade_date=? AND minute_index=? AND market=? AND code=?`)
+	update, err := tx.PrepareContext(ctx, `UPDATE stock_research_5m AS target SET money_rank=ranked.new_rank
+FROM (SELECT market, code, ROW_NUMBER() OVER (ORDER BY dark_money DESC, code ASC) AS new_rank
+      FROM stock_research_5m WHERE trade_date=?1 AND minute_index=?2 AND money_available=1) AS ranked
+WHERE target.trade_date=?1 AND target.minute_index=?2 AND target.money_available=1
+  AND target.market=ranked.market AND target.code=ranked.code`)
 	if err != nil {
 		return err
 	}
 	defer update.Close()
 	for minuteIndex := 0; minuteIndex < 48; minuteIndex++ {
-		rows, err := tx.QueryContext(ctx, `SELECT market, code, dark_money FROM stock_research_5m WHERE trade_date=? AND minute_index=? AND money_available=1`, tradeDate, minuteIndex)
-		if err != nil {
+		if _, err := update.ExecContext(ctx, tradeDate, minuteIndex); err != nil {
 			return err
-		}
-		points := make([]archivePoint, 0, 6000)
-		for rows.Next() {
-			var point archivePoint
-			if err := rows.Scan(&point.market, &point.code, &point.darkMoney); err != nil {
-				rows.Close()
-				return err
-			}
-			points = append(points, point)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		if err := rows.Close(); err != nil {
-			return err
-		}
-		sort.Slice(points, func(i, j int) bool {
-			if points[i].darkMoney == points[j].darkMoney {
-				return points[i].code < points[j].code
-			}
-			return points[i].darkMoney > points[j].darkMoney
-		})
-		for rank, point := range points {
-			if _, err := update.ExecContext(ctx, rank+1, tradeDate, minuteIndex, point.market, point.code); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
@@ -1332,14 +1288,35 @@ fetched_at=excluded.fetched_at,run_id=excluded.run_id`,
 	return tx.Commit()
 }
 
-func insertRecord(ctx context.Context, tx *sql.Tx, table, runID, requestedDate, snapshotKind string, record graymarket.RankRecord) error {
-	commonArgs := []any{
+// recordInsertStmt prepares the record INSERT once. Bulk paths (intraday
+// minutes, daily-close batches) insert hundreds to thousands of rows per
+// transaction, and the pure-Go driver re-parses non-prepared SQL on every
+// Exec — statement parsing dominated those loops.
+func recordInsertStmt(ctx context.Context, tx *sql.Tx, table string) (*sql.Stmt, error) {
+	columns := `run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,quote_time,
+	latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,change_pct,
+	volume,turnover,turnover_rate,amplitude,quote_available,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at`
+	count := 37
+	if table == "rank_snapshot" {
+		columns = `run_id,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,quote_time,
+	latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,change_pct,
+	volume,turnover,turnover_rate,amplitude,quote_available,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
+up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at`
+		count = 39
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", count), ",")
+	return tx.PrepareContext(ctx, "INSERT OR REPLACE INTO "+table+" ("+columns+") VALUES ("+placeholders+")")
+}
+
+func recordInsertArgs(table, runID, requestedDate, snapshotKind string, record graymarket.RankRecord) []any {
+	args := []any{
 		runID, formatTimestamp(record.SnapshotAt), record.TradeDate,
 	}
 	if table == "rank_snapshot" {
-		commonArgs = append(commonArgs, requestedDate, snapshotKind)
+		args = append(args, requestedDate, snapshotKind)
 	}
-	commonArgs = append(commonArgs,
+	return append(args,
 		string(record.RankType), record.Rank, record.Market, record.Code, record.Name, record.QuoteTime,
 		record.LatestPriceRaw, record.OpenPrice, record.HighPrice, record.LowPrice, record.ClosePrice, record.PreviousClose,
 		record.ChangeValue, record.ChangePct, record.Volume, record.Turnover, record.TurnoverRate, record.Amplitude,
@@ -1349,19 +1326,20 @@ func insertRecord(ctx context.Context, tx *sql.Tx, table, runID, requestedDate, 
 		record.LeaderName, record.LeaderCode, record.SourceVersion, record.SourceSortFlag, boolInt(record.SourceDescending),
 		formatTimestamp(record.FetchedAt),
 	)
-	columns := `run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,quote_time,
-	latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,change_pct,
-	volume,turnover,turnover_rate,amplitude,quote_available,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
-up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at`
-	if table == "rank_snapshot" {
-		columns = `run_id,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,quote_time,
-	latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,change_pct,
-	volume,turnover,turnover_rate,amplitude,quote_available,money_available,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,
-up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at`
+}
+
+func insertRecords(ctx context.Context, tx *sql.Tx, table, runID, requestedDate, snapshotKind string, records []graymarket.RankRecord) error {
+	stmt, err := recordInsertStmt(ctx, tx, table)
+	if err != nil {
+		return err
 	}
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(commonArgs)), ",")
-	_, err := tx.ExecContext(ctx, "INSERT OR REPLACE INTO "+table+" ("+columns+") VALUES ("+placeholders+")", commonArgs...)
-	return err
+	defer stmt.Close()
+	for _, record := range records {
+		if _, err := stmt.ExecContext(ctx, recordInsertArgs(table, runID, requestedDate, snapshotKind, record)...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func insertRawPage(ctx context.Context, tx *sql.Tx, runID string, snapshotAt time.Time, kind graymarket.SnapshotKind, rankType graymarket.RankType, page graymarket.RawPage) error {

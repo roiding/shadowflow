@@ -43,17 +43,18 @@ type Options struct {
 }
 
 type Scheduler struct {
-	collector collectorService
-	calendar  *tradingcalendar.Calendar
-	logger    *slog.Logger
-	location  *time.Location
-	jobs      JobStore
-	owner     string
-	mu        sync.Mutex
-	running   map[string]bool
-	lastKeys  map[string]struct{}
-	jobsWG    sync.WaitGroup
-	options   Options
+	collector      collectorService
+	calendar       *tradingcalendar.Calendar
+	logger         *slog.Logger
+	location       *time.Location
+	jobs           JobStore
+	owner          string
+	mu             sync.Mutex
+	running        map[string]bool
+	lastKeys       map[string]struct{}
+	lastLeaseSweep time.Time
+	jobsWG         sync.WaitGroup
+	options        Options
 }
 
 func New(service collectorService, calendar *tradingcalendar.Calendar, logger *slog.Logger, options ...Options) (*Scheduler, error) {
@@ -120,6 +121,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 }
 
 func (s *Scheduler) expireLeases(ctx context.Context, now time.Time) {
+	// Lease expiry is a coarse recovery mechanism (leases run minutes long);
+	// sweeping every tick issued two write statements per second on the
+	// single writer connection, competing with in-flight collection
+	// transactions all day. Only Run's goroutine touches lastLeaseSweep.
+	if now.Sub(s.lastLeaseSweep) < 30*time.Second {
+		return
+	}
+	s.lastLeaseSweep = now
 	if err := s.jobs.ExpireLeasedJobs(ctx, now); err != nil {
 		s.logger.Error("expire scheduler leases", "error", err)
 	}
@@ -196,12 +205,20 @@ func (s *Scheduler) startJob(ctx context.Context, kind string, current time.Time
 	lane := jobLane(kind)
 	key := jobKey(current, kind, tradeDate)
 
+	// The in-memory dedupe comes first: while a job runs, every tick would
+	// otherwise re-issue the (idempotent, but still write-locking) insert.
+	s.mu.Lock()
+	if _, seen := s.lastKeys[key]; seen {
+		s.mu.Unlock()
+		return false
+	}
+	s.mu.Unlock()
+
 	// Persist the job before contending for the lane. Jobs that share a lane
 	// (e.g. the industry/concept/stock end-of-day parts) would otherwise be
 	// dropped without a trace when the lane is busy; by enqueuing first, a
 	// rejected job stays queued in the store and startDueJobs picks it up once
-	// the lane frees. EnsureScheduledJob is idempotent (INSERT ... DO NOTHING),
-	// so calling it every tick is safe.
+	// the lane frees. EnsureScheduledJob is idempotent (INSERT ... DO NOTHING).
 	job := newScheduledJob(kind, current.Truncate(time.Minute), tradeDate)
 	if err := s.jobs.EnsureScheduledJob(ctx, job); err != nil {
 		s.logger.Error("ensure scheduled job", "kind", kind, "job_key", key, "error", err)
