@@ -120,12 +120,22 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID, middleware.Recoverer, middleware.Compress(5), noStore)
 	router.Get("/health/live", server.live)
-	router.Get("/health/ready", server.ready)
+	// The readiness probe is unauthenticated and hits the database; rate-limit
+	// it with the normal bucket so it cannot be used to hammer the reader pool.
+	router.Group(func(health chi.Router) {
+		health.Use(limitByPath)
+		health.Get("/health/ready", server.ready)
+	})
 	router.Group(func(authed chi.Router) {
 		if len(options) > 0 && options[0].APIToken != "" {
 			authed.Use(bearerMiddleware(options[0].APIToken))
 		}
-		authed.Get("/metrics", server.metrics)
+		// /metrics runs several aggregate queries and is scraped periodically;
+		// give it the same rate limit as API reads plus a bounded timeout.
+		authed.Group(func(metrics chi.Router) {
+			metrics.Use(limitByPath, requestTimeout(10*time.Second))
+			metrics.Get("/metrics", server.metrics)
+		})
 		authed.Route("/api/v1", func(r chi.Router) {
 			r.Use(limitByPath, timeoutByPath)
 			r.Get("/ranks/latest", server.latestRank)
@@ -262,8 +272,8 @@ func (s *Server) boardStocks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	boardCode := chi.URLParam(r, "code")
-	if !strings.HasPrefix(boardCode, "BK") || len(boardCode) < 4 {
-		writeError(w, http.StatusBadRequest, "invalid_board_code", "board code must use the BK prefix")
+	if !boardCodeValid(boardCode) {
+		writeError(w, http.StatusBadRequest, "invalid_board_code", "board code must use the BKxxxx form")
 		return
 	}
 	asOf, ok := optionalAsOf(w, r, s.location)
@@ -319,8 +329,8 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	boardCode := chi.URLParam(r, "code")
-	if !strings.HasPrefix(boardCode, "BK") || len(boardCode) < 4 {
-		writeError(w, http.StatusBadRequest, "invalid_board_code", "board code must use the BK prefix")
+	if !boardCodeValid(boardCode) {
+		writeError(w, http.StatusBadRequest, "invalid_board_code", "board code must use the BKxxxx form")
 		return
 	}
 	asOf, ok := optionalAsOf(w, r, s.location)
@@ -508,7 +518,11 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	_, err := s.store.RecentRuns(ctx, time.Now().In(s.location).Format("2006-01-02"), 1)
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "database_unavailable", err.Error())
+		// This endpoint is unauthenticated; raw SQLite errors leak the
+		// database path and internal state. Log the cause, return a fixed
+		// message.
+		s.logger.Error("readiness probe failed", "error", err)
+		writeError(w, http.StatusServiceUnavailable, "database_unavailable", "database is not ready")
 		return
 	}
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{"status": "ready"}})
@@ -574,6 +588,10 @@ func (s *Server) intraday(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !boardCodeValid(chi.URLParam(r, "code")) {
+		writeError(w, http.StatusBadRequest, "invalid_board_code", "board code must use the BKxxxx form")
+		return
+	}
 	tradeDate := r.URL.Query().Get("trade_date")
 	if tradeDate == "" {
 		tradeDate = time.Now().In(s.location).Format("2006-01-02")
@@ -611,6 +629,10 @@ func (s *Server) intraday(w http.ResponseWriter, r *http.Request) {
 func (s *Server) trend(w http.ResponseWriter, r *http.Request) {
 	rankType, ok := boardTypeParam(w, chi.URLParam(r, "type"))
 	if !ok {
+		return
+	}
+	if !boardCodeValid(chi.URLParam(r, "code")) {
+		writeError(w, http.StatusBadRequest, "invalid_board_code", "board code must use the BKxxxx form")
 		return
 	}
 	from, to, ok := rangeParams(w, r, s.location)
@@ -920,14 +942,28 @@ func (s *Server) marketStatus(value time.Time) string {
 	return marketStatus(value)
 }
 
+// csvSafe neutralizes spreadsheet formula injection: board and stock names
+// come from an external upstream, and Excel/LibreOffice treat a leading
+// = + - @ tab or CR as a formula prefix when opening the exported CSV.
+func csvSafe(value string) string {
+	if value == "" {
+		return value
+	}
+	switch value[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + value
+	}
+	return value
+}
+
 func (s *Server) exportResearch(w http.ResponseWriter, r *http.Request) {
 	rankType, ok := boardTypeParam(w, r.URL.Query().Get("type"))
 	if !ok {
 		return
 	}
 	code := r.URL.Query().Get("code")
-	if code == "" {
-		writeError(w, http.StatusBadRequest, "missing_code", "code is required")
+	if !boardCodeValid(code) {
+		writeError(w, http.StatusBadRequest, "invalid_board_code", "code must use the BKxxxx form")
 		return
 	}
 	from, to, ok := rangeParams(w, r, s.location)
@@ -948,8 +984,11 @@ func (s *Server) exportResearch(w http.ResponseWriter, r *http.Request) {
 	if err := writer.Write([]string{"trade_date", "snapshot_at", "rank_type", "rank", "code", "name", "latest_price_raw", "change_pct", "dark_money", "regular_money", "main_money_inflow", "dark_activity", "dark_inflow_ratio", "up_count", "down_count"}); err != nil {
 		return
 	}
-	for _, record := range records {
-		if err := writer.Write([]string{record.TradeDate, record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, record.Name,
+	for index, record := range records {
+		if index%256 == 0 && r.Context().Err() != nil {
+			return
+		}
+		if err := writer.Write([]string{record.TradeDate, record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, csvSafe(record.Name),
 			strconv.FormatInt(record.LatestPriceRaw, 10), strconv.FormatFloat(record.ChangePct, 'f', 8, 64), strconv.FormatInt(record.DarkMoney, 10),
 			strconv.FormatInt(record.RegularMoney, 10), strconv.FormatInt(record.MainMoneyInflow, 10), strconv.FormatFloat(record.DarkActivity, 'f', 8, 64),
 			strconv.FormatFloat(record.DarkInflowRatio, 'f', 8, 64), strconv.FormatInt(record.UpCount, 10), strconv.FormatInt(record.DownCount, 10)}); err != nil {
@@ -996,8 +1035,11 @@ func (s *Server) exportDailyClose(w http.ResponseWriter, r *http.Request) {
 		"dark_money", "regular_money", "main_money_inflow", "dark_activity", "dark_inflow_ratio", "up_count", "flat_count", "down_count"}); err != nil {
 		return
 	}
-	for _, record := range records {
-		if err := writer.Write([]string{revisionID, record.TradeDate, string(graymarket.SnapshotDailyClose), record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, record.Name,
+	for index, record := range records {
+		if index%256 == 0 && r.Context().Err() != nil {
+			return
+		}
+		if err := writer.Write([]string{revisionID, record.TradeDate, string(graymarket.SnapshotDailyClose), record.SnapshotAt.In(s.location).Format(time.RFC3339), string(record.RankType), strconv.FormatInt(record.Rank, 10), record.Code, csvSafe(record.Name),
 			strconv.FormatFloat(record.OpenPrice, 'f', 4, 64), strconv.FormatFloat(record.HighPrice, 'f', 4, 64), strconv.FormatFloat(record.LowPrice, 'f', 4, 64),
 			strconv.FormatFloat(record.ClosePrice, 'f', 4, 64), strconv.FormatFloat(record.PreviousClose, 'f', 4, 64), strconv.FormatFloat(record.ChangeValue, 'f', 4, 64),
 			strconv.FormatFloat(record.ChangePct, 'f', 8, 64), strconv.FormatInt(record.Volume, 10), strconv.FormatInt(record.Turnover, 10),
@@ -1052,6 +1094,21 @@ func stockCodeValid(value string) bool {
 	return true
 }
 
+// boardCodeValid accepts Eastmoney board codes (BK followed by digits).
+// Beyond input hygiene this also guarantees the code is safe to embed in a
+// Content-Disposition filename: no quotes, semicolons, or control bytes.
+func boardCodeValid(value string) bool {
+	if len(value) < 4 || len(value) > 10 || !strings.HasPrefix(value, "BK") {
+		return false
+	}
+	for _, character := range value[2:] {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func dateParam(w http.ResponseWriter, value string) (string, bool) {
 	if _, err := time.Parse("2006-01-02", value); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_date", "date must use YYYY-MM-DD")
@@ -1074,6 +1131,13 @@ func rangeParams(w http.ResponseWriter, r *http.Request, location *time.Location
 	to, err := parseDateOrTime(toRaw, true, location)
 	if err != nil || to.Before(from) {
 		writeError(w, http.StatusBadRequest, "invalid_to", "to must be a valid date/time after from")
+		return time.Time{}, time.Time{}, false
+	}
+	// Bound the span: an open-ended range over years of five-minute archives
+	// materializes hundreds of thousands of rows in one response (and the
+	// TimeoutHandler buffers JSON responses fully in memory).
+	if to.Sub(from) > 366*24*time.Hour {
+		writeError(w, http.StatusBadRequest, "invalid_range", "range must not exceed 366 days")
 		return time.Time{}, time.Time{}, false
 	}
 	return from, to, true

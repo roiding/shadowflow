@@ -88,7 +88,17 @@ func main() {
 		logger.Info("scheduler disabled")
 	}
 
-	server := &http.Server{Addr: cfg.ListenAddr, Handler: apiServer.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{
+		Addr: cfg.ListenAddr, Handler: apiServer.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		// Bounds how long a client may dribble a request body (the focus/scan
+		// POST); http.TimeoutHandler only bounds handler execution, not reads.
+		ReadTimeout:    30 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 64 << 10,
+		// No WriteTimeout: CSV exports stream for up to 120s; slow readers are
+		// bounded by the per-request context checks in the export loops.
+	}
 	listenFailed := make(chan struct{}, 1)
 	go func() {
 		logger.Info("server started", "addr", cfg.ListenAddr, "database", cfg.DatabasePath)

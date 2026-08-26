@@ -46,9 +46,16 @@ func newRateLimiter(perMinute int) *rateLimiter {
 	if perMinute <= 0 {
 		perMinute = 120
 	}
+	// Burst well below the per-minute budget: a full-minute burst let one
+	// client fire 120 concurrent heavy reads instantly, which is exactly the
+	// memory-amplification pattern the limiter exists to prevent.
+	burst := perMinute / 4
+	if burst < 1 {
+		burst = 1
+	}
 	return &rateLimiter{
 		limit:   float64(perMinute) / 60,
-		burst:   float64(perMinute),
+		burst:   float64(burst),
 		buckets: make(map[string]*clientBucket),
 		lastGC:  time.Now(),
 	}
