@@ -35,7 +35,14 @@ COPY backend/config/trading_calendar.json /app/config/trading_calendar.json
 COPY scripts /app/scripts
 # The calendar auto-updater rewrites its own file, so /app/config must stay
 # writable by the runtime user; everything else is read-only for it.
-RUN chown -R shadowflow:shadowflow /app/config
+# /data and /backups must exist inside the image and be writable by the
+# runtime user: the CI smoke test (and any run without bind mounts) starts
+# the container bare, and without these the unprivileged server cannot
+# create its database. Bind mounts shadow them with host ownership, so
+# deployments still chown the host directories to uid 10001 once.
+RUN chown -R shadowflow:shadowflow /app/config \
+    && mkdir -p /data /backups \
+    && chown shadowflow:shadowflow /data /backups
 ENV TZ=Asia/Shanghai \
     SHADOWFLOW_DATABASE_PATH=/data/shadowflow.db \
     SHADOWFLOW_CALENDAR_PATH=/app/config/trading_calendar.json \
