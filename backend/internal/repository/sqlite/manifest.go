@@ -237,7 +237,7 @@ FROM stock_kline_source WHERE trade_date=? GROUP BY source ORDER BY source`, tra
 	}
 	var completedAt any
 	if manifest.CompletedAt != nil {
-		completedAt = manifest.CompletedAt.Format(timestampLayout)
+		completedAt = formatTimestamp(*manifest.CompletedAt)
 	}
 	_, err = queryer.ExecContext(ctx, `INSERT INTO daily_archive_manifest
 (trade_date,status,industry_close_rows,industry_money_rows,concept_close_rows,concept_money_rows,
@@ -266,7 +266,7 @@ updated_at=excluded.updated_at`,
 		manifest.ExpectedStockRows, manifest.ExpectedStockKlineRows, manifest.CodeCount,
 		manifest.CodeSetSHA256, string(sourceCountsJSON), manifest.DarkTradeContract,
 		manifest.DarkTradeTickContract, manifest.StockKlineContract, manifest.ParserVersion,
-		string(validationErrorsJSON), completedAt, manifest.UpdatedAt.Format(timestampLayout))
+		string(validationErrorsJSON), completedAt, formatTimestamp(*manifest.UpdatedAt))
 	return err
 }
 
@@ -279,7 +279,7 @@ WHERE name='archive_metadata_v1')`).Scan(&migrated); err != nil {
 	if migrated == 1 {
 		return nil
 	}
-	now := time.Now().UTC().Format(timestampLayout)
+	now := formatTimestamp(time.Now())
 	if _, err := db.Exec(`INSERT OR IGNORE INTO stock_kline_source
 (trade_date,market,code,source,point_count,parser_version,fetched_at,run_id)
 SELECT trade_date,market,code,?,count(*),?,?,'legacy'

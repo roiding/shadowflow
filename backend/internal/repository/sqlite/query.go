@@ -46,7 +46,7 @@ func (s *Store) RankAt(ctx context.Context, rankType graymarket.RankType, tradeD
 	// five-minute boundaries that have not yet been compacted. Historical
 	// dates fall back to the long-term research table after cleanup.
 	rows, err := s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_intraday_work
-WHERE trade_date=? AND rank_type=? AND snapshot_at=? ORDER BY rank`, tradeDate, string(rankType), at.Format(timestampLayout))
+WHERE trade_date=? AND rank_type=? AND snapshot_at=? ORDER BY rank`, tradeDate, string(rankType), formatTimestamp(at))
 	if err != nil {
 		return nil, err
 	}
@@ -58,13 +58,13 @@ WHERE trade_date=? AND rank_type=? AND snapshot_at=? ORDER BY rank`, tradeDate, 
 	if at.Format("15:04") == "15:00" {
 		kind = graymarket.SnapshotDailyClose
 	} else {
-		result, err = s.boardMoneyRecords(ctx, `trade_date=? AND rank_type=? AND snapshot_at=?`, tradeDate, string(rankType), at.Format(timestampLayout))
+		result, err = s.boardMoneyRecords(ctx, `trade_date=? AND rank_type=? AND snapshot_at=?`, tradeDate, string(rankType), formatTimestamp(at))
 		if err != nil || len(result) > 0 {
 			return result, err
 		}
 	}
 	rows, err = s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
-WHERE trade_date=? AND rank_type=? AND snapshot_at=? AND snapshot_kind=? ORDER BY rank`, tradeDate, string(rankType), at.Format(timestampLayout), string(kind))
+WHERE trade_date=? AND rank_type=? AND snapshot_at=? AND snapshot_kind=? ORDER BY rank`, tradeDate, string(rankType), formatTimestamp(at), string(kind))
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +109,7 @@ ORDER BY snapshot_at`, tradeDate, string(rankType), code)
 
 func (s *Store) ResearchSeries(ctx context.Context, rankType graymarket.RankType, code string, from, to time.Time) ([]graymarket.RankRecord, error) {
 	result, err := s.boardMoneyRecords(ctx, `rank_type=? AND code=? AND snapshot_at>=? AND snapshot_at<=?`,
-		string(rankType), code, from.Format(timestampLayout), to.Format(timestampLayout))
+		string(rankType), code, formatTimestamp(from), formatTimestamp(to))
 	return result, err
 }
 
@@ -605,16 +605,16 @@ func (s *Store) StartRun(ctx context.Context, run repository.CollectionRun) erro
 	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO collection_run
 (run_id,snapshot_at,snapshot_kind,rank_type,status,requested_date,actual_trade_date,expected_total,fetched_total,page_count,
 attempt_count,started_at,finished_at,duration_ms,error_code,error_message)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, run.RunID, run.SnapshotAt.Format(timestampLayout), string(run.SnapshotKind),
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, run.RunID, formatTimestamp(run.SnapshotAt), string(run.SnapshotKind),
 		string(run.RankType), string(run.Status), run.RequestedDate, run.ActualTradeDate, run.ExpectedTotal, run.FetchedTotal,
-		run.PageCount, run.AttemptCount, run.StartedAt.Format(timestampLayout), nil, run.DurationMS, run.ErrorCode, run.ErrorMessage)
+		run.PageCount, run.AttemptCount, formatTimestamp(run.StartedAt), nil, run.DurationMS, run.ErrorCode, run.ErrorMessage)
 	return err
 }
 
 func (s *Store) FinishRun(ctx context.Context, run repository.CollectionRun) error {
 	var finished any
 	if run.FinishedAt != nil {
-		finished = run.FinishedAt.Format(timestampLayout)
+		finished = formatTimestamp(*run.FinishedAt)
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE collection_run SET status=?,actual_trade_date=?,expected_total=?,fetched_total=?,
 page_count=?,attempt_count=?,finished_at=?,duration_ms=?,error_code=?,error_message=? WHERE run_id=?`, string(run.Status),

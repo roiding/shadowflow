@@ -63,7 +63,7 @@ func formatNullableTime(value *time.Time) any {
 	if value == nil || value.IsZero() {
 		return nil
 	}
-	return value.UTC().Format(timestampLayout)
+	return formatTimestamp(*value)
 }
 
 func (s *Store) EnsureScheduledJob(ctx context.Context, job scheduler.ScheduledJob) error {
@@ -72,7 +72,7 @@ func (s *Store) EnsureScheduledJob(ctx context.Context, job scheduler.ScheduledJ
 started_at,finished_at,last_error_code,last_error_message,duration_ms)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(job_key) DO NOTHING`,
-		job.JobKey, job.Kind, job.TradeDate, job.PlannedAt.UTC().Format(timestampLayout), string(scheduler.JobQueued),
+		job.JobKey, job.Kind, job.TradeDate, formatTimestamp(job.PlannedAt), string(scheduler.JobQueued),
 		0, job.MaxAttempts, nil, nil, nil, nil, nil, "", "", 0)
 	if err != nil {
 		return fmt.Errorf("ensure scheduled job %s: %w", job.JobKey, err)
@@ -87,14 +87,14 @@ func (s *Store) ClaimScheduledJob(ctx context.Context, job scheduler.ScheduledJo
 	}
 	defer tx.Rollback()
 
-	claimedAt := now.UTC().Format(timestampLayout)
+	claimedAt := formatTimestamp(now)
 	result, err := tx.ExecContext(ctx, `UPDATE scheduled_job SET status=?,attempt_count=attempt_count+1,
 lease_owner=?,lease_until=?,started_at=COALESCE(started_at,?)
 WHERE job_key=? AND attempt_count<max_attempts AND (
     (status='queued' AND (retry_at IS NULL OR julianday(retry_at)<=julianday(?))) OR
     (status='failed' AND retry_at IS NOT NULL AND julianday(retry_at)<=julianday(?)) OR
     (status='running' AND (lease_until IS NULL OR julianday(lease_until)<=julianday(?)))
-)`, string(scheduler.JobRunning), owner, leaseUntil.UTC().Format(timestampLayout), claimedAt, job.JobKey,
+)`, string(scheduler.JobRunning), owner, formatTimestamp(leaseUntil), claimedAt, job.JobKey,
 		claimedAt, claimedAt, claimedAt)
 	if err != nil {
 		return scheduler.ScheduledJob{}, false, fmt.Errorf("claim scheduled job %s: %w", job.JobKey, err)
@@ -122,7 +122,7 @@ func (s *Store) FinishScheduledJob(ctx context.Context, job scheduler.ScheduledJ
 	result, err := s.writeDB().ExecContext(ctx, `UPDATE scheduled_job SET status=?,retry_at=?,finished_at=?,
 duration_ms=?,last_error_code=?,last_error_message=?,lease_owner=NULL,lease_until=NULL
 WHERE job_key=? AND status='running' AND lease_owner=?`,
-		string(job.Status), retryAt, time.Now().UTC().Format(timestampLayout), job.DurationMS,
+		string(job.Status), retryAt, formatTimestamp(time.Now()), job.DurationMS,
 		job.LastErrorCode, job.LastError, job.JobKey, job.LeaseOwner)
 	if err != nil {
 		return fmt.Errorf("finish scheduled job %s: %w", job.JobKey, err)
@@ -141,7 +141,7 @@ func (s *Store) DueScheduledJobs(ctx context.Context, now time.Time, limit int) 
 	if limit <= 0 {
 		limit = 8
 	}
-	timestamp := now.UTC().Format(timestampLayout)
+	timestamp := formatTimestamp(now)
 	rows, err := s.readDB().QueryContext(ctx, `SELECT `+scheduledJobColumns+`
 FROM scheduled_job
 WHERE attempt_count<max_attempts AND (
@@ -166,7 +166,7 @@ ORDER BY julianday(planned_at) LIMIT ?`, timestamp, timestamp, timestamp, limit)
 }
 
 func (s *Store) ExpireLeasedJobs(ctx context.Context, now time.Time) error {
-	timestamp := now.UTC().Format(timestampLayout)
+	timestamp := formatTimestamp(now)
 	// Jobs with attempts left go back to the queue; jobs that died on their
 	// final attempt are terminal. Without the second branch an exhausted job
 	// would be requeued forever: DueScheduledJobs keeps returning it, Claim

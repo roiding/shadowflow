@@ -80,13 +80,13 @@ VALUES (?,?,?,?,?,?,?)
 ON CONFLICT(revision_id) DO UPDATE SET
 content_sha256=excluded.content_sha256,manifest_json=excluded.manifest_json,created_at=excluded.created_at`,
 		revisionID, tradeDate, revisionNo, nil, contentSHA256,
-		string(manifestJSON), createdAt.Format(timestampLayout)); err != nil {
+		string(manifestJSON), formatTimestamp(createdAt)); err != nil {
 		return repository.ArchiveRevision{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO daily_archive_current(trade_date,revision_id,updated_at)
 VALUES (?,?,?) ON CONFLICT(trade_date) DO UPDATE SET
 revision_id=excluded.revision_id,updated_at=excluded.updated_at`,
-		tradeDate, revisionID, createdAt.Format(timestampLayout)); err != nil {
+		tradeDate, revisionID, formatTimestamp(createdAt)); err != nil {
 		return repository.ArchiveRevision{}, err
 	}
 	if err := buildAnalyticsForRevision(ctx, tx, revisionID, tradeDate); err != nil {
@@ -268,7 +268,7 @@ WHERE manifest.status='complete' AND current.revision_id IS NULL ORDER BY manife
 			return err
 		}
 	}
-	now := time.Now().UTC().Format(timestampLayout)
+	now := formatTimestamp(time.Now())
 	_, err = store.db.Exec(`INSERT INTO database_maintenance(name,completed_at)
 VALUES ('archive_revisions_v1',?) ON CONFLICT(name) DO UPDATE SET completed_at=excluded.completed_at`, now)
 	return err
@@ -300,7 +300,7 @@ WHERE name='lightweight_archive_storage_v1')`).Scan(&migrated); err != nil {
 			return err
 		}
 	}
-	now := time.Now().UTC().Format(timestampLayout)
+	now := formatTimestamp(time.Now())
 	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at)
 VALUES ('lightweight_archive_storage_v1',?)`, now); err != nil {
 		return err
@@ -333,7 +333,7 @@ WHERE NOT EXISTS (SELECT 1 FROM daily_archive_current AS current WHERE current.r
   AND NOT EXISTS (SELECT 1 FROM future_return_label AS label WHERE label.signal_revision_id=revision.revision_id OR label.target_revision_id=revision.revision_id)`); err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(timestampLayout)
+	now := formatTimestamp(time.Now())
 	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at) VALUES ('revision_metadata_v2',?)`, now); err != nil {
 		return err
 	}

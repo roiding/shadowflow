@@ -101,7 +101,7 @@ OR (status IN ('queued','running') AND planned_at<?)`, successCutoff, failureCut
 		}
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO database_maintenance(name,completed_at)
 VALUES ('optimize',?) ON CONFLICT(name) DO UPDATE SET completed_at=excluded.completed_at`,
-			at.UTC().Format(timestampLayout)); err != nil {
+			formatTimestamp(at)); err != nil {
 			return result, err
 		}
 		result.Optimized = true

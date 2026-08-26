@@ -139,7 +139,7 @@ func TestIntradayCompactionAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(series) != 48 || series[0].SnapshotAt.Format("15:04") != "09:35" || series[47].SnapshotAt.Format("15:04") != "15:00" {
+	if len(series) != 48 || series[0].SnapshotAt.In(location).Format("15:04") != "09:35" || series[47].SnapshotAt.In(location).Format("15:04") != "15:00" {
 		t.Fatalf("unexpected research series: count=%d first=%s last=%s", len(series), series[0].SnapshotAt, series[len(series)-1].SnapshotAt)
 	}
 	var workCount int
@@ -150,7 +150,7 @@ func TestIntradayCompactionAndCleanup(t *testing.T) {
 		t.Fatalf("work table was not cleaned: count=%d", workCount)
 	}
 	work, err := store.IntradaySeries(ctx, graymarket.RankIndustry, "industry-code", tradeDate)
-	if err != nil || len(work) != 49 || work[len(work)-1].SnapshotAt.Format("15:04") != "15:00" {
+	if err != nil || len(work) != 49 || work[len(work)-1].SnapshotAt.In(location).Format("15:04") != "15:00" {
 		t.Fatalf("intraday query did not fall back to research data: count=%d err=%v", len(work), err)
 	}
 	series, err = store.ResearchSeries(ctx, graymarket.RankIndustry, "industry-code", from, to)
@@ -159,7 +159,7 @@ func TestIntradayCompactionAndCleanup(t *testing.T) {
 	}
 	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept} {
 		page, total, err := store.DailyClosePage(ctx, rankType, tradeDate, "", "rank", false, 10, 0)
-		if err != nil || total != 1 || len(page) != 1 || page[0].SnapshotAt.Format("15:04") != "15:00" {
+		if err != nil || total != 1 || len(page) != 1 || page[0].SnapshotAt.In(location).Format("15:04") != "15:00" {
 			t.Fatalf("%s daily close missing: total=%d records=%+v err=%v", rankType, total, page, err)
 		}
 	}
@@ -168,7 +168,7 @@ func TestIntradayCompactionAndCleanup(t *testing.T) {
 		t.Fatalf("RankAt did not return archived 15:00 board close: records=%+v err=%v", closeRank, err)
 	}
 	latest, err := store.LatestRank(ctx, graymarket.RankIndustry)
-	if err != nil || len(latest) != 1 || latest[0].SnapshotAt.Format("15:04") != "15:00" {
+	if err != nil || len(latest) != 1 || latest[0].SnapshotAt.In(location).Format("15:04") != "15:00" {
 		t.Fatalf("latest did not prefer the archived board close: records=%+v err=%v", latest, err)
 	}
 	quality, err := store.Quality(ctx, tradeDate)
@@ -239,6 +239,79 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "stale", now.Format(timestampLayout),
 	}
 	if len(runs) != 1 || runs[0].Status != repository.RunFailed || runs[0].ErrorCode != "interrupted" || runs[0].FinishedAt == nil {
 		t.Fatalf("interrupted run was not recovered: %+v", runs)
+	}
+}
+
+func TestOpenNormalizesOffsetTimestampsAndDeduplicates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tz.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	// Simulate the pre-normalization state: the same logical minute stored
+	// once with a '+08:00' offset (live collection) and once as UTC 'Z' (an
+	// old backfill), plus a second minute stored only with an offset.
+	insert := `INSERT INTO rank_intraday_work
+(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,quote_time,latest_price_raw,change_pct,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	for _, fixture := range []struct {
+		runID, at string
+		dark      int64
+	}{
+		{"live", "2026-08-25T11:04:00+08:00", 42},
+		{"backfill", "2026-08-25T03:04:00Z", 0},
+		{"live", "2026-08-25T11:05:00+08:00", 43},
+	} {
+		if _, err := store.db.ExecContext(ctx, insert, fixture.runID, fixture.at, "2026-08-25", "industry", 1, 90, "BK001", "n", "", 0, 0, fixture.dark, 0, 0, 0, 0, 0, 0, 0, "", "", 101, 6, 1, "2026-08-25T03:04:00Z"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM database_maintenance WHERE name='timestamp_normalization_v1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	rows, err := store.db.QueryContext(ctx, `SELECT snapshot_at,run_id,dark_money FROM rank_intraday_work ORDER BY snapshot_at`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	type entry struct {
+		at, runID string
+		dark      int64
+	}
+	var got []entry
+	for rows.Next() {
+		var item entry
+		if err := rows.Scan(&item.at, &item.runID, &item.dark); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, item)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []entry{
+		// The duplicated minute keeps the live-collected row; the offset form
+		// is rewritten to UTC 'Z'.
+		{"2026-08-25T03:04:00Z", "live", 42},
+		{"2026-08-25T03:05:00Z", "live", 43},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected normalized rows: %+v", got)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("row %d: got %+v want %+v", index, got[index], want[index])
+		}
 	}
 }
 
@@ -580,10 +653,11 @@ WHERE trade_date=? AND rank_type='concept' ORDER BY snapshot_at, rank`, snapshot
 		t.Fatal(err)
 	}
 	want := []row{
-		{"2026-08-25T10:00:00+08:00", "BK002", 1}, {"2026-08-25T10:00:00+08:00", "BK001", 2},
-		{"2026-08-25T10:05:00+08:00", "BK001", 1}, {"2026-08-25T10:05:00+08:00", "BK002", 2},
+		// Stored timestamps are normalized to UTC: 10:00 Shanghai == 02:00Z.
+		{"2026-08-25T02:00:00Z", "BK002", 1}, {"2026-08-25T02:00:00Z", "BK001", 2},
+		{"2026-08-25T02:05:00Z", "BK001", 1}, {"2026-08-25T02:05:00Z", "BK002", 2},
 		// Equal dark_money is broken by ascending code.
-		{"2026-08-25T10:10:00+08:00", "BK001", 1}, {"2026-08-25T10:10:00+08:00", "BK002", 2},
+		{"2026-08-25T02:10:00Z", "BK001", 1}, {"2026-08-25T02:10:00Z", "BK002", 2},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("unexpected board rank rows: %+v", got)

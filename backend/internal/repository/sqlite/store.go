@@ -26,6 +26,14 @@ import (
 
 const timestampLayout = time.RFC3339Nano
 
+// formatTimestamp renders a timestamp for storage or comparison. Every stored
+// timestamp is normalized to UTC (trailing 'Z') so that lexicographic
+// comparison, max() and DISTINCT over the TEXT columns agree with
+// chronological order regardless of the location attached to the Go value.
+// Mixed '+08:00'/'Z' representations of the same instant previously made
+// archive-completeness counts and equality lookups silently wrong.
+func formatTimestamp(t time.Time) string { return t.UTC().Format(timestampLayout) }
+
 func quoteAvailableRecords(records []graymarket.RankRecord) []graymarket.RankRecord {
 	result := make([]graymarket.RankRecord, 0, len(records))
 	for _, record := range records {
@@ -109,6 +117,9 @@ func OpenWithReadConns(path string, readConns int) (*Store, error) {
 	if err := migrateResearchCloseModel(db); err != nil {
 		return nil, fmt.Errorf("migrate 15:00 close snapshots: %w", err)
 	}
+	if err := migrateTimestampNormalization(db); err != nil {
+		return nil, fmt.Errorf("normalize stored timestamps: %w", err)
+	}
 	if err := migrateLegacyBoardMoney(store); err != nil {
 		return nil, fmt.Errorf("migrate legacy board money: %w", err)
 	}
@@ -148,13 +159,13 @@ WHERE run_id NOT IN (SELECT run_id FROM relation_sync_run WHERE status='running'
 	if _, err := db.Exec(`UPDATE collection_run
 SET status='failed', finished_at=COALESCE(finished_at, ?), error_code='interrupted',
 error_message='process stopped before collection completed'
-WHERE status='running'`, time.Now().UTC().Format(timestampLayout)); err != nil {
+WHERE status='running'`, formatTimestamp(time.Now())); err != nil {
 		return nil, fmt.Errorf("recover interrupted runs: %w", err)
 	}
 	if _, err := db.Exec(`UPDATE relation_sync_run
 SET status='failed', finished_at=COALESCE(finished_at, ?), error_code='interrupted',
 error_message='process stopped before relation synchronization completed'
-WHERE status='running'`, time.Now().UTC().Format(timestampLayout)); err != nil {
+WHERE status='running'`, formatTimestamp(time.Now())); err != nil {
 		return nil, fmt.Errorf("recover interrupted relation syncs: %w", err)
 	}
 	success = true
@@ -231,7 +242,7 @@ WHERE snapshot_kind='research_5m' AND rank_type IN ('industry','concept')`); err
 WHERE snapshot_kind='research_5m' AND rank_type IN ('industry','concept')`); err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(timestampLayout)
+	now := formatTimestamp(time.Now())
 	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at)
 VALUES ('legacy_board_money_v1',?)`, now); err != nil {
 		return err
@@ -260,7 +271,7 @@ func migrateBoardMoneyAvailability(store *Store) error {
 WHERE money_available=0 AND (dark_money<>0 OR regular_money<>0 OR main_money_inflow<>0)`); err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(timestampLayout)
+	now := formatTimestamp(time.Now())
 	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at) VALUES ('board_money_available_v2',?)`, now); err != nil {
 		return err
 	}
@@ -312,7 +323,7 @@ UNION SELECT trade_date FROM stock_research_5m WHERE money_available=0 AND kline
 	if _, err := tx.Exec(`DELETE FROM stock_research_5m WHERE money_available=0 AND kline_available=0`); err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(timestampLayout)
+	now := formatTimestamp(time.Now())
 	if _, err := tx.Exec(`UPDATE stock_archive_quality SET
 money_rows=(SELECT coalesce(sum(money_available),0) FROM stock_research_5m AS research WHERE research.trade_date=stock_archive_quality.trade_date),
 kline_rows=(SELECT coalesce(sum(kline_available),0) FROM stock_research_5m AS research WHERE research.trade_date=stock_archive_quality.trade_date),
@@ -342,7 +353,7 @@ func recordSchemaMigration(store *Store) error {
 	_, err := store.db.Exec(`INSERT INTO schema_migration(version,applied_at,duration_ms,checksum)
 VALUES (1,?,?,?)
 ON CONFLICT(version) DO UPDATE SET checksum=excluded.checksum`,
-		time.Now().UTC().Format(timestampLayout), time.Since(started).Milliseconds(), fmt.Sprintf("%x", sha256.Sum256([]byte(schema))))
+		formatTimestamp(time.Now()), time.Since(started).Milliseconds(), fmt.Sprintf("%x", sha256.Sum256([]byte(schema))))
 	return err
 }
 
@@ -468,7 +479,7 @@ WHERE trade_date=? AND market=? AND code=?`, stock.tradeDate, stock.market, stoc
 			return err
 		}
 	}
-	now := time.Now().UTC().Format(timestampLayout)
+	now := formatTimestamp(time.Now())
 	for date := range dates {
 		var moneyRows, klineRows int
 		if err := tx.QueryRow(`SELECT coalesce(sum(money_available),0),coalesce(sum(kline_available),0)
@@ -669,7 +680,46 @@ WHERE trade_date=? AND rank_type=?`, len(researchMinutes), len(filterDailyCloseM
 		}
 	}
 	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at) VALUES ('research_close_model_v1',?)
-ON CONFLICT(name) DO UPDATE SET completed_at=excluded.completed_at`, time.Now().UTC().Format(timestampLayout)); err != nil {
+ON CONFLICT(name) DO UPDATE SET completed_at=excluded.completed_at`, formatTimestamp(time.Now())); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateTimestampNormalization rewrites offset-aware snapshot timestamps
+// (historically written as '+08:00') to the UTC 'Z' form that every writer
+// now produces via formatTimestamp. Mixed representations of the same
+// instant break string equality, max(), BETWEEN and count(DISTINCT ...) on
+// these TEXT columns — most damagingly the archive-completeness checks,
+// which would see doubled rows and never report a day as complete. OR
+// REPLACE resolves rows that already exist in both forms (e.g. a backfill
+// wrote 'Z' while live collection wrote '+08:00'): the migrated
+// live-collected row wins.
+func migrateTimestampNormalization(db *sql.DB) error {
+	var migrated int
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM database_maintenance
+WHERE name='timestamp_normalization_v1')`).Scan(&migrated); err != nil {
+		return err
+	}
+	if migrated == 1 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, table := range []string{
+		"rank_intraday_work", "rank_snapshot", "board_money_5m", "raw_response", "collection_run",
+	} {
+		if _, err := tx.Exec(`UPDATE OR REPLACE ` + table + `
+SET snapshot_at=strftime('%Y-%m-%dT%H:%M:%SZ', snapshot_at)
+WHERE snapshot_at LIKE '%+__:__'`); err != nil {
+			return fmt.Errorf("normalize %s timestamps: %w", table, err)
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at) VALUES ('timestamp_normalization_v1',?)
+ON CONFLICT(name) DO UPDATE SET completed_at=excluded.completed_at`, formatTimestamp(time.Now())); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -777,8 +827,8 @@ func (s *Store) SaveBoardArchive(ctx context.Context, runID string, snapshot gra
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO board_money_5m
 (run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, runID, point.SnapshotAt.Format(timestampLayout), point.TradeDate, string(point.RankType), point.Rank,
-			point.Market, point.Code, point.Name, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1, point.SourceTime, point.FetchedAt.Format(timestampLayout))
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, runID, formatTimestamp(point.SnapshotAt), point.TradeDate, string(point.RankType), point.Rank,
+			point.Market, point.Code, point.Name, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1, point.SourceTime, formatTimestamp(point.FetchedAt))
 		if err != nil {
 			return err
 		}
@@ -889,7 +939,7 @@ money_rank=excluded.money_rank,dark_money=excluded.dark_money,
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM stock_research_5m WHERE trade_date=? AND kline_available=1`, snapshot.TradeDate).Scan(&klineRows); err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(timestampLayout)
+	now := formatTimestamp(time.Now())
 	_, err = tx.ExecContext(ctx, `INSERT INTO stock_archive_quality
 (trade_date,expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,daily_close_rows,daily_kline_rows,money_archived_at,updated_at)
 VALUES (?,?,48,?,?,?,?,?,?,?)
@@ -952,7 +1002,7 @@ func (s *Store) SaveBoardArchiveBatch(ctx context.Context, runID string, snapsho
 (run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,snapshot_at,rank_type,code) DO UPDATE SET
 dark_money=excluded.dark_money,regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow,money_available=1,source_time=excluded.source_time,fetched_at=excluded.fetched_at`,
-			runID, point.SnapshotAt.Format(timestampLayout), point.TradeDate, string(point.RankType), point.Rank, point.Market, point.Code, point.Name, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1, point.SourceTime, point.FetchedAt.Format(timestampLayout)); err != nil {
+			runID, formatTimestamp(point.SnapshotAt), point.TradeDate, string(point.RankType), point.Rank, point.Market, point.Code, point.Name, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1, point.SourceTime, formatTimestamp(point.FetchedAt)); err != nil {
 			return err
 		}
 	}
@@ -1041,7 +1091,7 @@ VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,minute_index,market,code) DO U
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM stock_research_5m WHERE trade_date=? AND kline_available=1`, snapshot.TradeDate).Scan(&klineRows); err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(timestampLayout)
+	now := formatTimestamp(time.Now())
 	expected := len(records)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO stock_archive_quality (trade_date,expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,daily_close_rows,daily_kline_rows,money_archived_at,updated_at) VALUES (?,?,48,?,?,?,?,?,?,?) ON CONFLICT(trade_date) DO UPDATE SET expected_stocks=excluded.expected_stocks,expected_points=48,expected_kline_stocks=excluded.expected_kline_stocks,money_rows=excluded.money_rows,kline_rows=excluded.kline_rows,daily_close_rows=excluded.daily_close_rows,daily_kline_rows=excluded.daily_kline_rows,money_archived_at=excluded.money_archived_at,
 kline_archived_at=CASE WHEN excluded.kline_rows=excluded.expected_kline_stocks*excluded.expected_points
@@ -1267,7 +1317,7 @@ ON CONFLICT(trade_date,market,code) DO UPDATE SET source=excluded.source,
 point_count=excluded.point_count,parser_version=excluded.parser_version,
 fetched_at=excluded.fetched_at,run_id=excluded.run_id`,
 			tradeDate, key.market, key.code, sources[key], len(indexes), archiveParserVersion,
-			at.Format(timestampLayout), runID); err != nil {
+			formatTimestamp(at), runID); err != nil {
 			return err
 		}
 	}
@@ -1278,7 +1328,7 @@ fetched_at=excluded.fetched_at,run_id=excluded.run_id`,
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM stock_research_5m WHERE trade_date=? AND kline_available=1`, tradeDate).Scan(&klineRows); err != nil {
 		return err
 	}
-	nowText := now.Format(timestampLayout)
+	nowText := formatTimestamp(now)
 	var archivedAt any
 	if klineRows == expectedKlineStocks*expectedPoints {
 		archivedAt = nowText
@@ -1294,7 +1344,7 @@ fetched_at=excluded.fetched_at,run_id=excluded.run_id`,
 
 func insertRecord(ctx context.Context, tx *sql.Tx, table, runID, requestedDate, snapshotKind string, record graymarket.RankRecord) error {
 	commonArgs := []any{
-		runID, record.SnapshotAt.Format(timestampLayout), record.TradeDate,
+		runID, formatTimestamp(record.SnapshotAt), record.TradeDate,
 	}
 	if table == "rank_snapshot" {
 		commonArgs = append(commonArgs, requestedDate, snapshotKind)
@@ -1307,7 +1357,7 @@ func insertRecord(ctx context.Context, tx *sql.Tx, table, runID, requestedDate, 
 		record.DarkMoney, record.RegularMoney, record.MainMoneyInflow,
 		record.DarkActivity, record.DarkInflowRatio, record.UpCount, record.FlatCount, record.DownCount,
 		record.LeaderName, record.LeaderCode, record.SourceVersion, record.SourceSortFlag, boolInt(record.SourceDescending),
-		record.FetchedAt.Format(timestampLayout),
+		formatTimestamp(record.FetchedAt),
 	)
 	columns := `run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,quote_time,
 	latest_price_raw,open_price,high_price,low_price,close_price,previous_close,change_value,change_pct,
@@ -1331,8 +1381,8 @@ func insertRawPage(ctx context.Context, tx *sql.Tx, runID string, snapshotAt tim
 	}
 	_, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO raw_response
 (run_id,snapshot_at,snapshot_kind,rank_type,page,content_encoding,compression,body,fetched_at)
-VALUES (?,?,?,?,?,?,?,?,?)`, runID, snapshotAt.Format(timestampLayout), string(kind), string(rankType), page.Page,
-		page.ContentEncoding, "gzip", compressed, page.FetchedAt.Format(timestampLayout))
+VALUES (?,?,?,?,?,?,?,?,?)`, runID, formatTimestamp(snapshotAt), string(kind), string(rankType), page.Page,
+		page.ContentEncoding, "gzip", compressed, formatTimestamp(page.FetchedAt))
 	return err
 }
 
@@ -1607,7 +1657,7 @@ func upsertQuality(ctx context.Context, tx *sql.Tx, summary repository.QualitySu
 expected_daily_close,collected_daily_close,missing_minutes_json,missing_research_json,missing_daily_close_json,compacted_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, summary.TradeDate, string(summary.RankType), summary.ExpectedMinutes, summary.CollectedMinutes,
 		summary.ExpectedResearch, summary.CollectedResearch, summary.ExpectedDailyClose, summary.CollectedDailyClose,
-		string(missingMinutes), string(missingResearch), string(missingDailyClose), summary.CompactedAt.Format(timestampLayout))
+		string(missingMinutes), string(missingResearch), string(missingDailyClose), formatTimestamp(*summary.CompactedAt))
 	return err
 }
 

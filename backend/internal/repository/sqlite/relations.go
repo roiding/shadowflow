@@ -16,7 +16,7 @@ func (s *Store) StartRelationSync(ctx context.Context, run repository.RelationSy
 (run_id,trade_date,status,board_count,relation_count,added_count,removed_count,baseline_built,
 started_at,finished_at,duration_ms,error_code,error_message)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, run.RunID, run.TradeDate, string(run.Status), run.BoardCount, run.RelationCount,
-		run.AddedCount, run.RemovedCount, boolInt(run.BaselineBuilt), run.StartedAt.Format(timestampLayout), nil,
+		run.AddedCount, run.RemovedCount, boolInt(run.BaselineBuilt), formatTimestamp(run.StartedAt), nil,
 		run.DurationMS, run.ErrorCode, run.ErrorMessage)
 	return err
 }
@@ -46,7 +46,7 @@ relation_source,relation_scope,detected_at,raw_data) VALUES (?,?,?,?,?,?,?,?,?,?
 		}
 		if _, err := statement.ExecContext(ctx, runID, relation.StockCode, relation.StockMarket, relation.StockName,
 			relation.BoardCode, relation.BoardName, string(relation.BoardType), relation.SourceOrder,
-			relation.RelationSource, relation.RelationScope, relation.DetectedAt.Format(timestampLayout), relation.RawData); err != nil {
+			relation.RelationSource, relation.RelationScope, formatTimestamp(relation.DetectedAt), relation.RawData); err != nil {
 			return err
 		}
 	}
@@ -121,7 +121,7 @@ AND current.relation_scope=stage.relation_scope WHERE stage.run_id=? AND current
 			finishedAt := time.Now().UTC()
 			if _, err := tx.ExecContext(ctx, `UPDATE relation_sync_run SET status='success',board_count=?,relation_count=?,
 added_count=0,removed_count=0,baseline_built=0,finished_at=?,duration_ms=?,error_code='',error_message=''
-WHERE run_id=?`, boardCount, result.RelationCount, finishedAt.Format(timestampLayout), finishedAt.Sub(detectedAt).Milliseconds(), runID); err != nil {
+WHERE run_id=?`, boardCount, result.RelationCount, formatTimestamp(finishedAt), finishedAt.Sub(detectedAt).Milliseconds(), runID); err != nil {
 				return result, err
 			}
 			if _, err := tx.ExecContext(ctx, `DELETE FROM stock_board_relation_stage WHERE run_id=?`, runID); err != nil {
@@ -196,7 +196,7 @@ FROM stock_board_relation_stage stage
 LEFT JOIN stock_board_relation_current current ON current.stock_code=stage.stock_code
 AND current.board_code=stage.board_code AND current.relation_source=stage.relation_source
 AND current.relation_scope=stage.relation_scope
-WHERE stage.run_id=? AND current.stock_code IS NULL`, tradeDate, detectedAt.Format(timestampLayout), runID)
+WHERE stage.run_id=? AND current.stock_code IS NULL`, tradeDate, formatTimestamp(detectedAt), runID)
 		if err != nil {
 			return result, err
 		}
@@ -208,7 +208,7 @@ current.board_type,current.source_order,current.relation_source,current.relation
 FROM stock_board_relation_current current
 LEFT JOIN stock_board_relation_stage stage ON stage.run_id=? AND stage.stock_code=current.stock_code
 AND stage.board_code=current.board_code AND stage.relation_source=current.relation_source
-AND stage.relation_scope=current.relation_scope WHERE stage.stock_code IS NULL`, tradeDate, detectedAt.Format(timestampLayout), runID, runID)
+AND stage.relation_scope=current.relation_scope WHERE stage.stock_code IS NULL`, tradeDate, formatTimestamp(detectedAt), runID, runID)
 		if err != nil {
 			return result, err
 		}
@@ -236,7 +236,7 @@ board_type=excluded.board_type,source_order=excluded.source_order,detected_at=ex
 	if _, err := tx.ExecContext(ctx, `UPDATE relation_sync_run SET status='success',board_count=?,relation_count=?,
 added_count=?,removed_count=?,baseline_built=?,finished_at=?,duration_ms=?,error_code='',error_message=''
 WHERE run_id=?`, boardCount, result.RelationCount, result.AddedCount, result.RemovedCount, boolInt(result.BaselineBuilt),
-		finishedAt.Format(timestampLayout), finishedAt.Sub(detectedAt).Milliseconds(), runID); err != nil {
+		formatTimestamp(finishedAt), finishedAt.Sub(detectedAt).Milliseconds(), runID); err != nil {
 		return result, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_board_relation_stage WHERE run_id=?`, runID); err != nil {
@@ -259,7 +259,7 @@ func (s *Store) FailRelationSync(ctx context.Context, run repository.RelationSyn
 	}
 	var finished any
 	if run.FinishedAt != nil {
-		finished = run.FinishedAt.Format(timestampLayout)
+		finished = formatTimestamp(*run.FinishedAt)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE relation_sync_run SET status=?,board_count=?,relation_count=?,
 added_count=?,removed_count=?,baseline_built=?,finished_at=?,duration_ms=?,error_code=?,error_message=? WHERE run_id=?`,

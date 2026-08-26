@@ -188,7 +188,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return err
 	}
-	generatedAt := time.Now().UTC().Format(timestampLayout)
+	generatedAt := formatTimestamp(time.Now())
 	if _, err := tx.ExecContext(ctx, `INSERT INTO daily_feature_set
 (revision_id,trade_date,feature_version,source_revisions_json,generated_at)
 VALUES (?,?,?,?,?) ON CONFLICT(revision_id) DO UPDATE SET
@@ -664,7 +664,7 @@ func rebuildFutureLabels(ctx context.Context, tx *sql.Tx, changedDate string) er
 		industryCloseCache[tradeDate] = index
 		return index
 	}
-	generatedAt := time.Now().UTC().Format(timestampLayout)
+	generatedAt := formatTimestamp(time.Now())
 	statement, err := tx.PrepareContext(ctx, `INSERT INTO future_return_label
 (signal_revision_id,target_revision_id,signal_date,target_date,horizon,rank_type,market,code,
 return_rate,relative_industry_return,max_favorable_return,max_adverse_return,label_version,generated_at)
@@ -855,7 +855,7 @@ WHERE features.revision_id IS NULL ORDER BY current.trade_date`)
 			return err
 		}
 	}
-	now := time.Now().UTC().Format(timestampLayout)
+	now := formatTimestamp(time.Now())
 	_, err = store.db.Exec(`INSERT INTO database_maintenance(name,completed_at)
 VALUES ('analytics_v1',?) ON CONFLICT(name) DO UPDATE SET completed_at=excluded.completed_at`, now)
 	return err
