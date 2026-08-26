@@ -47,13 +47,21 @@ type Guard struct {
 
 type guardedBody struct {
 	io.ReadCloser
-	once    sync.Once
-	release func()
+	once     sync.Once
+	release  func()
+	failOnce sync.Once
+	onFail   func()
 }
 
 func (b *guardedBody) Read(buffer []byte) (int, error) {
 	n, err := b.ReadCloser.Read(buffer)
 	if err != nil {
+		// A mid-body disconnect is a primary upstream failure mode; health was
+		// otherwise only judged at the response-header stage, so a host that
+		// keeps truncating bodies never tripped the breaker.
+		if err != io.EOF && b.onFail != nil {
+			b.failOnce.Do(b.onFail)
+		}
 		b.once.Do(b.release)
 	}
 	return n, err
@@ -136,7 +144,7 @@ func (g *Guard) Do(ctx context.Context, request *http.Request) (*http.Response, 
 		releaseSlot()
 		return nil, fmt.Errorf("upstream returned HTTP %d", response.StatusCode)
 	}
-	response.Body = &guardedBody{ReadCloser: response.Body, release: releaseSlot}
+	response.Body = &guardedBody{ReadCloser: response.Body, release: releaseSlot, onFail: func() { g.record(key, false) }}
 	return response, nil
 }
 

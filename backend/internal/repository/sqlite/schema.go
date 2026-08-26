@@ -101,6 +101,10 @@ CREATE INDEX IF NOT EXISTS idx_snapshot_rank
     ON rank_snapshot (trade_date, snapshot_kind, rank_type, snapshot_at, rank);
 CREATE INDEX IF NOT EXISTS idx_snapshot_series
     ON rank_snapshot (snapshot_kind, rank_type, code, snapshot_at);
+-- LatestRank resolves max(snapshot_at) per (kind, type); without this the
+-- lookup degrades to a scan plus temp sort that grows with archive history.
+CREATE INDEX IF NOT EXISTS idx_snapshot_latest
+    ON rank_snapshot (snapshot_kind, rank_type, snapshot_at);
 
 CREATE TABLE IF NOT EXISTS board_money_5m (
     run_id TEXT NOT NULL,
@@ -152,6 +156,11 @@ CREATE TABLE IF NOT EXISTS stock_research_5m (
 
 CREATE INDEX IF NOT EXISTS idx_stock_research_series
     ON stock_research_5m (market, code, trade_date, minute_index);
+-- Per-stock intraday series lookups filter by (trade_date, code); the
+-- series index above leads with market and cannot serve them, forcing a
+-- full-day scan (~250k rows) per chart request.
+CREATE INDEX IF NOT EXISTS idx_stock_research_code
+    ON stock_research_5m (trade_date, code, minute_index);
 CREATE INDEX IF NOT EXISTS idx_stock_research_rank
     ON stock_research_5m (trade_date, minute_index, money_rank);
 

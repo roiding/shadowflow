@@ -105,6 +105,31 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
+// limiterClientKey resolves the rate-limit bucket key. X-Forwarded-For is
+// only consulted when the direct peer is inside the configured trusted proxy
+// network; the rightmost address in the header is the one that proxy
+// appended and therefore the only hop it vouches for.
+func limiterClientKey(r *http.Request, trustedProxy *net.IPNet) string {
+	direct := clientIP(r)
+	if trustedProxy == nil {
+		return direct
+	}
+	ip := net.ParseIP(direct)
+	if ip == nil || !trustedProxy.Contains(ip) {
+		return direct
+	}
+	forwarded := r.Header.Get("X-Forwarded-For")
+	if forwarded == "" {
+		return direct
+	}
+	parts := strings.Split(forwarded, ",")
+	candidate := strings.TrimSpace(parts[len(parts)-1])
+	if net.ParseIP(candidate) == nil {
+		return direct
+	}
+	return candidate
+}
+
 func requestTimeout(duration time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.TimeoutHandler(next, duration, `{"error":{"code":"timeout","message":"request timed out"}}`)

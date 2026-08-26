@@ -118,12 +118,15 @@ func (c *Client) FetchStockQuotes(ctx context.Context, relations []graymarket.St
 			if relation.StockCode == "" {
 				continue
 			}
-			key := relation.StockCode
+			// Key by market+code: the same six-digit code can exist on more
+			// than one market, and a code-only key silently dropped one of
+			// them from the batch.
+			key := fmt.Sprintf("%d.%s", relation.StockMarket, relation.StockCode)
 			if _, duplicate := seen[key]; duplicate {
 				continue
 			}
 			seen[key] = struct{}{}
-			secids = append(secids, fmt.Sprintf("%d.%s", relation.StockMarket, relation.StockCode))
+			secids = append(secids, key)
 		}
 		if len(secids) == 0 {
 			continue
@@ -145,7 +148,7 @@ func (c *Client) FetchStockQuotes(ctx context.Context, relations []graymarket.St
 				continue
 			}
 			latestPrice, available := optionalFloat(row, "f2")
-			quotes[code] = graymarket.StockQuote{
+			quotes[fmt.Sprintf("%d.%s", intValue(row, "f13"), code)] = graymarket.StockQuote{
 				StockCode:     code,
 				StockMarket:   intValue(row, "f13"),
 				StockName:     optionalString(row, "f14"),
@@ -169,7 +172,7 @@ func (c *Client) FetchStockQuotes(ctx context.Context, relations []graymarket.St
 
 	result := make([]graymarket.StockQuote, 0, len(relations))
 	for _, relation := range relations {
-		quote, ok := quotes[relation.StockCode]
+		quote, ok := quotes[fmt.Sprintf("%d.%s", relation.StockMarket, relation.StockCode)]
 		if !ok {
 			quote = graymarket.StockQuote{StockCode: relation.StockCode, StockMarket: relation.StockMarket, StockName: relation.StockName}
 		}

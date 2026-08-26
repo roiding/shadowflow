@@ -328,11 +328,22 @@ UNION SELECT trade_date FROM stock_research_5m WHERE money_available=0 AND kline
 		return err
 	}
 	now := formatTimestamp(time.Now())
-	if _, err := tx.Exec(`UPDATE stock_archive_quality SET
+	if len(affectedDates) > 0 {
+		// Recount only the dates whose placeholder rows were deleted; the
+		// unbounded UPDATE ran two correlated subqueries per quality row over
+		// the whole archive history.
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(affectedDates)), ",")
+		args := make([]any, 0, len(affectedDates)+1)
+		args = append(args, now)
+		for _, date := range affectedDates {
+			args = append(args, date)
+		}
+		if _, err := tx.Exec(`UPDATE stock_archive_quality SET
 money_rows=(SELECT coalesce(sum(money_available),0) FROM stock_research_5m AS research WHERE research.trade_date=stock_archive_quality.trade_date),
 kline_rows=(SELECT coalesce(sum(kline_available),0) FROM stock_research_5m AS research WHERE research.trade_date=stock_archive_quality.trade_date),
-updated_at=?`, now); err != nil {
-		return err
+updated_at=? WHERE trade_date IN (`+placeholders+`)`, args...); err != nil {
+			return err
+		}
 	}
 	for _, tradeDate := range affectedDates {
 		if err := refreshArchiveManifest(context.Background(), tx, tradeDate); err != nil {
@@ -1087,10 +1098,19 @@ VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,minute_index,market,code) DO U
 	}
 	now := formatTimestamp(time.Now())
 	expected := len(records)
+	// daily_close_rows / daily_kline_rows are measured from what actually
+	// landed in rank_snapshot: writing the expectation into both sides made
+	// the completeness comparisons tautological (no protection against a
+	// partial close write).
+	var dailyCloseRows, dailyKlineRows int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(quote_available),0) FROM rank_snapshot
+WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock'`, snapshot.TradeDate).Scan(&dailyCloseRows, &dailyKlineRows); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO stock_archive_quality (trade_date,expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,daily_close_rows,daily_kline_rows,money_archived_at,updated_at) VALUES (?,?,48,?,?,?,?,?,?,?) ON CONFLICT(trade_date) DO UPDATE SET expected_stocks=excluded.expected_stocks,expected_points=48,expected_kline_stocks=excluded.expected_kline_stocks,money_rows=excluded.money_rows,kline_rows=excluded.kline_rows,daily_close_rows=excluded.daily_close_rows,daily_kline_rows=excluded.daily_kline_rows,money_archived_at=excluded.money_archived_at,
 kline_archived_at=CASE WHEN excluded.kline_rows=excluded.expected_kline_stocks*excluded.expected_points
 THEN coalesce(stock_archive_quality.kline_archived_at,excluded.updated_at) ELSE NULL END,
-updated_at=excluded.updated_at`, snapshot.TradeDate, expected, expected, moneyRows, klineRows, expected, expected, now, now); err != nil {
+updated_at=excluded.updated_at`, snapshot.TradeDate, expected, expected, moneyRows, klineRows, dailyCloseRows, dailyKlineRows, now, now); err != nil {
 		return err
 	}
 	if err := refreshArchiveManifest(ctx, tx, snapshot.TradeDate); err != nil {
@@ -1131,7 +1151,7 @@ func finalizeBoardArchiveRanks(ctx context.Context, tx *sql.Tx, tradeDate string
 		return err
 	}
 	update, err := tx.PrepareContext(ctx, `UPDATE board_money_5m AS target SET rank=ranked.new_rank
-FROM (SELECT market, code, ROW_NUMBER() OVER (ORDER BY dark_money DESC, code ASC) AS new_rank
+FROM (SELECT market, code, ROW_NUMBER() OVER (ORDER BY dark_money DESC, code ASC, market ASC) AS new_rank
       FROM board_money_5m WHERE trade_date=?1 AND rank_type=?2 AND snapshot_at=?3) AS ranked
 WHERE target.trade_date=?1 AND target.rank_type=?2 AND target.snapshot_at=?3
   AND target.market=ranked.market AND target.code=ranked.code`)
@@ -1156,7 +1176,7 @@ WHERE target.trade_date=?1 AND target.rank_type=?2 AND target.snapshot_at=?3
 // completeness checks.
 func finalizeStockArchiveRanks(ctx context.Context, tx *sql.Tx, tradeDate string) error {
 	update, err := tx.PrepareContext(ctx, `UPDATE stock_research_5m AS target SET money_rank=ranked.new_rank
-FROM (SELECT market, code, ROW_NUMBER() OVER (ORDER BY dark_money DESC, code ASC) AS new_rank
+FROM (SELECT market, code, ROW_NUMBER() OVER (ORDER BY dark_money DESC, code ASC, market ASC) AS new_rank
       FROM stock_research_5m WHERE trade_date=?1 AND minute_index=?2 AND money_available=1) AS ranked
 WHERE target.trade_date=?1 AND target.minute_index=?2 AND target.money_available=1
   AND target.market=ranked.market AND target.code=ranked.code`)
@@ -1511,6 +1531,18 @@ func (s *Store) CleanupArchivedIntraday(ctx context.Context, beforeDate string) 
 		return err
 	}
 	defer tx.Rollback()
+	// Retention floor: a day whose long-term archive never completed keeps
+	// its intraday work rows for 90 days of repair attempts; beyond that the
+	// upstream sources have long expired and the rows only grow the database.
+	if parsed, parseErr := time.Parse("2006-01-02", beforeDate); parseErr == nil {
+		floor := parsed.AddDate(0, 0, -90).Format("2006-01-02")
+		if _, err := tx.ExecContext(ctx, `DELETE FROM rank_intraday_work WHERE trade_date<?`, floor); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM raw_response WHERE snapshot_kind='research_5m' AND date(snapshot_at)<?`, floor); err != nil {
+			return err
+		}
+	}
 	complete := `date_value<?
 AND (SELECT count(*) FROM research_quality quality WHERE quality.trade_date=date_value
 AND quality.collected_research=quality.expected_research

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -344,12 +345,33 @@ func writeCalendar(path string, data fileData) error {
 	}
 	body = append(body, '\n')
 	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, body, 0o644); err != nil {
+	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
 		return fmt.Errorf("write temporary trading calendar: %w", err)
+	}
+	if _, err := file.Write(body); err != nil {
+		file.Close()
+		_ = os.Remove(temporary)
+		return fmt.Errorf("write temporary trading calendar: %w", err)
+	}
+	// fsync before rename: a crash between rename and writeback could
+	// otherwise leave an empty calendar that fails Load on the next start.
+	if err := file.Sync(); err != nil {
+		file.Close()
+		_ = os.Remove(temporary)
+		return fmt.Errorf("sync temporary trading calendar: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(temporary)
+		return fmt.Errorf("close temporary trading calendar: %w", err)
 	}
 	if err := os.Rename(temporary, path); err != nil {
 		_ = os.Remove(temporary)
 		return fmt.Errorf("replace trading calendar: %w", err)
+	}
+	if directory, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = directory.Sync()
+		_ = directory.Close()
 	}
 	return nil
 }

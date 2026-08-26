@@ -367,7 +367,10 @@ FROM stock_board_relation_change WHERE `+where+` ORDER BY change_type,board_type
 		}
 		item.BoardType = graymarket.BoardType(boardTypeValue)
 		item.ChangeType = graymarket.RelationChangeType(changeType)
-		item.DetectedAt, _ = time.Parse(timestampLayout, detectedAt)
+		var parseErr error
+		if item.DetectedAt, parseErr = time.Parse(timestampLayout, detectedAt); parseErr != nil {
+			return nil, fmt.Errorf("parse relation detected_at %q: %w", detectedAt, parseErr)
+		}
 		result = append(result, item)
 	}
 	return result, rows.Err()
@@ -385,7 +388,10 @@ func scanRelations(rows *sql.Rows) ([]graymarket.StockBoardRelation, error) {
 			return nil, err
 		}
 		item.BoardType = graymarket.BoardType(boardType)
-		item.DetectedAt, _ = time.Parse(timestampLayout, detectedAt)
+		var parseErr error
+		if item.DetectedAt, parseErr = time.Parse(timestampLayout, detectedAt); parseErr != nil {
+			return nil, fmt.Errorf("parse relation detected_at %q: %w", detectedAt, parseErr)
+		}
 		result = append(result, item)
 	}
 	return result, rows.Err()

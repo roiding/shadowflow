@@ -212,8 +212,13 @@ func scanBoardMoneyRecords(rows *sql.Rows) ([]graymarket.RankRecord, error) {
 		record.MoneyAvailable = moneyAvailable != 0
 		record.RankType = graymarket.RankType(rankType)
 		record.QuoteTime = fmt.Sprintf("%010d", sourceTime)
-		record.SnapshotAt, _ = time.Parse(timestampLayout, snapshotAt)
-		record.FetchedAt, _ = time.Parse(timestampLayout, fetchedAt)
+		var parseErr error
+		if record.SnapshotAt, parseErr = time.Parse(timestampLayout, snapshotAt); parseErr != nil {
+			return nil, fmt.Errorf("parse board money snapshot_at %q: %w", snapshotAt, parseErr)
+		}
+		if record.FetchedAt, parseErr = time.Parse(timestampLayout, fetchedAt); parseErr != nil {
+			return nil, fmt.Errorf("parse board money fetched_at %q: %w", fetchedAt, parseErr)
+		}
 		result = append(result, record)
 	}
 	return result, rows.Err()
@@ -367,13 +372,16 @@ func (s *Store) DailyCloseTradeDates(ctx context.Context, asOf string, limit int
 	if limit < 1 {
 		return []string{}, nil
 	}
-	rows, err := s.readDB().QueryContext(ctx, `SELECT trade_date FROM rank_snapshot
-WHERE trade_date<=? AND snapshot_kind='daily_close' AND rank_type IN ('concept','stock')
-GROUP BY trade_date
-HAVING sum(rank_type='concept')>0
-   AND sum(rank_type='concept' AND quote_available=1)=sum(rank_type='concept')
-   AND sum(rank_type='stock')>0
-ORDER BY trade_date DESC LIMIT ?`, asOf, limit)
+	// Group only over concept rows (~500/day) and probe stock presence with
+	// an indexed EXISTS; aggregating the ~5400 stock close rows per day grew
+	// linearly with archive history.
+	rows, err := s.readDB().QueryContext(ctx, `SELECT c.trade_date FROM rank_snapshot c
+WHERE c.trade_date<=? AND c.snapshot_kind='daily_close' AND c.rank_type='concept'
+GROUP BY c.trade_date
+HAVING sum(c.quote_available=1)=count(*)
+   AND EXISTS(SELECT 1 FROM rank_snapshot s WHERE s.trade_date=c.trade_date
+              AND s.snapshot_kind='daily_close' AND s.rank_type='stock')
+ORDER BY c.trade_date DESC LIMIT ?`, asOf, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -648,13 +656,21 @@ FROM collection_run WHERE requested_date=? ORDER BY snapshot_at DESC LIMIT ?`, t
 			&startedAt, &finishedAt, &run.DurationMS, &run.ErrorCode, &run.ErrorMessage); err != nil {
 			return nil, err
 		}
-		run.SnapshotAt, _ = time.Parse(timestampLayout, snapshotAt)
-		run.StartedAt, _ = time.Parse(timestampLayout, startedAt)
+		var parseErr error
+		if run.SnapshotAt, parseErr = time.Parse(timestampLayout, snapshotAt); parseErr != nil {
+			return nil, fmt.Errorf("parse run snapshot_at %q: %w", snapshotAt, parseErr)
+		}
+		if run.StartedAt, parseErr = time.Parse(timestampLayout, startedAt); parseErr != nil {
+			return nil, fmt.Errorf("parse run started_at %q: %w", startedAt, parseErr)
+		}
 		run.SnapshotKind = graymarket.SnapshotKind(kind)
 		run.RankType = graymarket.RankType(rankType)
 		run.Status = repository.RunStatus(status)
 		if finishedAt.Valid {
-			parsed, _ := time.Parse(timestampLayout, finishedAt.String)
+			parsed, parseErr := time.Parse(timestampLayout, finishedAt.String)
+			if parseErr != nil {
+				return nil, fmt.Errorf("parse run finished_at %q: %w", finishedAt.String, parseErr)
+			}
 			run.FinishedAt = &parsed
 		}
 		result = append(result, run)
@@ -750,11 +766,13 @@ WHERE status='success' AND latest_success_at IS NOT NULL
 		return result, err
 	}
 
+	// Predicates are pushed into each UNION branch: filtering after the UNION
+	// materialized the entire historical rank_snapshot on every metrics scrape.
 	rows, err = s.readDB().QueryContext(ctx, `SELECT rank_type,max(snapshot_at) FROM (
-SELECT rank_type,snapshot_at FROM rank_intraday_work
+SELECT rank_type,snapshot_at FROM rank_intraday_work WHERE rank_type IN ('industry','concept')
 UNION ALL
-SELECT rank_type,snapshot_at FROM rank_snapshot WHERE snapshot_kind IN ('research_5m','daily_close')
-) WHERE rank_type IN ('industry','concept') GROUP BY rank_type ORDER BY rank_type`)
+SELECT rank_type,snapshot_at FROM rank_snapshot WHERE snapshot_kind IN ('research_5m','daily_close') AND rank_type IN ('industry','concept')
+) GROUP BY rank_type ORDER BY rank_type`)
 	if err != nil {
 		return result, err
 	}

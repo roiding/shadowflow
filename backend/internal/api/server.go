@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -42,6 +43,12 @@ type Options struct {
 	NormalRatePerMinute int
 	ExportRatePerMinute int
 	ScanRatePerMinute   int
+	// TrustedProxyCIDR, when set, is the only source network whose
+	// X-Forwarded-For header is honored for rate limiting. Behind Docker's
+	// userland proxy or a reverse proxy every client otherwise shares one
+	// RemoteAddr bucket; trusting the header unconditionally would instead
+	// let any direct client spoof its way past the limiter.
+	TrustedProxyCIDR string
 }
 
 type QuoteSnapshotSource interface {
@@ -85,6 +92,15 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 	normal := newRateLimiter(normalLimit)
 	export := newRateLimiter(exportLimit)
 	scan := newRateLimiter(scanLimit)
+	var trustedProxy *net.IPNet
+	if len(options) > 0 && options[0].TrustedProxyCIDR != "" {
+		_, parsed, err := net.ParseCIDR(options[0].TrustedProxyCIDR)
+		if err != nil {
+			return nil, fmt.Errorf("parse trusted proxy CIDR: %w", err)
+		}
+		trustedProxy = parsed
+	}
+	limiterKey := func(r *http.Request) string { return limiterClientKey(r, trustedProxy) }
 	limitByPath := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			limiter := normal
@@ -96,7 +112,7 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 				// must share its stricter budget, not the normal read bucket.
 				limiter = scan
 			}
-			if !limiter.allow(clientIP(r)) {
+			if !limiter.allow(limiterKey(r)) {
 				w.Header().Set("Retry-After", "1")
 				writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 				return

@@ -443,8 +443,6 @@ func (s *Scheduler) recoverLatestArchive(ctx context.Context, current time.Time)
 
 func (s *Scheduler) recoverArchive(ctx context.Context, tradeDate string, current time.Time) error {
 	var combined error
-	var exists bool
-	var err error
 	if part, ok := s.collector.(archivePartCollector); ok {
 		for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept, graymarket.RankStock} {
 			exists, err := part.HasEndOfDayPart(ctx, tradeDate, rankType)
@@ -472,11 +470,11 @@ func (s *Scheduler) recoverArchive(ctx context.Context, tradeDate string, curren
 			}
 		}
 	}
-	exists, err = s.collector.HasStockKlineArchive(ctx, tradeDate)
-	if err != nil {
-		return errors.Join(combined, err)
+	klineExists, klineErr := s.collector.HasStockKlineArchive(ctx, tradeDate)
+	if klineErr != nil {
+		return errors.Join(combined, klineErr)
 	}
-	if !exists {
+	if !klineExists {
 		// K-lines depend on the complete money archive. Do not launch them
 		// after a failed part and create a misleading second failure.
 		endExists, endErr := s.collector.HasEndOfDayArchive(ctx, tradeDate)

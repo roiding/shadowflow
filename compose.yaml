@@ -1,6 +1,8 @@
 services:
   shadowflow:
-    image: ghcr.io/roiding/shadowflow:latest
+    # Pin a specific build with SHADOWFLOW_IMAGE_TAG (CI publishes sha-<commit>
+    # tags alongside latest) so a bad release can be rolled back precisely.
+    image: ghcr.io/roiding/shadowflow:${SHADOWFLOW_IMAGE_TAG:-latest}
     container_name: shadowflow
     restart: unless-stopped
     ports:
@@ -13,7 +15,12 @@ services:
     volumes:
       - /mnt/data/shadowflow/data:/data
       - /mnt/data/shadowflow/backups:/backups
-    mem_limit: 256m
+    # End-of-day archives hold ~250k rows of batch state plus SQLite page
+    # cache in the Go heap; 256m caused OOM headroom concerns on archive days.
+    mem_limit: 768m
+    # Give in-flight archive transactions and the WAL checkpoint a window to
+    # finish on shutdown instead of being killed after Docker's 10s default.
+    stop_grace_period: 30s
     logging:
       driver: json-file
       options:

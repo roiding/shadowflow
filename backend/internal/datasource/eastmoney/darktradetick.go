@@ -244,9 +244,13 @@ func isResearchClock(value string) bool {
 	return err == nil && minute%5 == 0
 }
 
+// snapshotLocation resolves the wall-clock location for upstream Beijing-time
+// clocks. Only a value that actually carries the +08:00 offset is trusted; a
+// zero value or a database round-trip lands in UTC, and interpreting a
+// Beijing clock there would shift every point by eight hours.
 func snapshotLocation(value time.Time) *time.Location {
-	if value.Location() != nil {
+	if _, offset := value.Zone(); offset == 8*60*60 {
 		return value.Location()
 	}
-	return time.Local
+	return time.FixedZone("Asia/Shanghai", 8*60*60)
 }

@@ -27,6 +27,7 @@ type Config struct {
 	NormalRatePerMinute     int
 	ExportRatePerMinute     int
 	ScanRatePerMinute       int
+	TrustedProxyCIDR        string
 	UpstreamMaxConcurrency  int
 	UpstreamRatePerSecond   float64
 	SQLiteReadConns         int
@@ -125,6 +126,7 @@ func Load() (Config, error) {
 		NormalRatePerMinute:     normalRate,
 		ExportRatePerMinute:     exportRate,
 		ScanRatePerMinute:       scanRate,
+		TrustedProxyCIDR:        strings.TrimSpace(os.Getenv("SHADOWFLOW_TRUSTED_PROXY_CIDR")),
 		UpstreamMaxConcurrency:  upstreamConcurrency,
 		UpstreamRatePerSecond:   upstreamRate,
 		SQLiteReadConns:         readConns,

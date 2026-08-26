@@ -45,6 +45,12 @@ curl -H "Authorization: Bearer $SHADOWFLOW_API_TOKEN" \
 
 前端会在收到 401 时显示 Token Gate；Token 只保存在当前浏览器标签页的 `sessionStorage`。导出链接会通过带 Token 的前端请求下载，不应把 Token 拼进 URL。
 
+## 数据修补
+
+- **整日重采**：`./collect -task end-of-day -date YYYY-MM-DD`（生产同路径，含限速/熔断/质量核算；上游仅保留约 5 个交易日）。
+- **个别盘中分钟缺失**：`backend/cmd/backfill_minutes`（`--trade-date`/`--clocks` 参数化；collect → insert → verify 三步，payload 有错误时 insert 会拒绝执行）。
+- 历史上的 `backfill_stock` / `backfill_concept` 已删除——功能被 `collect -task end-of-day` 完全覆盖。
+
 日终数据接口：
 
 ```bash
