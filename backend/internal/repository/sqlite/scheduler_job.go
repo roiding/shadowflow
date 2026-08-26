@@ -187,4 +187,3 @@ AND attempt_count>=max_attempts`, timestamp, timestamp); err != nil {
 	return nil
 }
 
-func nowUTC() time.Time { return time.Now().UTC() }

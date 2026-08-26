@@ -341,13 +341,6 @@ updated_at=?`, now); err != nil {
 	return tx.Commit()
 }
 
-func readerClose(store *Store) error {
-	if store.reader != nil && store.reader != store.db {
-		return store.reader.Close()
-	}
-	return nil
-}
-
 func recordSchemaMigration(store *Store) error {
 	started := time.Now()
 	_, err := store.db.Exec(`INSERT INTO schema_migration(version,applied_at,duration_ms,checksum)
@@ -882,9 +875,6 @@ func (s *Store) SaveStockArchive(ctx context.Context, runID string, snapshot gra
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_kline_source WHERE trade_date=?`, snapshot.TradeDate); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE stock_research_5m SET money_rank=-1 WHERE trade_date=?`, snapshot.TradeDate); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock'`, snapshot.TradeDate); err != nil {
@@ -1654,6 +1644,12 @@ func missing(expected, actual []string) []string {
 }
 
 func upsertQuality(ctx context.Context, tx *sql.Tx, summary repository.QualitySummary) error {
+	// CompactedAt is an optional pointer on the wire type; a nil here would
+	// dereference-panic inside the write transaction.
+	compactedAt := time.Now().UTC()
+	if summary.CompactedAt != nil {
+		compactedAt = *summary.CompactedAt
+	}
 	missingMinutes, _ := json.Marshal(summary.MissingMinutes)
 	missingResearch, _ := json.Marshal(summary.MissingResearch)
 	missingDailyClose, _ := json.Marshal(summary.MissingDailyClose)
@@ -1662,7 +1658,7 @@ func upsertQuality(ctx context.Context, tx *sql.Tx, summary repository.QualitySu
 expected_daily_close,collected_daily_close,missing_minutes_json,missing_research_json,missing_daily_close_json,compacted_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, summary.TradeDate, string(summary.RankType), summary.ExpectedMinutes, summary.CollectedMinutes,
 		summary.ExpectedResearch, summary.CollectedResearch, summary.ExpectedDailyClose, summary.CollectedDailyClose,
-		string(missingMinutes), string(missingResearch), string(missingDailyClose), formatTimestamp(*summary.CompactedAt))
+		string(missingMinutes), string(missingResearch), string(missingDailyClose), formatTimestamp(compactedAt))
 	return err
 }
 

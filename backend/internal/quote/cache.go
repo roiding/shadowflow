@@ -51,7 +51,12 @@ type Cache struct {
 }
 
 func NewCache(source Source, logger *slog.Logger) *Cache {
-	location, _ := time.LoadLocation("Asia/Shanghai")
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		// Shanghai has no DST; a fixed offset is an exact fallback and avoids
+		// a nil Location panicking inside Time.In on hosts without zoneinfo.
+		location = time.FixedZone("Asia/Shanghai", 8*60*60)
+	}
 	return &Cache{
 		source: source, logger: logger, location: location,
 		tradingTTL: 15 * time.Second, idleTTL: 5 * time.Minute,

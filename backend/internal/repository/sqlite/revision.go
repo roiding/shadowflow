@@ -152,6 +152,11 @@ func archiveTradeDateByRevision(ctx context.Context, queryer interface {
 }, revisionID string) (string, error) {
 	var tradeDate string
 	if err := queryer.QueryRowContext(ctx, `SELECT trade_date FROM daily_archive_revision WHERE revision_id=?`, revisionID).Scan(&tradeDate); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// A user-supplied unknown revision id is a 404, not an internal
+			// error worth an ERROR log line per request.
+			return "", fmt.Errorf("%w: revision %s", repository.ErrNotFound, revisionID)
+		}
 		return "", err
 	}
 	return tradeDate, nil

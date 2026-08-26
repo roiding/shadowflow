@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"net"
 	"net/http"
@@ -16,12 +17,18 @@ func bearerMiddleware(token string) func(http.Handler) http.Handler {
 }
 
 func bearerAuth(token string, next http.Handler) http.Handler {
-	expected := []byte(token)
+	// Compare fixed-length digests: ConstantTimeCompare short-circuits on
+	// length mismatch, which leaks the token length through timing.
+	expected := sha256.Sum256([]byte(token))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authorization := r.Header.Get("Authorization")
 		parts := strings.Fields(authorization)
+		presented := [32]byte{}
+		if len(parts) == 2 {
+			presented = sha256.Sum256([]byte(parts[1]))
+		}
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") ||
-			subtle.ConstantTimeCompare([]byte(parts[1]), expected) != 1 {
+			subtle.ConstantTimeCompare(presented[:], expected[:]) != 1 {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "a valid bearer token is required")
 			return
 		}

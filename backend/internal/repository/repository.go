@@ -10,6 +10,10 @@ import (
 
 var ErrArchiveIncomplete = errors.New("archive is incomplete")
 
+// ErrNotFound marks lookups for entities that do not exist (e.g. an unknown
+// revision id) so the API can answer 404 instead of a logged 500.
+var ErrNotFound = errors.New("not found")
+
 type RunStatus string
 
 const (

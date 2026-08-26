@@ -136,10 +136,6 @@ func (g *Guard) Do(ctx context.Context, request *http.Request) (*http.Response, 
 		releaseSlot()
 		return nil, fmt.Errorf("upstream returned HTTP %d", response.StatusCode)
 	}
-	if response.Body == nil {
-		releaseSlot()
-		return response, nil
-	}
 	response.Body = &guardedBody{ReadCloser: response.Body, release: releaseSlot}
 	return response, nil
 }

@@ -562,7 +562,9 @@ func (s *Service) collectBoardArchive(ctx context.Context, rankType graymarket.R
 	for attempt := 1; attempt <= s.retries+1; attempt++ {
 		run.AttemptCount = attempt
 		snapshot, err = s.source.FetchAll(ctx, rankType, requestedDate, closeAt)
-		if err == nil || ctx.Err() != nil {
+		// ErrNoData is deterministic (the upstream has nothing for this date);
+		// retrying it just burns the retry budget, same as the intraday path.
+		if err == nil || errors.Is(err, graymarket.ErrNoData) || ctx.Err() != nil {
 			break
 		}
 		if attempt <= s.retries {

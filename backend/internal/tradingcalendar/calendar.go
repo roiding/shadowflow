@@ -136,7 +136,9 @@ func (c *Calendar) IsTradingDay(date time.Time) bool {
 
 func (c *Calendar) PreviousTradingDay(date time.Time) time.Time {
 	day := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location()).AddDate(0, 0, -1)
-	for !c.IsTradingDay(day) {
+	// A corrupted or hand-edited calendar file could mark long stretches as
+	// holidays; bound the walk so a bad file cannot spin this loop for years.
+	for steps := 0; !c.IsTradingDay(day) && steps < 60; steps++ {
 		day = day.AddDate(0, 0, -1)
 	}
 	return day

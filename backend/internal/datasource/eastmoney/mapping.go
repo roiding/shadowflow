@@ -12,8 +12,11 @@ import (
 
 func mapRecord(rankType graymarket.RankType, tradeDate string, snapshotAt, fetchedAt time.Time, rank int64, row map[string]json.RawMessage) (graymarket.RankRecord, error) {
 	code, err := stringValue(row, "4")
-	if err != nil || code == "" {
+	if err != nil {
 		return graymarket.RankRecord{}, fmt.Errorf("missing code: %w", err)
+	}
+	if code == "" {
+		return graymarket.RankRecord{}, fmt.Errorf("missing code: field 4 is empty")
 	}
 
 	nameKey := "16"

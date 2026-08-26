@@ -384,15 +384,3 @@ func integer(value string) int64 {
 	result, _ := strconv.ParseInt(strings.SplitN(value, ".", 2)[0], 10, 64)
 	return result
 }
-func percent(value string) float64 { return decimal(value) / 100 }
-
-func researchMinuteIndexForSource(value time.Time) (int, bool) {
-	minutes := value.Hour()*60 + value.Minute()
-	if minutes >= 9*60+35 && minutes <= 11*60+30 && (minutes-(9*60+35))%5 == 0 {
-		return (minutes - (9*60 + 35)) / 5, true
-	}
-	if minutes >= 13*60+5 && minutes <= 15*60 && (minutes-(13*60+5))%5 == 0 {
-		return 24 + (minutes-(13*60+5))/5, true
-	}
-	return 0, false
-}

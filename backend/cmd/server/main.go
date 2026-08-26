@@ -9,8 +9,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
+
+	// Embed tzdata: the binary is built with CGO_ENABLED=0 and must not
+	// depend on the host zoneinfo database for Asia/Shanghai.
+	_ "time/tzdata"
 
 	"github.com/roiding/shadowflow/internal/api"
 	"github.com/roiding/shadowflow/internal/collector"
@@ -34,6 +39,10 @@ func main() {
 		logger.Error("invalid security configuration", "error", err)
 		os.Exit(1)
 	}
+	if err := validateStaticDir(cfg.StaticDir); err != nil {
+		logger.Error("invalid static directory", "error", err)
+		os.Exit(1)
+	}
 	store, err := sqlite.OpenWithReadConns(cfg.DatabasePath, cfg.SQLiteReadConns)
 	if err != nil {
 		logger.Error("open database", "error", err)
@@ -44,6 +53,11 @@ func main() {
 	if err != nil {
 		logger.Error("load calendar", "error", err)
 		os.Exit(1)
+	}
+	// A missing or expired calendar silently degrades IsTradingDay to plain
+	// weekday logic, which makes the scheduler collect on exchange holidays.
+	if coverage := calendar.Coverage(time.Now()); coverage.Expired {
+		logger.Warn("trading calendar is missing or expired; falling back to weekday-only trading detection", "coverage", coverage)
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConns = cfg.UpstreamMaxConcurrency * 4
@@ -163,6 +177,27 @@ func runCalendarUpdater(ctx context.Context, calendar *tradingcalendar.Calendar,
 			refresh()
 		}
 	}
+}
+
+// validateStaticDir refuses obviously dangerous static roots: the containment
+// check in mountStatic is relative to this directory, so serving "/" would
+// expose the whole filesystem.
+func validateStaticDir(directory string) error {
+	if directory == "" {
+		return nil
+	}
+	cleaned := filepath.Clean(directory)
+	if cleaned == "/" || cleaned == filepath.VolumeName(cleaned)+string(os.PathSeparator) {
+		return fmt.Errorf("SHADOWFLOW_STATIC_DIR must not be the filesystem root")
+	}
+	info, err := os.Stat(cleaned)
+	if err != nil {
+		return fmt.Errorf("SHADOWFLOW_STATIC_DIR: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("SHADOWFLOW_STATIC_DIR %s is not a directory", cleaned)
+	}
+	return nil
 }
 
 func validateListenSecurity(addr, token string) error {

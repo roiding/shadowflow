@@ -500,7 +500,9 @@ func mountStatic(router chi.Router, directory string) {
 		relative, relErr := filepath.Rel(directory, candidate)
 		withinRoot := relErr == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator))
 		if withinRoot {
-			if _, err := os.Stat(candidate); err == nil {
+			// Serve regular files only: handing a directory to http.FileServer
+			// renders an autoindex listing of the build output.
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 				fileServer.ServeHTTP(w, r)
 				return
 			}
@@ -570,7 +572,7 @@ func (s *Server) rankAt(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshotAt, err := time.ParseInLocation("2006-01-02 15:04", tradeDate+" "+at, s.location)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_at", err.Error())
+		writeError(w, http.StatusBadRequest, "invalid_at", "at must use HH:MM")
 		return
 	}
 	records, err := s.store.RankAt(r.Context(), rankType, tradeDate, snapshotAt)
@@ -735,8 +737,10 @@ func pageParams(w http.ResponseWriter, r *http.Request) (int, int, bool) {
 	page, err := strconv.Atoi(r.URL.Query().Get("page"))
 	if r.URL.Query().Get("page") == "" {
 		page = 1
-	} else if err != nil || page < 1 {
-		writeError(w, http.StatusBadRequest, "invalid_page", "page must be a positive integer")
+	} else if err != nil || page < 1 || page > 1_000_000 {
+		// The upper bound keeps (page-1)*pageSize far from integer overflow,
+		// which used to wrap into a garbage offset silently.
+		writeError(w, http.StatusBadRequest, "invalid_page", "page must be a positive integer up to 1000000")
 		return 0, 0, false
 	}
 	pageSize, err := strconv.Atoi(r.URL.Query().Get("page_size"))
@@ -1127,7 +1131,7 @@ func rangeParams(w http.ResponseWriter, r *http.Request, location *time.Location
 	}
 	from, err := parseDateOrTime(fromRaw, false, location)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_from", err.Error())
+		writeError(w, http.StatusBadRequest, "invalid_from", "from must use YYYY-MM-DD or RFC3339")
 		return time.Time{}, time.Time{}, false
 	}
 	to, err := parseDateOrTime(toRaw, true, location)
@@ -1182,6 +1186,10 @@ func marketStatus(value time.Time) string {
 }
 
 func (s *Server) internalError(w http.ResponseWriter, err error) {
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "the requested resource does not exist")
+		return
+	}
 	s.logger.Error("api request failed", "error", err)
 	writeError(w, http.StatusInternalServerError, "internal_error", "request failed")
 }
