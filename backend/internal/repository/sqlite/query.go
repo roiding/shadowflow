@@ -678,6 +678,10 @@ SELECT rank_type,status,run_count FROM collection_run_rollup
 		}
 		result.RunCounts = append(result.RunCounts, repository.MetricCount{RankType: graymarket.RankType(rankType), Status: repository.RunStatus(status), Value: value})
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return result, err
+	}
 	if err := rows.Close(); err != nil {
 		return result, err
 	}
@@ -703,6 +707,10 @@ SELECT rank_type,record_count,duration_ms,run_count FROM collection_run_rollup W
 		result.RecordCounts = append(result.RecordCounts, repository.MetricValue{RankType: typed, Value: records})
 		result.DurationSecondsSum = append(result.DurationSecondsSum, repository.MetricValue{RankType: typed, Value: duration})
 		result.DurationCounts = append(result.DurationCounts, repository.MetricValue{RankType: typed, Value: count})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return result, err
 	}
 	if err := rows.Close(); err != nil {
 		return result, err
@@ -730,6 +738,10 @@ WHERE status='success' AND latest_success_at IS NOT NULL
 		}
 		result.LastSuccess = append(result.LastSuccess, repository.MetricTime{RankType: graymarket.RankType(rankType), Value: parsed})
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return result, err
+	}
 	if err := rows.Close(); err != nil {
 		return result, err
 	}
@@ -754,6 +766,10 @@ SELECT rank_type,snapshot_at FROM rank_snapshot WHERE snapshot_kind IN ('researc
 			return result, err
 		}
 		result.LatestIntradaySnapshot = append(result.LatestIntradaySnapshot, repository.MetricTime{RankType: graymarket.RankType(rankType), Value: parsed})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return result, err
 	}
 	if err := rows.Close(); err != nil {
 		return result, err

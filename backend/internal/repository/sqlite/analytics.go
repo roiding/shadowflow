@@ -488,6 +488,12 @@ FROM board_money_5m WHERE trade_date=? ORDER BY rank_type,market,code,snapshot_a
 		curve.dark = append(curve.dark, darkMoney)
 		result[key] = curve
 	}
+	// A truncated iteration would leave curves shorter than 48 points and
+	// silently mark every feature as curve-unavailable.
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
@@ -507,6 +513,10 @@ FROM stock_research_5m WHERE trade_date=? ORDER BY market,code,minute_index`, tr
 		curve := result[key]
 		curve.dark = append(curve.dark, darkMoney)
 		result[key] = curve
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -821,6 +831,12 @@ WHERE features.revision_id IS NULL ORDER BY current.trade_date`)
 			return err
 		}
 		revisionIDs = append(revisionIDs, revisionID)
+	}
+	// The done marker below is permanent; a truncated revision list must fail
+	// the migration instead of being recorded as complete.
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
 	}
 	if err := rows.Close(); err != nil {
 		return err

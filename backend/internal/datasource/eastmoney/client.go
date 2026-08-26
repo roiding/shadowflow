@@ -112,7 +112,14 @@ func (c *Client) FetchAll(ctx context.Context, rankType graymarket.RankType, dat
 		}
 		if page == 1 {
 			result.TradeDate = formatAPIDate(payload.Date)
-			result.ExpectedTotal, _ = strconv.Atoi(payload.Total.String())
+			// The declared total is the only guard against a silently
+			// truncated ranking: without it, a short server-side response
+			// would be archived as a complete daily snapshot.
+			total, err := strconv.Atoi(payload.Total.String())
+			if err != nil || total <= 0 {
+				return graymarket.RankSnapshot{}, fmt.Errorf("%s snapshot returned an invalid total %q", rankType, payload.Total.String())
+			}
+			result.ExpectedTotal = total
 		}
 		result.RawPages = append(result.RawPages, rawPage)
 

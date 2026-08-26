@@ -725,11 +725,27 @@ func (s *Service) enrichStockDailyQuotes(ctx context.Context, snapshot *graymark
 	}
 	byCode := make(map[string]graymarket.StockQuote, len(quotes))
 	wrongDate := 0
+	noQuoteTime := 0
 	for _, quote := range quotes {
-		byCode[quote.StockCode] = quote
-		if quote.Available && quoteDate(quote.QuoteTime, snapshot.SnapshotAt.Location()) != snapshot.TradeDate {
-			wrongDate++
+		if quote.Available {
+			switch quoteDate(quote.QuoteTime, snapshot.SnapshotAt.Location()) {
+			case snapshot.TradeDate:
+			case "":
+				// f124 missing or unparseable (seen on suspended/special
+				// instruments that still expose a price). Downgrade the quote
+				// instead of failing the whole run: one such stock must not
+				// block the entire daily-close archive.
+				quote.Available = false
+				noQuoteTime++
+			default:
+				wrongDate++
+			}
 		}
+		byCode[quote.StockCode] = quote
+	}
+	if noQuoteTime > 0 {
+		s.logger.Warn("stock daily quotes without a parseable quote time were marked unavailable",
+			"trade_date", snapshot.TradeDate, "rank_type", snapshot.RankType, "count", noQuoteTime)
 	}
 	if wrongDate > 0 {
 		return fmt.Errorf("%s daily quotes contain %d rows outside trade date %s", snapshot.RankType, wrongDate, snapshot.TradeDate)

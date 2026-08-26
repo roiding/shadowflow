@@ -136,6 +136,15 @@ func OpenWithReadConns(path string, readConns int) (*Store, error) {
 	if err := recordSchemaMigration(store); err != nil {
 		return nil, fmt.Errorf("record schema migration: %w", err)
 	}
+	// Remove staging rows whose sync run is no longer live. This must run
+	// BEFORE the interrupted-run recovery below: another process (cmd/collect)
+	// may be mid-sync against this database, and its run is only identifiable
+	// as live while its relation_sync_run row still says 'running'. Deleting
+	// unconditionally here used to wipe that process's staged relations.
+	if _, err := db.Exec(`DELETE FROM stock_board_relation_stage
+WHERE run_id NOT IN (SELECT run_id FROM relation_sync_run WHERE status='running')`); err != nil {
+		return nil, fmt.Errorf("cleanup orphaned relation stage: %w", err)
+	}
 	if _, err := db.Exec(`UPDATE collection_run
 SET status='failed', finished_at=COALESCE(finished_at, ?), error_code='interrupted',
 error_message='process stopped before collection completed'
@@ -147,9 +156,6 @@ SET status='failed', finished_at=COALESCE(finished_at, ?), error_code='interrupt
 error_message='process stopped before relation synchronization completed'
 WHERE status='running'`, time.Now().UTC().Format(timestampLayout)); err != nil {
 		return nil, fmt.Errorf("recover interrupted relation syncs: %w", err)
-	}
-	if _, err := db.Exec(`DELETE FROM stock_board_relation_stage`); err != nil {
-		return nil, fmt.Errorf("cleanup interrupted relation stage: %w", err)
 	}
 	success = true
 	return store, nil
@@ -291,6 +297,12 @@ UNION SELECT trade_date FROM stock_research_5m WHERE money_available=0 AND kline
 		}
 		affectedDates = append(affectedDates, tradeDate)
 	}
+	// This migration deletes rows and records a permanent done marker; a
+	// truncated date list must fail instead of completing partially.
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
 	if err := rows.Close(); err != nil {
 		return err
 	}
@@ -372,6 +384,11 @@ func migrateStockArchiveQuality(db *sql.DB) error {
 		}
 		columns[name] = true
 	}
+	// A truncated column scan would re-ADD an existing column and fail Open.
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
 	if err := rows.Close(); err != nil {
 		return err
 	}
@@ -435,6 +452,12 @@ AND quote_available=0 ORDER BY trade_date,market,code`)
 		}
 		stocks = append(stocks, stock)
 		dates[stock.tradeDate] = struct{}{}
+	}
+	// This migration writes a permanent done marker; a truncated stock list
+	// must fail instead of completing partially.
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
 	}
 	if err := rows.Close(); err != nil {
 		return err
@@ -500,6 +523,11 @@ func migrateDailyQuoteColumns(db *sql.DB) error {
 			}
 			columns[name] = true
 		}
+		// A truncated column scan would re-ADD an existing column and fail Open.
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
 		if err := rows.Close(); err != nil {
 			return err
 		}
@@ -529,6 +557,11 @@ func migrateResearchCloseModel(db *sql.DB) error {
 			return err
 		}
 		columns[name] = true
+	}
+	// A truncated column scan would re-ADD an existing column and fail Open.
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
 	}
 	if err := rows.Close(); err != nil {
 		return err
@@ -591,6 +624,10 @@ FROM raw_response WHERE snapshot_kind='research_5m' AND rank_type IN ('industry'
 			return err
 		}
 		keys = append(keys, key)
+	}
+	if err := qualityRows.Err(); err != nil {
+		qualityRows.Close()
+		return err
 	}
 	if err := qualityRows.Close(); err != nil {
 		return err
@@ -990,7 +1027,10 @@ VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,minute_index,market,code) DO U
 	}
 	now := time.Now().UTC().Format(timestampLayout)
 	expected := len(records)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO stock_archive_quality (trade_date,expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,daily_close_rows,daily_kline_rows,money_archived_at,updated_at) VALUES (?,?,48,?,?,?,?,?,?,?) ON CONFLICT(trade_date) DO UPDATE SET expected_stocks=excluded.expected_stocks,expected_points=48,expected_kline_stocks=excluded.expected_kline_stocks,money_rows=excluded.money_rows,kline_rows=excluded.kline_rows,daily_close_rows=excluded.daily_close_rows,daily_kline_rows=excluded.daily_kline_rows,money_archived_at=excluded.money_archived_at,updated_at=excluded.updated_at`, snapshot.TradeDate, expected, expected, moneyRows, klineRows, expected, expected, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO stock_archive_quality (trade_date,expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,daily_close_rows,daily_kline_rows,money_archived_at,updated_at) VALUES (?,?,48,?,?,?,?,?,?,?) ON CONFLICT(trade_date) DO UPDATE SET expected_stocks=excluded.expected_stocks,expected_points=48,expected_kline_stocks=excluded.expected_kline_stocks,money_rows=excluded.money_rows,kline_rows=excluded.kline_rows,daily_close_rows=excluded.daily_close_rows,daily_kline_rows=excluded.daily_kline_rows,money_archived_at=excluded.money_archived_at,
+kline_archived_at=CASE WHEN excluded.kline_rows=excluded.expected_kline_stocks*excluded.expected_points
+THEN coalesce(stock_archive_quality.kline_archived_at,excluded.updated_at) ELSE NULL END,
+updated_at=excluded.updated_at`, snapshot.TradeDate, expected, expected, moneyRows, klineRows, expected, expected, now, now); err != nil {
 		return err
 	}
 	if err := refreshArchiveManifest(ctx, tx, snapshot.TradeDate); err != nil {

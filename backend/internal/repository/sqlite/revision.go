@@ -38,11 +38,17 @@ expected_stock_rows,expected_stock_kline_rows,code_count,code_set_sha256,
 kline_source_counts_json,darktrade_contract,darktradetick_contract,stock_kline_contract,
 parser_version,validation_errors_json,completed_at,updated_at,'',0
 FROM daily_archive_manifest WHERE trade_date=?`, tradeDate))
-	if errors.Is(err, sql.ErrNoRows) || manifest.Status != archiveManifestCompleted {
+	if errors.Is(err, sql.ErrNoRows) {
 		return repository.ArchiveRevision{}, fmt.Errorf("%w: %s", repository.ErrArchiveIncomplete, tradeDate)
 	}
 	if err != nil {
+		// A scan failure (corrupt JSON column, bad timestamp) is a real error;
+		// reporting it as ErrArchiveIncomplete would hide the root cause from
+		// the collector logs and make the sealing failure undiagnosable.
 		return repository.ArchiveRevision{}, err
+	}
+	if manifest.Status != archiveManifestCompleted {
+		return repository.ArchiveRevision{}, fmt.Errorf("%w: %s", repository.ErrArchiveIncomplete, tradeDate)
 	}
 
 	var previous sql.NullString
@@ -246,6 +252,12 @@ WHERE manifest.status='complete' AND current.revision_id IS NULL ORDER BY manife
 			return err
 		}
 		dates = append(dates, date)
+	}
+	// The done marker below is permanent; a truncated date list must fail the
+	// migration instead of being recorded as complete.
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
 	}
 	if err := rows.Close(); err != nil {
 		return err

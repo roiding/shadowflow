@@ -157,6 +157,12 @@ ORDER BY rank_type,market,code`, tradeDate)
 		manifest.CodeCount++
 		_, _ = fmt.Fprintf(digest, "%s|%d|%s\n", rankType, market, code)
 	}
+	// A truncated iteration here would produce a wrong-but-plausible code
+	// digest and count, silently sealing an incomplete manifest.
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
 	if err := rows.Close(); err != nil {
 		return err
 	}
@@ -179,6 +185,10 @@ FROM stock_kline_source WHERE trade_date=? GROUP BY source ORDER BY source`, tra
 		}
 		manifest.KlineSourceCounts[source] = count / 48
 		sourcePoints += count
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
 	}
 	if err := rows.Close(); err != nil {
 		return err
@@ -293,6 +303,12 @@ UNION SELECT trade_date FROM stock_archive_quality
 			return err
 		}
 		tradeDates = append(tradeDates, tradeDate)
+	}
+	// This migration records a done marker below; a truncated date list would
+	// leave some manifests unrefreshed with no way to retry.
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
 	}
 	if err := rows.Close(); err != nil {
 		return err
