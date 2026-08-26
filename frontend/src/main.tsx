@@ -7,7 +7,9 @@ import './styles/global.css'
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: 1,
+      // Do not retry auth failures: the first 401 already cleared the token
+      // and raised the gate, and a retry just doubles the rejected requests.
+      retry: (failureCount, error) => failureCount < 1 && !(error instanceof Error && error.message.includes('令牌')),
       refetchOnWindowFocus: false,
       staleTime: 15_000,
     },

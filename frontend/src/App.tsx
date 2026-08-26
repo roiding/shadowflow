@@ -53,7 +53,7 @@ function localDate(date = new Date()) {
 function formatTime(value?: string) {
   if (!value) return '--'
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value.slice(11, 16) : date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Shanghai' })
+  return Number.isNaN(date.getTime()) ? (value.slice(11, 16) || '--') : date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Shanghai' })
 }
 
 function shanghaiDateTimeKey(value: string) {
@@ -100,6 +100,13 @@ function metricValue(record: RankRecord, metric: Metric) {
 }
 
 function signedClass(value: number) { return value > 0 ? 'positive' : value < 0 ? 'negative' : 'neutral' }
+
+// Sort comparators must stay consistent: Number(undefined) is NaN and makes
+// the comparator non-total, which lets Array.sort produce arbitrary order.
+function sortableNumber(value: unknown) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY
+}
 
 function metricAvailable(record: RankRecord, metric: Metric) {
   if (['dark_money', 'regular_money', 'main_money_inflow'].includes(metric)) return record.money_available
@@ -241,7 +248,7 @@ function App() {
     return records.filter((item) => !normalized || item.name.toLowerCase().includes(normalized) || item.code.toLowerCase().includes(normalized)).sort((a, b) => {
       const left = a[sort.key] as string | number
       const right = b[sort.key] as string | number
-      const result = typeof left === 'string' ? left.localeCompare(String(right), 'zh-CN') : Number(left) - Number(right)
+      const result = typeof left === 'string' ? left.localeCompare(String(right), 'zh-CN') : sortableNumber(left) - sortableNumber(right)
       return sort.direction === 'asc' ? result : -result
     })
   }, [records, query, sort])
@@ -342,9 +349,9 @@ function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error,
         if (quoteField && left.quote_available !== right.quote_available) return left.quote_available ? -1 : 1
         const leftValue = left[sort.key]
         const rightValue = right[sort.key]
-        const compared = typeof leftValue === 'string'
-          ? leftValue.localeCompare(String(rightValue), 'zh-CN')
-          : Number(leftValue) - Number(rightValue)
+        const compared = typeof leftValue === 'string' && typeof rightValue === 'string'
+          ? leftValue.localeCompare(rightValue, 'zh-CN')
+          : sortableNumber(leftValue) - sortableNumber(rightValue)
         return sort.direction === 'asc' ? compared : -compared
       })
   }, [stocks, query, sort])
@@ -436,9 +443,11 @@ function completeTimeline(series: RankRecord[], intervalMinutes: number) {
   const tradeDates = [...new Set(series.map((item) => item.trade_date))]
   const multiDay = tradeDates.length > 1
   const points: Array<{ label: string; record: RankRecord | null }> = []
-  const hasDailyClose = series.some((item) => shanghaiTime(item.snapshot_at) === '15:00')
-  const ranges = intervalMinutes === 1 ? [['09:31', '11:30'], ['13:01', '15:00']] : [['09:35', '11:30'], ['13:05', hasDailyClose ? '15:00' : '14:55']]
+  // Judge the 15:00 close per trade date: one day having a close point must
+  // not append an empty 15:00 slot to every other day in a multi-day trend.
+  const closeDates = new Set(series.filter((item) => shanghaiTime(item.snapshot_at) === '15:00').map((item) => item.trade_date))
   for (const date of tradeDates) {
+    const ranges = intervalMinutes === 1 ? [['09:31', '11:30'], ['13:01', '15:00']] : [['09:35', '11:30'], ['13:05', closeDates.has(date) ? '15:00' : '14:55']]
     for (const [start, end] of ranges) {
       let current = new Date(`${date}T${start}:00+08:00`)
       const finish = new Date(`${date}T${end}:00+08:00`)
@@ -456,7 +465,7 @@ function completeTimeline(series: RankRecord[], intervalMinutes: number) {
 function TrendStats({ selected, series, status }: { selected?: RankRecord; series: RankRecord[]; status?: SystemStatus }) {
   const first = series[0]
   const last = series.at(-1)
-  const delta = first && last ? metricValue(last, 'dark_money') - metricValue(first, 'dark_money') : 0
+  const delta = first?.money_available && last?.money_available ? metricValue(last, 'dark_money') - metricValue(first, 'dark_money') : Number.NaN
 	const fiveMinuteSeries = series.length > 0 && isFiveMinuteSeries(series)
 	const expectedPoints = fiveMinuteSeries ? 48 : 240
   return <div className="stat-strip"><div><span>当前排名</span><strong>{selected?.rank ?? '--'}</strong></div><div><span>暗盘资金</span><strong className={signedClass(selected?.dark_money ?? 0)}>{selected ? formatMoney(selected.dark_money) : '--'}</strong></div><div><span>日内变化</span><strong className={signedClass(delta)}>{series.length ? `${delta > 0 ? '+' : ''}${formatMoney(delta)}` : '--'}</strong></div><div><span>有效点数</span><strong>{series.length || '--'}<small> / {expectedPoints}</small></strong></div><div><span>市场状态</span><strong>{status?.market_status === 'open' ? '交易中' : status?.market_status === 'lunch_break' ? '午休' : '已收市'}</strong></div></div>
@@ -481,7 +490,7 @@ function StockView({ date, setDate, records, total, query, setQuery, sort, onSor
 	  {error && <InlineNotice kind="error" text="收盘榜读取失败。" />}
 	  <div className="stock-table-wrap">{loading && !records.length ? <div className="loading-block">正在读取收盘榜…</div> : <table className={`stock-table ${loading ? 'is-loading' : ''}`}>
 	    <thead><tr><SortHead label="排名" sortKey="rank" sort={sort} onSort={onSort} /><SortHead label="股票" sortKey="name" sort={sort} onSort={onSort} /><SortHead label="代码" sortKey="code" sort={sort} onSort={onSort} /><SortHead label="收盘" sortKey="close_price" sort={sort} onSort={onSort} /><SortHead label="涨跌幅" sortKey="change_pct" sort={sort} onSort={onSort} /><SortHead label="开盘" sortKey="open_price" sort={sort} onSort={onSort} /><SortHead label="最高" sortKey="high_price" sort={sort} onSort={onSort} /><SortHead label="最低" sortKey="low_price" sort={sort} onSort={onSort} /><SortHead label="前收" sortKey="previous_close" sort={sort} onSort={onSort} /><SortHead label="换手率" sortKey="turnover_rate" sort={sort} onSort={onSort} /><SortHead label="成交额" sortKey="turnover" sort={sort} onSort={onSort} /><SortHead label="暗盘资金" sortKey="dark_money" sort={sort} onSort={onSort} /><SortHead label="主力净流入" sortKey="main_money_inflow" sort={sort} onSort={onSort} /><SortHead label="活跃度" sortKey="dark_activity" sort={sort} onSort={onSort} /></tr></thead>
-	    <tbody>{records.map((record) => <tr key={record.code}><td><span className="rank-number">{record.rank}</span></td><td><strong>{record.name || '未命名'}</strong></td><td className="stock-code">{record.code}</td><td>{record.quote_available ? formatNumber(record.close_price, 2) : '--'}</td><td className={signedClass(record.change_pct)}>{record.change_pct > 0 ? '+' : ''}{formatNumber(record.change_pct * 100, 2)}%</td><td>{record.quote_available ? formatNumber(record.open_price, 2) : '--'}</td><td>{record.quote_available ? formatNumber(record.high_price, 2) : '--'}</td><td>{record.quote_available ? formatNumber(record.low_price, 2) : '--'}</td><td>{record.previous_close > 0 ? formatNumber(record.previous_close, 2) : '--'}</td><td>{record.quote_available ? `${formatNumber(record.turnover_rate * 100, 2)}%` : '--'}</td><td>{record.quote_available ? formatMoney(record.turnover) : '--'}</td><td className={signedClass(record.dark_money)}>{formatMoney(record.dark_money)}</td><td className={signedClass(record.main_money_inflow)}>{formatMoney(record.main_money_inflow)}</td><td>{formatNumber(record.dark_activity * 100, 2)}%</td></tr>)}</tbody>
+	    <tbody>{records.map((record) => <tr key={`${record.market}-${record.code}`}><td><span className="rank-number">{record.rank}</span></td><td><strong>{record.name || '未命名'}</strong></td><td className="stock-code">{record.code}</td><td>{record.quote_available ? formatNumber(record.close_price, 2) : '--'}</td><td className={signedClass(record.change_pct)}>{record.change_pct > 0 ? '+' : ''}{formatNumber(record.change_pct * 100, 2)}%</td><td>{record.quote_available ? formatNumber(record.open_price, 2) : '--'}</td><td>{record.quote_available ? formatNumber(record.high_price, 2) : '--'}</td><td>{record.quote_available ? formatNumber(record.low_price, 2) : '--'}</td><td>{record.previous_close > 0 ? formatNumber(record.previous_close, 2) : '--'}</td><td>{record.quote_available ? `${formatNumber(record.turnover_rate * 100, 2)}%` : '--'}</td><td>{record.quote_available ? formatMoney(record.turnover) : '--'}</td><td className={signedClass(record.dark_money)}>{formatMoney(record.dark_money)}</td><td className={signedClass(record.main_money_inflow)}>{formatMoney(record.main_money_inflow)}</td><td>{formatNumber(record.dark_activity * 100, 2)}%</td></tr>)}</tbody>
 	  </table>}{!loading && !records.length && <EmptyState icon={<Table2 size={22} />} title="暂无收盘榜" detail="选择一个已完成个股收盘采集的交易日。" />}</div>
 	  {pages > 0 && <Pagination page={page} pages={pages} setPage={setPage} />}
 	</section>

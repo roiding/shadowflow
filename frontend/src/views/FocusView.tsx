@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, CalendarDays, Copy, Crosshair, Filter, Plus, Save, Search, Trash2, Upload } from 'lucide-react'
 
 import type {
@@ -96,7 +96,14 @@ export function FocusView({ request, onScan, result, loading, error }: {
   const [selectedTemplate, setSelectedTemplate] = useState('')
   const [templateNotice, setTemplateNotice] = useState('')
   useEffect(() => setDraft(request), [request])
-  useEffect(() => localStorage.setItem(FOCUS_TEMPLATE_KEY, JSON.stringify(templates)), [templates])
+  useEffect(() => {
+    try {
+      localStorage.setItem(FOCUS_TEMPLATE_KEY, JSON.stringify(templates))
+    } catch {
+      // Private browsing or quota exhaustion: losing template persistence is
+      // acceptable, crashing the view is not.
+    }
+  }, [templates])
   const normalized = query.trim().toLowerCase()
   const records: Array<FocusConceptCandidate | FocusStockCandidate> = mode === 'concepts' ? (result?.concepts ?? []) : (result?.stocks ?? [])
   const visible = records.filter((record) => !normalized || record.name.toLowerCase().includes(normalized) || record.code.toLowerCase().includes(normalized) || (isFocusStock(record) && record.concepts.some((concept) => concept.name.toLowerCase().includes(normalized))))
@@ -105,7 +112,13 @@ export function FocusView({ request, onScan, result, loading, error }: {
   const displayFields = Array.from(new Set(activeConditions.map((condition) => condition.field)))
   if (!displayFields.length) displayFields.push('control_coefficient')
   const updateScope = (key: keyof FocusScanRequest['stock_scope'], value: boolean) => setDraft((current) => ({ ...current, stock_scope: { ...current.stock_scope, [key]: value } }))
-  const flashTemplateNotice = (value: string) => { setTemplateNotice(value); window.setTimeout(() => setTemplateNotice(''), 1800) }
+  const noticeTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(noticeTimer.current), [])
+  const flashTemplateNotice = (value: string) => {
+    window.clearTimeout(noticeTimer.current)
+    setTemplateNotice(value)
+    noticeTimer.current = window.setTimeout(() => setTemplateNotice(''), 1800)
+  }
   const saveTemplate = () => {
     const name = window.prompt('模板名称', selectedTemplate || '')
     if (!name?.trim()) return
@@ -157,7 +170,7 @@ export function FocusView({ request, onScan, result, loading, error }: {
     {result?.ready && <>
       <div className="focus-summary"><span><b>{result.concepts.length}</b>入选概念</span><span><b>{result.stocks.length}</b>入选个股</span><span><b>{result.stats.non_main_board_excluded}</b>非主板剔除</span><span><b>{result.stats.st_excluded}</b>ST 剔除</span></div>
       <div className="focus-toolbar"><div className="segmented"><button className={mode === 'concepts' ? 'active' : ''} onClick={() => setMode('concepts')}>概念 {result.concepts.length}</button><button className={mode === 'stocks' ? 'active' : ''} onClick={() => setMode('stocks')}>个股 {result.stocks.length}</button></div><label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、代码或概念" /></label></div>
-      <div className="focus-table-wrap"><table className="focus-table"><thead><tr><th>{mode === 'concepts' ? '概念板块' : applied.stock_scope.main_board_only ? '主板个股' : '个股'}</th>{mode === 'stocks' && <th>入选概念</th>}{displayFields.map((field) => <th key={field}>{focusField(field).label}</th>)}</tr></thead><tbody>{visible.map((record) => <tr key={record.code}><td><strong>{record.name}</strong><small>{record.code}</small></td>{mode === 'stocks' && <td className="focus-concepts">{isFocusStock(record) ? record.concepts.map((concept) => concept.name).join(' · ') || '--' : ''}</td>}{displayFields.map((field) => <FocusValues key={field} days={record.days} field={field} />)}</tr>)}</tbody></table>{!visible.length && <EmptyState icon={<Crosshair size={22} />} title="没有符合条件的记录" detail={`连续 ${applied.consecutive_days} 个交易日需逐日符合当前规则。`} />}</div>
+      <div className="focus-table-wrap"><table className="focus-table"><thead><tr><th>{mode === 'concepts' ? '概念板块' : applied.stock_scope.main_board_only ? '主板个股' : '个股'}</th>{mode === 'stocks' && <th>入选概念</th>}{displayFields.map((field) => <th key={field}>{focusField(field).label}</th>)}</tr></thead><tbody>{visible.map((record) => <tr key={isFocusStock(record) ? `${record.market}-${record.code}` : record.code}><td><strong>{record.name}</strong><small>{record.code}</small></td>{mode === 'stocks' && <td className="focus-concepts">{isFocusStock(record) ? record.concepts.map((concept) => concept.name).join(' · ') || '--' : ''}</td>}{displayFields.map((field) => <FocusValues key={field} days={record.days} field={field} />)}</tr>)}</tbody></table>{!visible.length && <EmptyState icon={<Crosshair size={22} />} title="没有符合条件的记录" detail={`连续 ${applied.consecutive_days} 个交易日需逐日符合当前规则。`} />}</div>
       <FocusRejections rejections={result.rejections ?? []} truncated={result.rejections_truncated} />
     </>}
   </section>

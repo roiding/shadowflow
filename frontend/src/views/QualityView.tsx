@@ -34,13 +34,17 @@ export function QualityView({ date, setDate, quality, stockQuality, manifest, ru
   const pageRuns = runs.slice((runPage - 1) * RUN_PAGE_SIZE, runPage * RUN_PAGE_SIZE)
   useEffect(() => setRunPage(1), [date])
   useEffect(() => setRunPage((current) => Math.max(1, Math.min(current, runPages || 1))), [runPages])
-  const expectedPoints = stockQuality?.expected_points ?? 48
+  // `||` instead of `??`: an expected_points of 0 would divide to NaN and
+  // emit an invalid width style.
+  const expectedPoints = stockQuality?.expected_points || 48
   const expectedStocks = stockQuality?.expected_stocks ?? 0
   const expectedKlineStocks = stockQuality?.expected_kline_stocks ?? 0
   const moneyOK = expectedStocks > 0 && stockQuality?.money_rows === expectedStocks * expectedPoints
-  const klineOK = expectedKlineStocks > 0 && stockQuality?.kline_rows === expectedKlineStocks * expectedPoints
+  // A day where no stock traded has zero expected klines and is complete by
+  // definition, not permanently pending.
+  const klineOK = expectedKlineStocks === 0 ? Boolean(stockQuality) : stockQuality?.kline_rows === expectedKlineStocks * expectedPoints
   const closeOK = expectedStocks > 0 && stockQuality?.daily_close_rows === expectedStocks
-  const dailyKOK = expectedKlineStocks > 0 && stockQuality?.daily_kline_rows === expectedKlineStocks
+  const dailyKOK = expectedKlineStocks === 0 ? Boolean(stockQuality) : stockQuality?.daily_kline_rows === expectedKlineStocks
   const stockAllOK = moneyOK && klineOK && closeOK && dailyKOK
   const moneyPoints = expectedStocks ? Math.floor((stockQuality?.money_rows ?? 0) / expectedStocks) : 0
   const klinePoints = expectedKlineStocks ? Math.floor((stockQuality?.kline_rows ?? 0) / expectedKlineStocks) : 0
@@ -52,7 +56,7 @@ function ArchiveManifestPanel({ manifest }: { manifest?: DailyArchiveManifest })
   const persisted = Boolean(manifest?.updated_at)
   const sources = manifest?.kline_source_counts ?? {}
   const hash = manifest?.code_set_sha256 ? `${manifest.code_set_sha256.slice(0, 12)}…${manifest.code_set_sha256.slice(-8)}` : '--'
-  return <section className="manifest-panel"><div className="manifest-heading"><div><span className="type-tag">每日归档清单</span><strong className={complete ? 'ok-label' : 'warn-label'}>{complete ? <Check size={14} /> : <AlertTriangle size={14} />}{complete ? `完整 · v${manifest?.revision_no ?? 0}` : '待完成'}</strong></div><span>{manifest?.updated_at ? `更新 ${formatTime(manifest.updated_at)}` : '暂无清单'}</span></div><div className="manifest-stats"><div><span>代码集合</span><strong>{formatNumber(manifest?.code_count ?? 0)}</strong></div><div><span>集合摘要</span><code title={manifest?.code_set_sha256}>{hash}</code></div><div><span>五分钟主接口</span><strong>{formatNumber(sources.stock_kline_5m ?? 0)} 只</strong></div><div><span>241 点备用</span><strong>{formatNumber(sources.stock_trends_1m_241 ?? 0)} 只</strong></div><div><span>历史未知来源</span><strong>{formatNumber(sources.unknown ?? 0)} 只</strong></div><div><span>解析口径</span><code>{manifest?.parser_version ?? '--'}</code></div></div>{!persisted ? <div className="manifest-pending"><Info size={13} />该交易日尚未生成归档清单</div> : manifest?.validation_errors?.length ? <div className="manifest-errors">{manifest.validation_errors.map((item) => <span key={item}><AlertTriangle size={13} />{item}</span>)}</div> : <div className="manifest-ok"><Check size={13} />三类日终截面、48 点资金曲线和个股行情覆盖均通过校验</div>}</section>
+  return <section className="manifest-panel"><div className="manifest-heading"><div><span className="type-tag">每日归档清单</span><strong className={complete ? 'ok-label' : 'warn-label'}>{complete ? <Check size={14} /> : <AlertTriangle size={14} />}{complete ? `完整 · v${manifest?.revision_no ?? 0}` : '待完成'}</strong></div><span>{manifest?.updated_at ? `更新 ${formatTime(manifest.updated_at)}` : '暂无清单'}</span></div><div className="manifest-stats"><div><span>代码集合</span><strong>{formatNumber(manifest?.code_count ?? 0)}</strong></div><div><span>集合摘要</span><code title={manifest?.code_set_sha256}>{hash}</code></div><div><span>五分钟主接口</span><strong>{formatNumber(sources.stock_kline_5m ?? 0)} 只</strong></div><div><span>241 点备用</span><strong>{formatNumber(sources.stock_trends_1m_241 ?? 0)} 只</strong></div><div><span>历史未知来源</span><strong>{formatNumber(sources.unknown ?? 0)} 只</strong></div><div><span>解析口径</span><code>{manifest?.parser_version ?? '--'}</code></div></div>{!persisted ? <div className="manifest-pending"><Info size={13} />该交易日尚未生成归档清单</div> : manifest?.validation_errors?.length ? <div className="manifest-errors">{manifest.validation_errors.map((item, index) => <span key={`${index}-${item}`}><AlertTriangle size={13} />{item}</span>)}</div> : <div className="manifest-ok"><Check size={13} />三类日终截面、48 点资金曲线和个股行情覆盖均通过校验</div>}</section>
 }
 
 function Pagination({ page, pages, setPage }: { page: number; pages: number; setPage: (value: number) => void }) {
