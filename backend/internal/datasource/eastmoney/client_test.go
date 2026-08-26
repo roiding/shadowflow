@@ -188,3 +188,32 @@ func TestFetchStockQuotesMapsLatestRowsAndPreservesMissingConstituents(t *testin
 		t.Fatalf("suspended quote should be unavailable: %+v", quotes[2])
 	}
 }
+
+func TestDecodeJSONDetectsGBFamilyEncodings(t *testing.T) {
+	// "通信设备" encoded as GBK bytes; structurally valid JSON either way.
+	gbkBody := []byte(`{"rc":0,"data":{"f14":"`)
+	gbkBody = append(gbkBody, 0xCD, 0xA8, 0xD0, 0xC5, 0xC9, 0xE8, 0xB1, 0xB8)
+	gbkBody = append(gbkBody, []byte(`"}}`)...)
+	for _, contentType := range []string{
+		"application/json;charset=GBK",
+		"application/json;charset=GB2312",
+		"application/json;charset=gb18030",
+		"application/json", // no charset: bytes are not valid UTF-8
+	} {
+		decoded, encoding, err := decodeJSON(gbkBody, contentType)
+		if err != nil {
+			t.Fatalf("%s: %v", contentType, err)
+		}
+		if encoding != "gb18030" {
+			t.Fatalf("%s: expected gb18030 label, got %s", contentType, encoding)
+		}
+		if !strings.Contains(string(decoded), "通信设备") {
+			t.Fatalf("%s: GB bytes were not decoded: %s", contentType, decoded)
+		}
+	}
+	utf8Body := []byte(`{"rc":0,"data":{"f14":"通信设备"}}`)
+	decoded, encoding, err := decodeJSON(utf8Body, "application/json;charset=utf-8")
+	if err != nil || encoding != "utf-8" || !strings.Contains(string(decoded), "通信设备") {
+		t.Fatalf("utf-8 payload mishandled: encoding=%s err=%v", encoding, err)
+	}
+}

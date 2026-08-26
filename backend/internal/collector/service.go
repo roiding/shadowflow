@@ -263,6 +263,17 @@ func (s *Service) collectMoneyArchiveIncremental(ctx context.Context, rankType g
 		if err = flush(false); err != nil {
 			fetchErr = errors.Join(fetchErr, err)
 		}
+	} else if run.FetchedTotal+len(pending) != run.ExpectedTotal {
+		// Upstream reported success but delivered fewer points than expected.
+		// Persist the durable rows without sealing quality/manifest, otherwise
+		// the cleanup gate would treat this run as a complete archive and could
+		// delete the intraday source data.
+		if err = flush(false); err != nil {
+			fetchErr = errors.Join(fetchErr, err)
+		}
+		err = fmt.Errorf("incomplete %s money archive: expected %d rows, got %d", rankType, run.ExpectedTotal, run.FetchedTotal)
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "incomplete", err.Error()
+		return finish(errors.Join(err, fetchErr))
 	} else if err = flush(true); err != nil {
 		fetchErr = errors.Join(fetchErr, err)
 	}
@@ -273,11 +284,6 @@ func (s *Service) collectMoneyArchiveIncremental(ctx context.Context, rankType g
 		}
 		run.ErrorCode, run.ErrorMessage = errorCode(fetchErr), fetchErr.Error()
 		return finish(fetchErr)
-	}
-	if run.FetchedTotal != run.ExpectedTotal {
-		err = fmt.Errorf("incomplete %s money archive: expected %d rows, got %d", rankType, run.ExpectedTotal, run.FetchedTotal)
-		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "incomplete", err.Error()
-		return finish(err)
 	}
 	run.Status = repository.RunSuccess
 	return finish(nil)

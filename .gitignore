@@ -8,6 +8,7 @@ backups/
 
 # Build output
 backend/server
+backend/collect
 frontend/dist/
 frontend/node_modules/
 frontend/*.tsbuildinfo

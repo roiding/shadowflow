@@ -4,7 +4,12 @@ services:
     container_name: shadowflow
     restart: unless-stopped
     ports:
-      - "8081:8080"
+      # Bind to the host loopback only: the API runs without SHADOWFLOW_API_TOKEN,
+      # so publishing on 0.0.0.0 would expose all data (and /metrics) to the
+      # network and bypass host firewalls via Docker's iptables rules. Front any
+      # external access with a reverse proxy + TLS, or set SHADOWFLOW_API_TOKEN
+      # here and widen the binding deliberately.
+      - "127.0.0.1:8081:8080"
     volumes:
       - /mnt/data/shadowflow/data:/data
       - /mnt/data/shadowflow/backups:/backups

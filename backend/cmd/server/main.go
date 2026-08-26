@@ -77,17 +77,24 @@ func main() {
 	} else {
 		logger.Info("trading calendar auto-update disabled")
 	}
+	var schedulerDone chan struct{}
 	if cfg.SchedulerEnabled {
-		go schedulerService.Run(ctx)
+		schedulerDone = make(chan struct{})
+		go func() {
+			defer close(schedulerDone)
+			schedulerService.Run(ctx)
+		}()
 	} else {
 		logger.Info("scheduler disabled")
 	}
 
 	server := &http.Server{Addr: cfg.ListenAddr, Handler: apiServer.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	listenFailed := make(chan struct{}, 1)
 	go func() {
 		logger.Info("server started", "addr", cfg.ListenAddr, "database", cfg.DatabasePath)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("server failed", "error", err)
+			listenFailed <- struct{}{}
 			stop()
 		}
 	}()
@@ -97,6 +104,21 @@ func main() {
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("server shutdown", "error", err)
+	}
+	// Let in-flight scheduler jobs persist their final status before the
+	// deferred store.Close() runs; Run waits on its own job WaitGroup.
+	if schedulerDone != nil {
+		select {
+		case <-schedulerDone:
+		case <-time.After(30 * time.Second):
+			logger.Warn("scheduler did not stop in time; closing store anyway")
+		}
+	}
+	select {
+	case <-listenFailed:
+		store.Close()
+		os.Exit(1)
+	default:
 	}
 }
 

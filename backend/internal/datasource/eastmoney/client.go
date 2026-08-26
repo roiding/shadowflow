@@ -210,13 +210,18 @@ func (c *Client) fetchPage(ctx context.Context, rankType graymarket.RankType, da
 }
 
 func decodeJSON(body []byte, contentType string) ([]byte, string, error) {
-	if json.Valid(body) && !strings.Contains(strings.ToLower(contentType), "gbk") {
+	// Trust the payload as UTF-8 only when the bytes really are valid UTF-8
+	// and the header does not declare a GB-family charset (gbk/gb2312/
+	// gb18030). json.Valid alone cannot tell encodings apart: GB-encoded
+	// bytes often form structurally valid JSON whose strings are mojibake
+	// when stored as UTF-8, and that corruption is unrecoverable once the
+	// raw page is archived with the wrong encoding label.
+	if json.Valid(body) && utf8Text(body) && !strings.Contains(strings.ToLower(contentType), "gb") {
 		return body, "utf-8", nil
 	}
-	if json.Valid(body) && utf8Text(body) {
-		return body, "utf-8", nil
-	}
-	decoded, err := io.ReadAll(transform.NewReader(bytes.NewReader(body), simplifiedchinese.GBK.NewDecoder()))
+	// GB18030 is a superset of GBK/GB2312 and decodes their 4-byte
+	// extensions too, so the label below matches the decoder.
+	decoded, err := io.ReadAll(transform.NewReader(bytes.NewReader(body), simplifiedchinese.GB18030.NewDecoder()))
 	if err != nil {
 		return nil, "", err
 	}

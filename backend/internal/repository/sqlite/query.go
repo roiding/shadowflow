@@ -114,7 +114,7 @@ func (s *Store) ResearchSeries(ctx context.Context, rankType graymarket.RankType
 }
 
 func (s *Store) BoardResearchRevisionSeries(ctx context.Context, revisionID string, rankType graymarket.RankType, code string) ([]graymarket.RankRecord, error) {
-	tradeDate, err := archiveTradeDateByRevision(ctx, s.db, revisionID)
+	tradeDate, err := archiveTradeDateByRevision(ctx, s.readDB(), revisionID)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +140,7 @@ FROM stock_research_5m WHERE trade_date=? AND code=? ORDER BY minute_index`, tra
 }
 
 func (s *Store) StockResearchRevisionSeries(ctx context.Context, revisionID, code string) ([]graymarket.StockResearchPoint, error) {
-	tradeDate, err := archiveTradeDateByRevision(ctx, s.db, revisionID)
+	tradeDate, err := archiveTradeDateByRevision(ctx, s.readDB(), revisionID)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +257,7 @@ func (s *Store) DailyClosePage(ctx context.Context, rankType graymarket.RankType
 }
 
 func (s *Store) DailyCloseRevisionPage(ctx context.Context, revisionID string, rankType graymarket.RankType, search, sort string, descending bool, limit, offset int) ([]graymarket.RankRecord, int, error) {
-	tradeDate, err := archiveTradeDateByRevision(ctx, s.db, revisionID)
+	tradeDate, err := archiveTradeDateByRevision(ctx, s.readDB(), revisionID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -350,7 +350,7 @@ ORDER BY CASE rank_type WHEN 'industry' THEN 1 WHEN 'concept' THEN 2 ELSE 3 END,
 }
 
 func (s *Store) DailyCloseRevisionRecords(ctx context.Context, revisionID string) ([]graymarket.RankRecord, error) {
-	tradeDate, err := archiveTradeDateByRevision(ctx, s.db, revisionID)
+	tradeDate, err := archiveTradeDateByRevision(ctx, s.readDB(), revisionID)
 	if err != nil {
 		return nil, err
 	}

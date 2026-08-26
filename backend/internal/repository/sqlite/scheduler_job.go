@@ -144,9 +144,11 @@ func (s *Store) DueScheduledJobs(ctx context.Context, now time.Time, limit int) 
 	timestamp := now.UTC().Format(timestampLayout)
 	rows, err := s.readDB().QueryContext(ctx, `SELECT `+scheduledJobColumns+`
 FROM scheduled_job
-WHERE (status='queued' AND (retry_at IS NULL OR julianday(retry_at)<=julianday(?)))
-   OR (status='failed' AND retry_at IS NOT NULL AND julianday(retry_at)<=julianday(?))
-   OR (status='running' AND lease_until IS NOT NULL AND julianday(lease_until)<=julianday(?))
+WHERE attempt_count<max_attempts AND (
+       (status='queued' AND (retry_at IS NULL OR julianday(retry_at)<=julianday(?)))
+    OR (status='failed' AND retry_at IS NOT NULL AND julianday(retry_at)<=julianday(?))
+    OR (status='running' AND lease_until IS NOT NULL AND julianday(lease_until)<=julianday(?))
+)
 ORDER BY julianday(planned_at) LIMIT ?`, timestamp, timestamp, timestamp, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query due scheduled jobs: %w", err)
@@ -164,10 +166,23 @@ ORDER BY julianday(planned_at) LIMIT ?`, timestamp, timestamp, timestamp, limit)
 }
 
 func (s *Store) ExpireLeasedJobs(ctx context.Context, now time.Time) error {
-	_, err := s.writeDB().ExecContext(ctx, `UPDATE scheduled_job SET status='queued',lease_owner=NULL,lease_until=NULL
-WHERE status='running' AND lease_until IS NOT NULL AND julianday(lease_until)<=julianday(?)`, now.UTC().Format(timestampLayout))
-	if err != nil {
+	timestamp := now.UTC().Format(timestampLayout)
+	// Jobs with attempts left go back to the queue; jobs that died on their
+	// final attempt are terminal. Without the second branch an exhausted job
+	// would be requeued forever: DueScheduledJobs keeps returning it, Claim
+	// keeps rejecting it (attempt_count>=max_attempts), and Maintain never
+	// deletes queued rows.
+	if _, err := s.writeDB().ExecContext(ctx, `UPDATE scheduled_job SET status='queued',lease_owner=NULL,lease_until=NULL
+WHERE status='running' AND lease_until IS NOT NULL AND julianday(lease_until)<=julianday(?)
+AND attempt_count<max_attempts`, timestamp); err != nil {
 		return fmt.Errorf("expire scheduled job leases: %w", err)
+	}
+	if _, err := s.writeDB().ExecContext(ctx, `UPDATE scheduled_job SET status='failed',lease_owner=NULL,lease_until=NULL,
+retry_at=NULL,last_error_code='lease_expired',last_error_message='lease expired after final attempt',
+finished_at=?
+WHERE status='running' AND lease_until IS NOT NULL AND julianday(lease_until)<=julianday(?)
+AND attempt_count>=max_attempts`, timestamp, timestamp); err != nil {
+		return fmt.Errorf("fail exhausted scheduled job leases: %w", err)
 	}
 	return nil
 }

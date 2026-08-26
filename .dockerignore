@@ -2,6 +2,7 @@
 .gitignore
 backend/data
 backend/server
+backend/collect
 frontend/node_modules
 frontend/dist
 backups

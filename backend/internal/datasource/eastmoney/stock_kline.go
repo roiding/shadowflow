@@ -78,7 +78,11 @@ func (c *Client) FetchStockKlines5mIncremental(ctx context.Context, snapshot gra
 				points, err := c.fetchStockKlineFromTrendsWithRetry(ctx, snapshot.TradeDate, stock)
 				select {
 				case results <- stockKlineResult{points: points, err: err}:
-				case <-parentCtx.Done():
+				case <-ctx.Done():
+					// Watch the cancellable child context, not parentCtx: when the
+					// consumer aborts on a persist error it stops draining results
+					// and cancels ctx; blocking on parentCtx here would leak every
+					// worker still holding a result.
 					return
 				}
 			}

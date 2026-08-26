@@ -47,7 +47,9 @@ func Open(path string) (*Store, error) {
 
 func OpenWithReadConns(path string, readConns int) (*Store, error) {
 	if readConns <= 0 {
-		readConns = 4
+		// Keep in sync with Open() and the SHADOWFLOW_SQLITE_READ_CONNS
+		// default in config.Load: a single reader connection.
+		readConns = 1
 	}
 	if readConns > 32 {
 		readConns = 32
@@ -1407,6 +1409,23 @@ func (s *Store) CleanupIntraday(ctx context.Context, tradeDate string) error {
 	return err
 }
 
+// boardArchiveCompleteSQL returns a predicate mirroring HasBoardArchive's
+// completion criteria for one rank type, correlated on date_value. Keep it in
+// sync with HasBoardArchive (query.go); CleanupArchivedIntraday must never be
+// more permissive than the archive check, or intraday work data could be
+// deleted while the long-term archive is still incomplete.
+func boardArchiveCompleteSQL(rankType string) string {
+	return `(SELECT count(*) FROM rank_snapshot close_check WHERE close_check.trade_date=date_value
+	AND close_check.snapshot_kind='daily_close' AND close_check.rank_type='` + rankType + `')>0
+	AND (SELECT count(DISTINCT money_check.snapshot_at) FROM board_money_5m money_check
+	WHERE money_check.trade_date=date_value AND money_check.rank_type='` + rankType + `'
+	AND money_check.money_available=1)=48
+	AND (SELECT count(*) FROM board_money_5m money_check WHERE money_check.trade_date=date_value
+	AND money_check.rank_type='` + rankType + `' AND money_check.money_available=1)=
+	(SELECT count(*) FROM rank_snapshot close_check WHERE close_check.trade_date=date_value
+	AND close_check.snapshot_kind='daily_close' AND close_check.rank_type='` + rankType + `')*48`
+}
+
 func (s *Store) CleanupArchivedIntraday(ctx context.Context, beforeDate string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1417,6 +1436,8 @@ func (s *Store) CleanupArchivedIntraday(ctx context.Context, beforeDate string) 
 AND (SELECT count(*) FROM research_quality quality WHERE quality.trade_date=date_value
 AND quality.collected_research=quality.expected_research
 AND quality.collected_daily_close=quality.expected_daily_close)=2
+	AND ` + boardArchiveCompleteSQL("industry") + `
+	AND ` + boardArchiveCompleteSQL("concept") + `
 	AND EXISTS (SELECT 1 FROM stock_archive_quality stock WHERE stock.trade_date=date_value
 	AND stock.money_rows=stock.expected_kline_stocks*stock.expected_points
 	AND stock.kline_rows=stock.expected_kline_stocks*stock.expected_points

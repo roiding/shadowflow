@@ -36,7 +36,7 @@ SHADOWFLOW_STATIC_DIR=../frontend/dist go run ./cmd/server
 
 访问 [http://127.0.0.1:8080](http://127.0.0.1:8080)。服务默认只绑定本机；未配置 Token 时本地 API 可直接访问。API 规范见 [backend/openapi.yaml](backend/openapi.yaml)，Prometheus 指标位于 `/metrics`。
 
-鉴权由 `SHADOWFLOW_API_TOKEN` 是否为空控制：为空时关闭，有值时开启。开启后，除 `/health/live`、`/health/ready` 和静态页面外，`/api/v1/*` 与 `/metrics` 都需要 Bearer Token。Token 至少 16 个字符：
+鉴权由 `SHADOWFLOW_API_TOKEN` 是否为空控制：为空时关闭，有值时开启。开启后，除 `/health/live`、`/health/ready` 和静态页面外，`/api/v1/*` 与 `/metrics` 都需要 Bearer Token。Token 至少 16 个字符。注意：Docker 部署时容器内绑定 `0.0.0.0`，`compose.yaml` 因此只把宿主机端口发布在 `127.0.0.1`；若未配置 Token 就把端口发布到非回环地址，所有数据与 `/metrics` 将无鉴权暴露到网络（Docker 的 iptables 规则还会绕过宿主机防火墙）。带 Token 调用示例：
 
 ```bash
 curl -H "Authorization: Bearer $SHADOWFLOW_API_TOKEN" \

@@ -61,7 +61,8 @@ OR (status!='success' AND coalesce(finished_at,started_at)<?)`, successCutoff, f
 	}
 	if result.ScheduledJobsDeleted, err = execDeleted(ctx, tx, `DELETE FROM scheduled_job
 WHERE (status IN ('succeeded','skipped') AND coalesce(finished_at,planned_at)<?)
-OR (status='failed' AND coalesce(finished_at,planned_at)<?)`, successCutoff, failureCutoff); err != nil {
+OR (status='failed' AND coalesce(finished_at,planned_at)<?)
+OR (status IN ('queued','running') AND planned_at<?)`, successCutoff, failureCutoff, failureCutoff); err != nil {
 		return result, err
 	}
 	if err := tx.Commit(); err != nil {

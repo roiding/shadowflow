@@ -318,9 +318,9 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "close-"+rankTy
 		for index, clock := range expectedResearchTimes() {
 			at, _ := time.ParseInLocation("2006-01-02 15:04", "2026-08-12 "+clock, time.FixedZone("Asia/Shanghai", 8*60*60))
 			_, err = store.db.ExecContext(ctx, `INSERT INTO board_money_5m
-(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,source_time,fetched_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, "archive-"+rankType, at.Format(timestampLayout), "2026-08-12", rankType, 1, 90,
-				"code-"+rankType, rankType, index, index, index*2, 0, now)
+(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "archive-"+rankType, at.Format(timestampLayout), "2026-08-12", rankType, 1, 90,
+				"code-"+rankType, rankType, index, index, index*2, 1, 0, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -380,6 +380,20 @@ expected_daily_close,collected_daily_close,missing_minutes_json,missing_research
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, tradeDate, rankType, 240, 240, 48, 48, 1, 1, "[]", "[]", "[]", now); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO rank_snapshot
+(run_id,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,quote_time,latest_price_raw,change_pct,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "close-"+rankType, tradeDate+"T15:00:00+08:00", tradeDate, tradeDate, "daily_close", rankType, 1, 90, "close-"+rankType, rankType, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", "", 101, 6, 1, now); err != nil {
+			t.Fatal(err)
+		}
+		for index, clock := range expectedResearchTimes() {
+			at, _ := time.ParseInLocation("2006-01-02 15:04", tradeDate+" "+clock, time.FixedZone("Asia/Shanghai", 8*60*60))
+			if _, err := store.db.ExecContext(ctx, `INSERT INTO board_money_5m
+(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "archive-"+rankType, at.Format(timestampLayout), tradeDate, rankType, 1, 90,
+				"close-"+rankType, rankType, index, index, index*2, 1, 0, now); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO stock_archive_quality
 (trade_date,expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,daily_close_rows,daily_kline_rows,money_archived_at,kline_archived_at,updated_at)
@@ -397,6 +411,10 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "work", now, tradeD
 		fixSQL   string
 	}{
 		{"board money", `UPDATE research_quality SET collected_research=47 WHERE trade_date='2026-08-12' AND rank_type='industry'`, `UPDATE research_quality SET collected_research=48 WHERE trade_date='2026-08-12' AND rank_type='industry'`},
+		{"board money rows", `UPDATE board_money_5m SET money_available=0 WHERE trade_date='2026-08-12' AND rank_type='industry' AND snapshot_at LIKE '%09:35%'`, `UPDATE board_money_5m SET money_available=1 WHERE trade_date='2026-08-12' AND rank_type='industry' AND snapshot_at LIKE '%09:35%'`},
+		{"board archive close", `DELETE FROM rank_snapshot WHERE trade_date='2026-08-12' AND snapshot_kind='daily_close' AND rank_type='concept'`, `INSERT INTO rank_snapshot
+(run_id,snapshot_at,trade_date,requested_date,snapshot_kind,rank_type,rank,market,code,name,quote_time,latest_price_raw,change_pct,dark_money,regular_money,main_money_inflow,dark_activity,dark_inflow_ratio,up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at)
+VALUES ('close-concept','2026-08-12T15:00:00+08:00','2026-08-12','2026-08-12','daily_close','concept',1,90,'close-concept','concept','',0,0,0,0,0,0,0,0,0,0,'','',101,6,1,'2026-08-12T16:00:00Z')`},
 		{"board close", `UPDATE research_quality SET collected_daily_close=0 WHERE trade_date='2026-08-12' AND rank_type='concept'`, `UPDATE research_quality SET collected_daily_close=1 WHERE trade_date='2026-08-12' AND rank_type='concept'`},
 		{"stock money", `UPDATE stock_archive_quality SET money_rows=47 WHERE trade_date='2026-08-12'`, `UPDATE stock_archive_quality SET money_rows=48 WHERE trade_date='2026-08-12'`},
 		{"stock five-minute K", `UPDATE stock_archive_quality SET kline_rows=47 WHERE trade_date='2026-08-12'`, `UPDATE stock_archive_quality SET kline_rows=48 WHERE trade_date='2026-08-12'`},

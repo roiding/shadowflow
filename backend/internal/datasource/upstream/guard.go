@@ -112,7 +112,13 @@ func (g *Guard) Do(ctx context.Context, request *http.Request) (*http.Response, 
 	response, err := g.httpClient.Do(request)
 	if err != nil {
 		releaseSlot()
-		g.record(key, false)
+		// A cancelled or deadline-exceeded caller context says nothing about
+		// upstream health; recording it as a failure lets a batch abort (e.g.
+		// consecutive-failure cutoff or process shutdown) trip the breaker and
+		// lock out the host for the next scheduled task.
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			g.record(key, false)
+		}
 		g.releaseProbe(key, probe)
 		return nil, err
 	}

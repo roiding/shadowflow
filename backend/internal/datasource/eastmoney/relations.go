@@ -79,6 +79,12 @@ func (c *Client) FetchBoardQuotes(ctx context.Context, rankType graymarket.RankT
 				FetchedAt: fetchedAt, Available: available,
 			})
 		}
+		// Eastmoney returns rc=102 for pages beyond the declared total. Stop as
+		// soon as the total is reached, or an exactly page-aligned board count
+		// would request one page too many and fail the whole fetch.
+		if expectedTotal > 0 && len(result) >= expectedTotal {
+			break
+		}
 		if len(rows) < c.pageSize {
 			break
 		}
@@ -238,6 +244,12 @@ func (c *Client) FetchBoardCatalog(ctx context.Context, boardType graymarket.Boa
 			seen[code] = struct{}{}
 			result = append(result, graymarket.Board{Code: code, Name: optionalString(row, "f14"), Type: boardType, SourceRank: len(result) + 1})
 		}
+		// Eastmoney returns rc=102 for pages beyond the declared total. Stop as
+		// soon as the total is reached, or an exactly page-aligned catalog would
+		// request one page too many and fail the whole fetch.
+		if expectedTotal > 0 && len(result) >= expectedTotal {
+			break
+		}
 		if len(rows) < c.pageSize {
 			break
 		}
@@ -316,8 +328,13 @@ func (c *Client) FetchBoardConstituents(ctx context.Context, board graymarket.Bo
 	if len(result) == 0 {
 		return nil, fmt.Errorf("constituent list for %s is empty", board.Code)
 	}
+	// Completeness is judged on raw source rows, not unique constituents:
+	// Eastmoney's declared total counts repeated rows (observed on real
+	// boards, see TestFetchBoardConstituentsDeduplicatesRepeatedRows), so a
+	// deduplicated count may legitimately fall short of the total.
 	if rawRows < expectedTotal {
-		return nil, fmt.Errorf("incomplete constituent list for %s: expected at least %d source rows, got %d", board.Code, expectedTotal, rawRows)
+		return nil, fmt.Errorf("incomplete constituent list for %s: expected at least %d source rows, got %d (%d unique)",
+			board.Code, expectedTotal, rawRows, len(result))
 	}
 	return result, nil
 }
@@ -365,8 +382,19 @@ func (c *Client) fetchQuotePage(ctx context.Context, path string, params url.Val
 			}
 			break
 		}
+		// f14 carries Chinese board/stock names; run the payload through the
+		// same encoding detection as the push2 path so a GB-encoded response
+		// cannot land in the database as mojibake.
+		decoded, _, decodeErr := decodeJSON(body, response.Header.Get("Content-Type"))
+		if decodeErr != nil {
+			fallbackErr = errors.Join(fallbackErr, fmt.Errorf("%s: %w", baseURL, decodeErr))
+			if index+1 < len(c.quoteBaseURLs) {
+				continue
+			}
+			break
+		}
 		var payload quoteResponse
-		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder := json.NewDecoder(bytes.NewReader(decoded))
 		decoder.UseNumber()
 		if err := decoder.Decode(&payload); err != nil {
 			fallbackErr = errors.Join(fallbackErr, fmt.Errorf("%s returned invalid JSON: %w", baseURL, err))

@@ -52,6 +52,7 @@ type Scheduler struct {
 	mu        sync.Mutex
 	running   map[string]bool
 	lastKeys  map[string]struct{}
+	jobsWG    sync.WaitGroup
 	options   Options
 }
 
@@ -104,6 +105,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			// Wait for in-flight job goroutines so they can persist their final
+			// job status before the caller closes the store. Their contexts are
+			// already cancelled, so this returns promptly.
+			s.jobsWG.Wait()
 			return
 		case now := <-ticker.C:
 			current := now.In(s.location)
@@ -227,7 +232,9 @@ func (s *Scheduler) startJob(ctx context.Context, kind string, current time.Time
 		s.release(lane, key, current)
 		return false
 	}
+	s.jobsWG.Add(1)
 	go func() {
+		defer s.jobsWG.Done()
 		defer s.release(lane, key, current)
 		s.runJob(ctx, claimed, current)
 	}()
@@ -264,7 +271,9 @@ func (s *Scheduler) claimAndLaunch(ctx context.Context, candidate ScheduledJob, 
 		s.release(lane, key, now)
 		return false
 	}
+	s.jobsWG.Add(1)
 	go func() {
+		defer s.jobsWG.Done()
 		defer s.release(lane, key, now)
 		s.runJob(ctx, claimed, now)
 	}()
