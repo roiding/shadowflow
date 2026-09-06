@@ -563,6 +563,14 @@ func (s *Server) latestRank(w http.ResponseWriter, r *http.Request) {
 	if len(records) > 0 {
 		meta["snapshot_at"] = records[0].SnapshotAt
 		meta["trade_date"] = records[0].TradeDate
+		// Anchor the comparison to the displayed snapshot, not the wall clock
+		// or the last archived date (which could skip a missing trading day).
+		if date, err := time.ParseInLocation("2006-01-02", records[0].TradeDate, s.location); err == nil {
+			previous := s.calendar.PreviousTradingDay(date)
+			if s.calendar.IsTradingDay(previous) {
+				meta["previous_trade_date"] = previous.Format("2006-01-02")
+			}
+		}
 	}
 	if len(records) > 0 && records[0].SnapshotAt.In(s.location).Format("15:04") == "15:00" {
 		meta["snapshot_kind"] = graymarket.SnapshotDailyClose

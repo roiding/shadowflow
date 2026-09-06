@@ -1,4 +1,6 @@
 import { getToken, notifyUnauthorized } from '../auth'
+import type { components } from './schema'
+import { loadCompleteBoardClose } from './boardClose'
 import type { ApiEnvelope, ArchiveRevision, BoardStockQuote, CollectionRun, DailyFeature, FutureReturnLabel, FocusResult, FocusScanRequest, PageMeta, QualityMeta, QualitySummary, RankRecord, RankType, StockResearchPoint, SystemStatus } from './types'
 
 const REQUEST_TIMEOUT_MS = 25_000
@@ -46,7 +48,7 @@ async function request<T, M = Record<string, unknown>>(path: string, init?: Requ
 }
 
 export const api = {
-  latest: (type: Exclude<RankType, 'stock'>, signal?: AbortSignal) => request<RankRecord[]>(`/api/v1/ranks/latest?type=${type}`, { signal }),
+  latest: (type: Exclude<RankType, 'stock'>, signal?: AbortSignal) => request<RankRecord[], components['schemas']['LatestRankMeta']>(`/api/v1/ranks/latest?type=${type}`, { signal }),
   rankAt: (type: Exclude<RankType, 'stock'>, date: string, at: string, signal?: AbortSignal) =>
     request<RankRecord[]>(`/api/v1/ranks?type=${type}&trade_date=${date}&at=${at}`, { signal }),
   intraday: (type: Exclude<RankType, 'stock'>, code: string, date: string, signal?: AbortSignal) =>
@@ -63,6 +65,11 @@ export const api = {
     if (revisionId) params.set('revision_id', revisionId)
     return request<RankRecord[], PageMeta>(`/api/v1/ranks/daily-close?${params}`, { signal })
   },
+  boardDailyClose: (type: Exclude<RankType, 'stock'>, date: string, signal?: AbortSignal) =>
+    loadCompleteBoardClose(type, date, (page) => {
+      const params = new URLSearchParams({ type, trade_date: date, sort: 'code', direction: 'asc', page: String(page), page_size: '200' })
+      return request<RankRecord[], PageMeta>(`/api/v1/ranks/daily-close?${params}`, { signal })
+    }),
   quality: (date: string, signal?: AbortSignal) => request<QualitySummary[], QualityMeta>(`/api/v1/research/quality?trade_date=${date}`, { signal }),
   revisions: (date: string) => request<ArchiveRevision[], { trade_date: string; count: number; current_revision_id?: string }>(`/api/v1/research/revisions?trade_date=${date}`),
   features: (date: string, type?: RankType, revisionId?: string) => {

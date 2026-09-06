@@ -94,6 +94,7 @@ export interface StockArchiveQuality {
   expected_stocks: number
   expected_points: number
   expected_kline_stocks: number
+  kline_stocks: number
   money_rows: number
   kline_rows: number
   daily_close_rows: number

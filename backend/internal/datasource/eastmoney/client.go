@@ -24,6 +24,7 @@ import (
 type Client struct {
 	baseURL              string
 	darkTradeTickBaseURL string
+	stockKlineBaseURL    string
 	stockTrendBaseURLs   []string
 	quoteBaseURLs        []string
 	httpClient           *http.Client
@@ -36,6 +37,7 @@ func NewClient(baseURL string, httpClient *http.Client, pageSize int) *Client {
 	return &Client{
 		baseURL:              baseURL,
 		darkTradeTickBaseURL: "https://quotederivates.eastmoney.com/datacenter/darktradetick",
+		stockKlineBaseURL:    "https://push2his.eastmoney.com/api/qt/stock/kline/get",
 		stockTrendBaseURLs: []string{
 			"https://push2delay.eastmoney.com/api/qt/stock/trends2/get",
 			"https://push2his.eastmoney.com/api/qt/stock/trends2/get",
@@ -47,6 +49,13 @@ func NewClient(baseURL string, httpClient *http.Client, pageSize int) *Client {
 		pageSize:           pageSize,
 		stockKlineRetryGap: time.Second,
 	}
+}
+
+func (c *Client) WithStockKlineBaseURL(baseURL string) *Client {
+	if value := strings.TrimSpace(baseURL); value != "" {
+		c.stockKlineBaseURL = value
+	}
+	return c
 }
 
 func (c *Client) WithUpstreamGuard(guard *upstream.Guard) *Client {

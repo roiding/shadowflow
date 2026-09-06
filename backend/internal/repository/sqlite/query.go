@@ -585,10 +585,11 @@ FROM research_quality WHERE trade_date=? ORDER BY rank_type`, tradeDate)
 func (s *Store) StockArchiveQuality(ctx context.Context, tradeDate string) (repository.StockArchiveQuality, error) {
 	quality := repository.StockArchiveQuality{TradeDate: tradeDate, ExpectedPoints: 48}
 	var moneyArchivedAt, klineArchivedAt sql.NullString
-	err := s.readDB().QueryRowContext(ctx, `SELECT expected_stocks,expected_points,expected_kline_stocks,money_rows,kline_rows,
-daily_close_rows,daily_kline_rows,money_archived_at,kline_archived_at
-FROM stock_archive_quality WHERE trade_date=?`, tradeDate).Scan(&quality.ExpectedStocks, &quality.ExpectedPoints,
-		&quality.ExpectedKlineStocks, &quality.MoneyRows, &quality.KlineRows, &quality.DailyCloseRows,
+	err := s.readDB().QueryRowContext(ctx, `SELECT expected_stocks,expected_points,expected_kline_stocks,
+(SELECT count(*) FROM (SELECT market,code FROM stock_research_5m WHERE trade_date=? GROUP BY market,code HAVING sum(kline_available)=48)),
+money_rows,kline_rows,daily_close_rows,daily_kline_rows,money_archived_at,kline_archived_at
+FROM stock_archive_quality WHERE trade_date=?`, tradeDate, tradeDate).Scan(&quality.ExpectedStocks, &quality.ExpectedPoints,
+		&quality.ExpectedKlineStocks, &quality.KlineStocks, &quality.MoneyRows, &quality.KlineRows, &quality.DailyCloseRows,
 		&quality.DailyKlineRows, &moneyArchivedAt, &klineArchivedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return quality, nil

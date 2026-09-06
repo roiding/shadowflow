@@ -16,5 +16,7 @@ test('generated API schema tracks the OpenAPI contract', () => {
     assert.ok(schema.includes(`"${path}"`), `generated schema is missing ${path}`)
   }
   assert.match(openapi, /BearerAuth:/)
+  assert.match(schema, /LatestRankMeta:/)
+  assert.match(schema, /previous_trade_date\?: string/)
   assert.match(schema, /quote_status\?: "ready" \| "warming" \| "stale" \| "unavailable"/)
 })

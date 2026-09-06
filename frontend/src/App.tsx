@@ -6,6 +6,8 @@ import { UNAUTHORIZED_EVENT } from './auth'
 import { TokenGate } from './TokenGate'
 import type { BoardStockQuote, FocusResult, FocusScanRequest, RankRecord, RankType, SystemStatus } from './api/types'
 import { continuousMetricValues } from './continuousSeries'
+import { compareControlRanks, compareMonitorRecords, controlRankChangeDisplay, controlRate, derivedBoardTurnover } from './monitorRankings'
+import type { ControlRankChange, MonitorSortKey } from './monitorRankings'
 import { FocusView } from './views/FocusView'
 import { QualityView } from './views/QualityView'
 
@@ -21,8 +23,8 @@ const CONSTITUENT_PAGE_SIZE = 25
 
 const BOARD_LABELS: Record<BoardType, string> = { industry: '行业', concept: '概念' }
 const METRIC_LABELS: Record<Metric, string> = {
-  dark_money: '暗盘资金估算', regular_money: '明盘资金', main_money_inflow: '主力净流入',
-  dark_activity: '暗盘活跃度', dark_inflow_ratio: '暗盘流入占比', change_pct: '涨跌幅', rank: '榜单排名', up_count: '上涨家数',
+  dark_money: '暗盘资金', regular_money: '明盘资金', main_money_inflow: '主力净流入（含暗盘）',
+  dark_activity: '暗盘活跃度', dark_inflow_ratio: '暗盘流入家数比例', change_pct: '涨跌幅', rank: '榜单排名', up_count: '上涨家数',
 }
 const METRICS: Metric[] = ['dark_money', 'regular_money', 'main_money_inflow', 'dark_activity', 'dark_inflow_ratio', 'change_pct', 'rank', 'up_count']
 const RESEARCH_METRICS: Metric[] = ['dark_money', 'regular_money', 'main_money_inflow']
@@ -133,7 +135,7 @@ function App() {
   const [selectedCode, setSelectedCode] = useState('')
   const [mobilePane, setMobilePane] = useState<'ranks' | 'trend'>('ranks')
   const [query, setQuery] = useState('')
-  const [sort, setSort] = useState<SortState<keyof RankRecord>>({ key: 'rank', direction: 'asc' })
+  const [sort, setSort] = useState<SortState<MonitorSortKey>>({ key: 'rank', direction: 'asc' })
   const [metric, setMetric] = useState<Metric>('dark_money')
   const [secondaryMetric, setSecondaryMetric] = useState<Metric | 'none'>('main_money_inflow')
   const [autoRefresh, setAutoRefresh] = useState(true)
@@ -157,13 +159,25 @@ function App() {
   // gate all queries on !authRequired.
   const statusQuery = useQuery({ queryKey: ['system-status'], queryFn: async ({ signal }) => (await api.status(signal)).data as SystemStatus, enabled: !authRequired, refetchInterval: refreshInterval, refetchIntervalInBackground: false })
   const latestTradingDay = statusQuery.data?.latest_trading_day ?? ''
-  const rankQuery = useQuery({ queryKey: ['latest', boardType], queryFn: async ({ signal }) => { const started = performance.now(); const result = await api.latest(boardType, signal); return { records: result.data ?? [], requestMs: Math.round(performance.now() - started) } }, enabled: !authRequired, refetchInterval: refreshInterval, refetchIntervalInBackground: false })
+  const rankQuery = useQuery({ queryKey: ['latest', boardType], queryFn: async ({ signal }) => { const started = performance.now(); const result = await api.latest(boardType, signal); return { records: result.data ?? [], previousDate: result.meta?.previous_trade_date ?? '', requestMs: Math.round(performance.now() - started) } }, enabled: !authRequired, refetchInterval: refreshInterval, refetchIntervalInBackground: false })
   const records = useMemo(() => rankQuery.data?.records ?? [], [rankQuery.data?.records])
   const selected = records.find((item) => item.code === selectedCode) ?? records[0]
   const selectedId = selected?.code ?? ''
   const monitorDate = selected?.trade_date ?? records[0]?.trade_date ?? latestTradingDay
   const staleSnapshot = Boolean(records.length && latestTradingDay && monitorDate !== latestTradingDay)
   const nonTradingToday = statusQuery.data?.trading_day === false
+  const previousDate = rankQuery.data?.previousDate ?? ''
+  const previousCloseQuery = useQuery({
+    queryKey: ['monitor-previous-close', boardType, previousDate],
+    queryFn: ({ signal }) => api.boardDailyClose(boardType, previousDate, signal),
+    enabled: !authRequired && view === 'monitor' && records.length > 0 && Boolean(previousDate),
+    staleTime: 5 * 60_000,
+    // Retry a late/missing archive during normal refreshes, but do not reload
+    // a complete prior-day universe on every minute tick.
+    refetchInterval: (query) => !query.state.data?.length || query.state.status === 'error' ? refreshInterval : false,
+    refetchIntervalInBackground: false,
+  })
+  const rankChanges = useMemo(() => compareControlRanks(records, previousCloseQuery.isError ? undefined : previousCloseQuery.data, boardType), [records, previousCloseQuery.data, previousCloseQuery.isError, boardType])
   const intradayQuery = useQuery({
     queryKey: ['intraday', boardType, selectedId, monitorDate],
     queryFn: async ({ signal }) => (await api.intraday(boardType, selectedId, monitorDate, signal)).data ?? [],
@@ -245,16 +259,12 @@ function App() {
 
   const visibleRecords = useMemo(() => {
     const normalized = query.trim().toLowerCase()
-    return records.filter((item) => !normalized || item.name.toLowerCase().includes(normalized) || item.code.toLowerCase().includes(normalized)).sort((a, b) => {
-      const left = a[sort.key] as string | number
-      const right = b[sort.key] as string | number
-      const result = typeof left === 'string' ? left.localeCompare(String(right), 'zh-CN') : sortableNumber(left) - sortableNumber(right)
-      return sort.direction === 'asc' ? result : -result
-    })
-  }, [records, query, sort])
+    return records.filter((item) => !normalized || item.name.toLowerCase().includes(normalized) || item.code.toLowerCase().includes(normalized))
+      .sort((a, b) => compareMonitorRecords(a, b, sort, rankChanges))
+  }, [records, query, sort, rankChanges])
 
-  const onSort = (key: keyof RankRecord) => setSort((current) => ({ key, direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc' }))
-  const refreshAll = () => { void rankQuery.refetch(); void statusQuery.refetch(); if (selectedId) { void intradayQuery.refetch(); void boardQuotesQuery.refetch() } }
+  const onSort = (key: MonitorSortKey) => setSort((current) => ({ key, direction: current.key === key ? (current.direction === 'asc' ? 'desc' : 'asc') : key === 'control_rank_change' || key === 'control_rate' ? 'desc' : 'asc' }))
+  const refreshAll = () => { void rankQuery.refetch(); void statusQuery.refetch(); if (previousDate && view === 'monitor' && !authRequired) void previousCloseQuery.refetch(); if (selectedId) { void intradayQuery.refetch(); void boardQuotesQuery.refetch() } }
   const historicalSelected = (historyRanksQuery.data ?? []).find((item) => item.code === historyCode) ?? historyRanksQuery.data?.[0]
   const stockRecords = stocksQuery.data?.data ?? []
   const stockMeta = stocksQuery.data?.meta
@@ -284,7 +294,7 @@ function App() {
         <button className={view === 'stocks' ? 'selected' : ''} onClick={() => setView('stocks')}><Table2 size={16} />收盘个股</button>
         <button className={view === 'quality' ? 'selected' : ''} onClick={() => setView('quality')}><Server size={16} />采集质量</button>
       </div>
-      {view === 'monitor' && <MonitorView boardType={boardType} setBoardType={setBoardType} records={visibleRecords} allRecords={records} selected={selected} selectedCode={selectedId} setSelectedCode={setSelectedCode} query={query} setQuery={setQuery} onSort={onSort} sort={sort} metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} series={intradayQuery.data ?? []} loading={intradayQuery.isLoading} rankError={rankQuery.error} seriesError={intradayQuery.error} requestMs={rankQuery.data?.requestMs} status={statusQuery.data} tradeDate={monitorDate} staleSnapshot={staleSnapshot} mobilePane={mobilePane} setMobilePane={setMobilePane} stocks={boardQuotesQuery.data?.data ?? []} stocksLoading={boardQuotesQuery.isLoading || boardQuotesQuery.isFetching} stocksError={boardQuotesQuery.error} quoteMeta={boardQuotesQuery.data?.meta} />}
+      {view === 'monitor' && <MonitorView previousDate={previousDate} rankChanges={rankChanges} previousLoading={previousCloseQuery.isLoading} previousError={previousCloseQuery.error} previousAvailable={Boolean(previousCloseQuery.data?.length) && !previousCloseQuery.isError} boardType={boardType} setBoardType={setBoardType} records={visibleRecords} allRecords={records} selected={selected} selectedCode={selectedId} setSelectedCode={setSelectedCode} query={query} setQuery={setQuery} onSort={onSort} sort={sort} metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} series={intradayQuery.data ?? []} loading={intradayQuery.isLoading} rankError={rankQuery.error} seriesError={intradayQuery.error} requestMs={rankQuery.data?.requestMs} status={statusQuery.data} tradeDate={monitorDate} staleSnapshot={staleSnapshot} mobilePane={mobilePane} setMobilePane={setMobilePane} stocks={boardQuotesQuery.data?.data ?? []} stocksLoading={boardQuotesQuery.isLoading || boardQuotesQuery.isFetching} stocksError={boardQuotesQuery.error} quoteMeta={boardQuotesQuery.data?.meta} />}
       {view === 'focus' && <FocusView request={focusRequest} onScan={(value) => { setFocusRequest(value); focusScan.mutate(value) }} result={focusScan.data} loading={focusScan.isPending} error={focusScan.error} />}
       {view === 'history' && <HistoryView boardType={boardType} setBoardType={setBoardType} selected={historicalSelected} historyRanks={historyRanksQuery.data ?? []} historyCode={historyCode} setHistoryCode={setHistoryCode} historyDate={historyDate} setHistoryDate={setHistoryDate} historyAt={historyAt} setHistoryAt={setHistoryAt} metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} series={trendQuery.data ?? []} loading={trendQuery.isLoading || historyRanksQuery.isLoading} error={trendQuery.error ?? historyRanksQuery.error} from={historyFrom} to={historyTo} setFrom={setHistoryFrom} setTo={setHistoryTo} />}
       {view === 'stocks' && <StockView date={stockDate} setDate={(value) => { setStockDate(value); setStockPage(1) }} records={stockRecords} total={stockMeta?.total ?? 0} query={stockQuery} setQuery={setStockQuery} sort={stockSort} onSort={onStockSort} page={stockPage} pages={stockMeta?.pages ?? 0} setPage={setStockPage} loading={stocksQuery.isLoading || stocksQuery.isFetching} error={stocksQuery.error} />}
@@ -299,11 +309,12 @@ function MarketStatus({ status }: { status?: SystemStatus }) {
 }
 
 type MonitorProps = {
-	  boardType: BoardType; setBoardType: (value: BoardType) => void; records: RankRecord[]; allRecords: RankRecord[]; selected?: RankRecord; selectedCode: string; setSelectedCode: (value: string) => void; query: string; setQuery: (value: string) => void; onSort: (key: keyof RankRecord) => void; sort: SortState<keyof RankRecord>; metric: Metric; setMetric: (value: Metric) => void; secondaryMetric: Metric | 'none'; setSecondaryMetric: (value: Metric | 'none') => void; series: RankRecord[]; loading: boolean; rankError: Error | null; seriesError: Error | null; requestMs?: number; status?: SystemStatus; tradeDate: string; staleSnapshot: boolean; mobilePane: 'ranks' | 'trend'; setMobilePane: (value: 'ranks' | 'trend') => void; stocks: BoardStockQuote[]; stocksLoading: boolean; stocksError: Error | null; quoteMeta?: { as_of: string; quote_source: string; quote_available: boolean; quoted_count?: number; quote_error?: string; quote_status: string; stale: boolean; cache_age_ms?: number; dark_data_available: boolean; dark_data_count: number }
+  previousDate: string; rankChanges: ReadonlyMap<string, ControlRankChange>; previousLoading: boolean; previousError: Error | null; previousAvailable: boolean
+	  boardType: BoardType; setBoardType: (value: BoardType) => void; records: RankRecord[]; allRecords: RankRecord[]; selected?: RankRecord; selectedCode: string; setSelectedCode: (value: string) => void; query: string; setQuery: (value: string) => void; onSort: (key: MonitorSortKey) => void; sort: SortState<MonitorSortKey>; metric: Metric; setMetric: (value: Metric) => void; secondaryMetric: Metric | 'none'; setSecondaryMetric: (value: Metric | 'none') => void; series: RankRecord[]; loading: boolean; rankError: Error | null; seriesError: Error | null; requestMs?: number; status?: SystemStatus; tradeDate: string; staleSnapshot: boolean; mobilePane: 'ranks' | 'trend'; setMobilePane: (value: 'ranks' | 'trend') => void; stocks: BoardStockQuote[]; stocksLoading: boolean; stocksError: Error | null; quoteMeta?: { as_of: string; quote_source: string; quote_available: boolean; quoted_count?: number; quote_error?: string; quote_status: string; stale: boolean; cache_age_ms?: number; dark_data_available: boolean; dark_data_count: number }
 }
 
 function MonitorView(props: MonitorProps) {
-	  const { boardType, setBoardType, records, allRecords, selected, selectedCode, setSelectedCode, query, setQuery, onSort, sort, metric, setMetric, secondaryMetric, setSecondaryMetric, series, loading, rankError, seriesError, requestMs, status, tradeDate, staleSnapshot, mobilePane, setMobilePane, stocks, stocksLoading, stocksError, quoteMeta } = props
+	  const { previousDate, rankChanges, previousLoading, previousError, previousAvailable, boardType, setBoardType, records, allRecords, selected, selectedCode, setSelectedCode, query, setQuery, onSort, sort, metric, setMetric, secondaryMetric, setSecondaryMetric, series, loading, rankError, seriesError, requestMs, status, tradeDate, staleSnapshot, mobilePane, setMobilePane, stocks, stocksLoading, stocksError, quoteMeta } = props
   const nonTradingDay = status?.trading_day === false
   const [page, setPage] = useState(1)
   const pages = Math.ceil(records.length / MONITOR_PAGE_SIZE)
@@ -319,9 +330,47 @@ function MonitorView(props: MonitorProps) {
       <div className="segmented"><button className={boardType === 'industry' ? 'active' : ''} onClick={() => setBoardType('industry')}>行业</button><button className={boardType === 'concept' ? 'active' : ''} onClick={() => setBoardType('concept')}>概念</button></div>
       <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称或代码" /><kbd>/</kbd></label>
       {rankError && <InlineNotice kind="error" text="榜单读取失败，请检查后端服务。" />}
-      <div className="table-wrap"><table className="rank-table"><thead><tr><SortHead label="排名" sortKey="rank" sort={sort} onSort={onSort} /><SortHead label="板块" sortKey="name" sort={sort} onSort={onSort} /><SortHead label="代码" sortKey="code" sort={sort} onSort={onSort} /><SortHead label="暗盘资金" sortKey="dark_money" sort={sort} onSort={onSort} /><SortHead label="主力净流入" sortKey="main_money_inflow" sort={sort} onSort={onSort} /><SortHead label="涨跌" sortKey="change_pct" sort={sort} onSort={onSort} /><SortHead label="活跃度" sortKey="dark_activity" sort={sort} onSort={onSort} /></tr></thead><tbody>{pageRecords.map((record) => <tr key={record.code} className={selectedCode === record.code ? 'selected' : ''} onClick={() => { setSelectedCode(record.code); setMobilePane('trend') }}><td><span className={`rank-number rank-${record.rank}`}>{record.rank}</span></td><td><strong>{record.name || '未命名'}</strong><small>{record.leader_name ? `领涨 ${record.leader_name}` : '板块'}</small></td><td className="muted">{record.code}</td><td className={signedClass(record.dark_money)}>{formatMoney(record.dark_money)}</td><td className={signedClass(record.main_money_inflow)}>{formatMoney(record.main_money_inflow)}</td><td className={signedClass(record.change_pct)}>{record.change_pct > 0 ? '+' : ''}{formatNumber(record.change_pct * 100, 2)}%</td><td>{formatNumber(record.dark_activity * 100, 2)}%</td></tr>)}</tbody></table>{!records.length && <EmptyState icon={<Table2 size={22} />} title="暂无榜单数据" detail="后端将在交易时段采集完整行业和概念榜单。" />}</div>
+      <div className="rank-comparison-note">
+        <span>控盘变动：{tradeDate || '当前截面'} 最新 vs {previousDate ? `${previousDate} 收盘` : '上一个交易日收盘'}</span>
+        <span>按全量{BOARD_LABELS[boardType]}控盘度降序比较；同值并列，搜索与分页不影响名次。首列仍为暗盘榜原始排名。</span>
+      </div>
+      {previousLoading && <InlineNotice kind="info" text="正在读取上一个交易日完整收盘榜…" />}
+      {previousError && <InlineNotice kind="warning" text="昨收榜单读取失败或不完整，暂不展示控盘变动；点击立即刷新可重试。" />}
+      {!previousLoading && !previousError && records.length > 0 && !previousAvailable && <InlineNotice kind="info" text={previousDate ? `${previousDate} 暂无完整收盘榜，控盘变动显示 --，不回退到更早日期。` : '暂未取得上一交易日日期，控盘变动显示 --。'} />}
+      <div className="table-wrap"><table className="rank-table"><thead><tr>
+        <SortHead label="排名" sortKey="rank" sort={sort} onSort={onSort} />
+        <SortHead label="控盘变动" sortKey="control_rank_change" sort={sort} onSort={onSort} />
+        <SortHead label="板块/概念" sortKey="name" sort={sort} onSort={onSort} />
+        <SortHead label="代码" sortKey="code" sort={sort} onSort={onSort} />
+        <SortHead label="暗盘资金" sortKey="dark_money" sort={sort} onSort={onSort} />
+        <SortHead label="明盘资金" sortKey="regular_money" sort={sort} onSort={onSort} />
+        <SortHead label="主力净流入（含暗盘）" sortKey="main_money_inflow" sort={sort} onSort={onSort} />
+        <SortHead label="成交额" sortKey="derived_turnover" sort={sort} onSort={onSort} />
+        <SortHead label="控盘度" sortKey="control_rate" sort={sort} onSort={onSort} />
+        <SortHead label="涨跌幅" sortKey="change_pct" sort={sort} onSort={onSort} />
+        <SortHead label="暗盘活跃度" sortKey="dark_activity" sort={sort} onSort={onSort} />
+        <SortHead label="暗盘流入家数比例" sortKey="dark_inflow_ratio" sort={sort} onSort={onSort} />
+      </tr></thead><tbody>{pageRecords.map((record) => {
+        const turnover = derivedBoardTurnover(record)
+        const control = controlRate(record)
+        const change = controlRankChangeDisplay(rankChanges.get(record.code), tradeDate, previousDate, previousLoading)
+        return <tr key={record.code} className={selectedCode === record.code ? 'selected' : ''} onClick={() => { setSelectedCode(record.code); setMobilePane('trend') }}>
+          <td><span className={`rank-number rank-${record.rank}`}>{record.rank}</span></td>
+          <td className="rank-change-cell"><span className={`rank-change ${change.tone}`} title={change.title} aria-label={change.title} tabIndex={0}>{change.label}</span></td>
+          <td><strong>{record.name || '未命名'}</strong><small>{record.leader_name ? `领涨 ${record.leader_name}` : '板块'}</small></td>
+          <td className="muted">{record.code}</td>
+          <td className={signedClass(record.dark_money)}>{formatMoney(record.dark_money)}</td>
+          <td className={signedClass(record.regular_money)}>{formatMoney(record.regular_money)}</td>
+          <td className={signedClass(record.main_money_inflow)}>{formatMoney(record.main_money_inflow)}</td>
+          <td title="估算成交额 = |暗盘资金| ÷ 暗盘活跃度（原始小数）">{turnover !== null ? formatMoney(turnover) : '--'}</td>
+          <td className={control === null ? 'muted' : signedClass(control)} title="控盘度 = 主力净流入（含暗盘）÷ 估算成交额 × 100，不加百分号">{control !== null ? formatNumber(control, 2) : '--'}</td>
+          <td className={signedClass(record.change_pct)}>{record.change_pct > 0 ? '+' : ''}{formatNumber(record.change_pct * 100, 2)}%</td>
+          <td>{formatNumber(record.dark_activity * 100, 2)}%</td>
+          <td>{formatNumber(record.dark_inflow_ratio * 100, 2)}%</td>
+        </tr>
+      })}</tbody></table>{!records.length && <EmptyState icon={<Table2 size={22} />} title="暂无榜单数据" detail="后端将在交易时段采集完整行业和概念榜单。" />}</div>
       {pages > 1 && <Pagination page={page} pages={pages} setPage={setPage} />}
-      <div className="table-footer"><span><Check size={14} />来源排名保持原始顺序</span><span>{requestMs !== undefined ? `${requestMs} ms · ` : ''}筛选后 {records.length} 条</span></div>
+      <div className="table-footer"><span><Check size={14} />首列为暗盘榜原始排名</span><span>{requestMs !== undefined ? `${requestMs} ms · ` : ''}筛选后 {records.length} 条</span></div>
     </section>
     <section className={`trend-panel panel-section ${mobilePane === 'ranks' ? 'mobile-hidden' : ''}`}>
 	  <div className="section-heading trend-heading"><div><p className="eyebrow">分钟序列</p><h2>{selected?.name ?? '选择一个板块'}</h2><span className="subline">{selected ? `${selected.code} · ${BOARD_LABELS[boardType]} · ${tradeDate} 采集至 ${formatTime(series.at(-1)?.snapshot_at ?? selected.snapshot_at)}${series.at(-1) && shanghaiTime(series.at(-1)!.snapshot_at) === '15:00' ? '（日终快照）' : ''}` : '点击左侧榜单查看当日连续序列'}</span></div><ExportLink href={selected ? api.exportURL(boardType, selected.code, tradeDate, tradeDate) : undefined} title="导出研究数据"><Download size={15} />导出</ExportLink></div>
@@ -370,11 +419,11 @@ function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error,
     {error && <InlineNotice kind="error" text="成分股读取失败，请稍后重试。" />}
     <label className="constituent-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索成分股名称或代码" /></label>
     <div className={`constituent-table-wrap ${loading ? 'is-loading' : ''}`}>
-      {loading && !stocks.length ? <div className="loading-block">正在读取成分股行情…</div> : <table className="constituent-table"><thead><tr><SortHead label="股票" sortKey="stock_name" sort={sort} onSort={onSort} /><SortHead label="代码" sortKey="stock_code" sort={sort} onSort={onSort} /><SortHead label="暗盘排名" sortKey="dark_rank" sort={sort} onSort={onSort} /><SortHead label="暗盘资金" sortKey="dark_money" sort={sort} onSort={onSort} /><SortHead label="主力净流入" sortKey="main_money_inflow" sort={sort} onSort={onSort} /><SortHead label="活跃度" sortKey="dark_activity" sort={sort} onSort={onSort} /><SortHead label="最新价" sortKey="latest_price" sort={sort} onSort={onSort} /><SortHead label="涨跌" sortKey="change_pct" sort={sort} onSort={onSort} /><SortHead label="成交额" sortKey="turnover" sort={sort} onSort={onSort} /></tr></thead><tbody>{pageStocks.map((stock) => <tr key={stock.stock_code}><td><strong>{stock.stock_name || '未命名'}</strong></td><td className="stock-code">{stock.stock_code}</td><td>{stock.dark_data_available ? stock.dark_rank : '--'}</td><td className={stock.dark_data_available ? signedClass(stock.dark_money) : 'muted'}>{stock.dark_data_available ? formatMoney(stock.dark_money) : '--'}</td><td className={stock.dark_data_available ? signedClass(stock.main_money_inflow) : 'muted'}>{stock.dark_data_available ? formatMoney(stock.main_money_inflow) : '--'}</td><td>{stock.dark_data_available ? `${formatNumber(stock.dark_activity * 100, 2)}%` : '--'}</td><td>{stock.quote_available ? formatNumber(stock.latest_price, 2) : '--'}</td><td className={stock.quote_available ? signedClass(stock.change_pct) : 'muted'}>{stock.quote_available ? `${stock.change_pct > 0 ? '+' : ''}${formatNumber(stock.change_pct * 100, 2)}%` : '--'}</td><td>{stock.quote_available ? formatMoney(stock.turnover) : '--'}</td></tr>)}</tbody></table>}
+      {loading && !stocks.length ? <div className="loading-block">正在读取成分股行情…</div> : <table className="constituent-table"><thead><tr><SortHead label="股票" sortKey="stock_name" sort={sort} onSort={onSort} /><SortHead label="代码" sortKey="stock_code" sort={sort} onSort={onSort} /><SortHead label="暗盘排名" sortKey="dark_rank" sort={sort} onSort={onSort} /><SortHead label="暗盘资金" sortKey="dark_money" sort={sort} onSort={onSort} /><SortHead label="主力净流入（含暗盘）" sortKey="main_money_inflow" sort={sort} onSort={onSort} /><SortHead label="暗盘活跃度" sortKey="dark_activity" sort={sort} onSort={onSort} /><SortHead label="最新价" sortKey="latest_price" sort={sort} onSort={onSort} /><SortHead label="涨跌幅" sortKey="change_pct" sort={sort} onSort={onSort} /><SortHead label="成交额" sortKey="turnover" sort={sort} onSort={onSort} /></tr></thead><tbody>{pageStocks.map((stock) => <tr key={stock.stock_code}><td><strong>{stock.stock_name || '未命名'}</strong></td><td className="stock-code">{stock.stock_code}</td><td>{stock.dark_data_available ? stock.dark_rank : '--'}</td><td className={stock.dark_data_available ? signedClass(stock.dark_money) : 'muted'}>{stock.dark_data_available ? formatMoney(stock.dark_money) : '--'}</td><td className={stock.dark_data_available ? signedClass(stock.main_money_inflow) : 'muted'}>{stock.dark_data_available ? formatMoney(stock.main_money_inflow) : '--'}</td><td>{stock.dark_data_available ? `${formatNumber(stock.dark_activity * 100, 2)}%` : '--'}</td><td>{stock.quote_available ? formatNumber(stock.latest_price, 2) : '--'}</td><td className={stock.quote_available ? signedClass(stock.change_pct) : 'muted'}>{stock.quote_available ? `${stock.change_pct > 0 ? '+' : ''}${formatNumber(stock.change_pct * 100, 2)}%` : '--'}</td><td>{stock.quote_available ? formatMoney(stock.turnover) : '--'}</td></tr>)}</tbody></table>}
       {!loading && !visibleStocks.length && <EmptyState icon={<Table2 size={19} />} title="暂无成分股" detail={board ? '当前截面日没有可展示的归属关系。' : '选择板块后查看成分股。'} />}
     </div>
     {pages > 1 && <Pagination page={page} pages={pages} setPage={setPage} compact />}
-    <div className="constituent-footer"><span>{visibleStocks.length}{query ? ` / ${stocks.length}` : ''} 只</span><span>{darkReady ? `暗盘榜 ${quoteMeta?.dark_data_count ?? 0} 只 · 活跃度 = |暗盘资金| / 成交额` : quoteReady ? '行情来自东方财富最新快照' : '行情服务未返回数据'}</span></div>
+      <div className="constituent-footer"><span>{visibleStocks.length}{query ? ` / ${stocks.length}` : ''} 只</span><span>{darkReady ? `暗盘榜 ${quoteMeta?.dark_data_count ?? 0} 只 · 暗盘活跃度 = |暗盘资金| / 成交额` : quoteReady ? '行情来自东方财富最新快照' : '行情服务未返回数据'}</span></div>
   </section>
 }
 

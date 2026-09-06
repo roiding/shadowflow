@@ -46,8 +46,12 @@ func TestFetchMoney5mReturns48RevisedPoints(t *testing.T) {
 func TestFetchStockKlines5mReturnsCompletedStocksWithBatchError(t *testing.T) {
 	var failedRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "/trends2/") {
-			t.Fatalf("frozen five-minute endpoint was requested: %s", r.URL.Path)
+		if !strings.Contains(r.URL.Path, "/trends2/") && !strings.Contains(r.URL.Path, "/kline/get") {
+			t.Fatalf("unexpected endpoint was requested: %s", r.URL.Path)
+		}
+		if strings.Contains(r.URL.Path, "/kline/get") {
+			_, _ = w.Write([]byte("{"))
+			return
 		}
 		if r.URL.Query().Get("secid") == "0.000001" {
 			failedRequests.Add(1)
@@ -65,7 +69,8 @@ func TestFetchStockKlines5mReturnsCompletedStocksWithBatchError(t *testing.T) {
 			{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Market: 1, Code: "600001", OpenPrice: 10, HighPrice: 10, LowPrice: 10, ClosePrice: 10, PreviousClose: 10, Volume: 241, Turnover: 24100, TurnoverRate: 0.01, QuoteAvailable: true},
 		}}
 	client := NewClient("unused", server.Client(), 100).
-		WithStockTrendBaseURLs([]string{server.URL + "/api/qt/stock/trends2/get"})
+		WithStockTrendBaseURLs([]string{server.URL + "/api/qt/stock/trends2/get"}).
+		WithStockKlineBaseURL(server.URL + "/api/qt/stock/kline/get")
 	client.stockKlineRetryGap = 0
 	points, err := client.FetchStockKlines5m(context.Background(), snapshot)
 	if err == nil || !strings.Contains(err.Error(), "000001") || !strings.Contains(err.Error(), "completed 1/2 stocks") {

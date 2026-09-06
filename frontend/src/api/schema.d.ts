@@ -104,7 +104,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 最新完整板块榜单 */
+        /**
+         * 最新完整板块榜单
+         * @description meta.previous_trade_date 根据当前返回快照的交易日及交易日历确定。即使该日未归档也不回退到更早日期；休市或数据滞后时以实际展示日为基准。
+         */
         get: {
             parameters: {
                 query: {
@@ -116,7 +119,7 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                200: components["responses"]["RankList"];
+                200: components["responses"]["LatestRankList"];
                 400: components["responses"]["Error"];
             };
         };
@@ -989,6 +992,27 @@ export interface components {
             rejections_truncated?: boolean;
             stats?: Record<string, never>;
         };
+        LatestRankMeta: {
+            /** @enum {string} */
+            rank_type: "industry" | "concept";
+            count: number;
+            /** @enum {string} */
+            market_status: "pre_open" | "open" | "lunch_break" | "closed";
+            /** @enum {string} */
+            snapshot_kind: "minute_work" | "daily_close";
+            /** Format: date-time */
+            snapshot_at?: string;
+            /**
+             * Format: date
+             * @description 实际返回快照的交易日
+             */
+            trade_date?: string;
+            /**
+             * Format: date
+             * @description 实际快照交易日的前一个交易日；不表示该日已归档，无当前快照时不返回
+             */
+            previous_trade_date?: string;
+        };
         RankRecord: {
             /** Format: date */
             trade_date: string;
@@ -1026,13 +1050,16 @@ export interface components {
             /** @description 原始小数，展示时乘 100 */
             amplitude?: number;
             quote_available?: boolean;
-            /** @description 暗盘、明盘及主力净流入字段是否来自有效上游数据 */
+            /** @description 暗盘、明盘及主力净流入（含暗盘）字段是否来自有效上游数据 */
             money_available?: boolean;
             /** Format: int64 */
             dark_money: number;
             /** Format: int64 */
             regular_money: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description 主力净流入（含暗盘），等于暗盘资金加明盘资金
+             */
             main_money_inflow: number;
             /** @description 原始小数，展示时乘 100 */
             dark_activity?: number;
@@ -1356,6 +1383,18 @@ export interface components {
             };
             content: {
                 "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
+        /** @description 最新完整板块榜单及比较交易日 */
+        LatestRankList: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": {
+                    data?: components["schemas"]["RankRecord"][];
+                    meta?: components["schemas"]["LatestRankMeta"];
+                };
             };
         };
         /** @description 榜单或序列 */

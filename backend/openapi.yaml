@@ -33,10 +33,11 @@ paths:
   /api/v1/ranks/latest:
     get:
       summary: 最新完整板块榜单
+      description: meta.previous_trade_date 根据当前返回快照的交易日及交易日历确定。即使该日未归档也不回退到更早日期；休市或数据滞后时以实际展示日为基准。
       parameters:
         - $ref: "#/components/parameters/BoardType"
       responses:
-        "200": { $ref: "#/components/responses/RankList" }
+        "200": { $ref: "#/components/responses/LatestRankList" }
         "400": { $ref: "#/components/responses/Error" }
   /api/v1/ranks:
     get:
@@ -444,6 +445,17 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
+    LatestRankList:
+      description: 最新完整板块榜单及比较交易日
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data:
+                type: array
+                items: { $ref: "#/components/schemas/RankRecord" }
+              meta: { $ref: "#/components/schemas/LatestRankMeta" }
     RankList:
       description: 榜单或序列
       content:
@@ -545,6 +557,17 @@ components:
               evaluation: { type: object }
         rejections_truncated: { type: boolean }
         stats: { type: object }
+    LatestRankMeta:
+      type: object
+      required: [rank_type, count, market_status, snapshot_kind]
+      properties:
+        rank_type: { type: string, enum: [industry, concept] }
+        count: { type: integer }
+        market_status: { type: string, enum: [pre_open, open, lunch_break, closed] }
+        snapshot_kind: { type: string, enum: [minute_work, daily_close] }
+        snapshot_at: { type: string, format: date-time }
+        trade_date: { type: string, format: date, description: 实际返回快照的交易日 }
+        previous_trade_date: { type: string, format: date, description: 实际快照交易日的前一个交易日；不表示该日已归档，无当前快照时不返回 }
     RankRecord:
       type: object
       required: [trade_date, snapshot_at, rank_type, rank, code, name, dark_money, regular_money, main_money_inflow]
@@ -570,10 +593,10 @@ components:
         turnover_rate: { type: number, description: 原始小数，展示时乘 100 }
         amplitude: { type: number, description: 原始小数，展示时乘 100 }
         quote_available: { type: boolean }
-        money_available: { type: boolean, description: 暗盘、明盘及主力净流入字段是否来自有效上游数据 }
+        money_available: { type: boolean, description: 暗盘、明盘及主力净流入（含暗盘）字段是否来自有效上游数据 }
         dark_money: { type: integer, format: int64 }
         regular_money: { type: integer, format: int64 }
-        main_money_inflow: { type: integer, format: int64 }
+        main_money_inflow: { type: integer, format: int64, description: 主力净流入（含暗盘），等于暗盘资金加明盘资金 }
         dark_activity: { type: number, description: 原始小数，展示时乘 100 }
         dark_inflow_ratio: { type: number, description: 原始小数，展示时乘 100 }
         up_count: { type: integer, format: int64 }

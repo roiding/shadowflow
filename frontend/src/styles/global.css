@@ -80,6 +80,12 @@ kbd { padding: 1px 5px; border: 1px solid var(--line); border-radius: 3px; color
 .rank-table td strong { display: block; font-weight: 650; color: var(--ink); }
 .rank-table td small { display: block; color: var(--muted); font-size: 10px; margin-top: 3px; }
 .muted { color: var(--muted); }
+.rank-comparison-note { display: grid; gap: 4px; margin: 0 24px 12px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.rank-comparison-note > span:first-child { color: var(--ink); }
+.rank-table td.rank-change-cell { min-width: 106px; white-space: nowrap; }
+.rank-change { display: inline-block; min-width: 36px; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.rank-change:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 2px; }
+.rank-change-new { color: var(--blue); }
 .rank-number { display: inline-grid; place-items: center; width: 23px; height: 23px; border-radius: 5px; color: var(--muted); font-weight: 700; }
 .rank-1, .rank-2, .rank-3 { background: var(--blue-soft); color: var(--blue); }
 .sort-button { display: inline-flex; align-items: center; gap: 3px; padding: 0; color: inherit; background: transparent; }

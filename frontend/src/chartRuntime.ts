@@ -11,8 +11,8 @@ type Metric = ChartMetric
 type TooltipPoint = { axisValue: string; seriesName: string; value: number; marker: string; dataIndex: number }
 
 const METRIC_LABELS: Record<Metric, string> = {
-  dark_money: '暗盘资金估算', regular_money: '明盘资金', main_money_inflow: '主力净流入',
-  dark_activity: '暗盘活跃度', dark_inflow_ratio: '暗盘流入占比', change_pct: '涨跌幅', rank: '榜单排名', up_count: '上涨家数',
+  dark_money: '暗盘资金', regular_money: '明盘资金', main_money_inflow: '主力净流入（含暗盘）',
+  dark_activity: '暗盘活跃度', dark_inflow_ratio: '暗盘流入家数比例', change_pct: '涨跌幅', rank: '榜单排名', up_count: '上涨家数',
 }
 
 function formatNumber(value: number, digits = 0) {

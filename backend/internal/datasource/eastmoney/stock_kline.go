@@ -25,6 +25,13 @@ type stockTrendResponse struct {
 	} `json:"data"`
 }
 
+type stockKlineResponse struct {
+	ReturnCode int `json:"rc"`
+	Data       *struct {
+		Klines []string `json:"klines"`
+	} `json:"data"`
+}
+
 type stockKlineResult struct {
 	points []graymarket.StockKlinePoint
 	err    error
@@ -75,7 +82,7 @@ func (c *Client) FetchStockKlines5mIncremental(ctx context.Context, snapshot gra
 					return
 				case <-limiter.C:
 				}
-				points, err := c.fetchStockKlineFromTrendsWithRetry(ctx, snapshot.TradeDate, stock)
+				points, err := c.fetchStockKlineWithRetry(ctx, snapshot.TradeDate, stock)
 				select {
 				case results <- stockKlineResult{points: points, err: err}:
 				case <-ctx.Done():
@@ -139,6 +146,25 @@ func (c *Client) FetchStockKlines5mIncremental(ctx context.Context, snapshot gra
 	return completedStocks, nil
 }
 
+func (c *Client) fetchStockKlineWithRetry(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
+	var lastErr error
+	for attempt := 1; attempt <= 4; attempt++ {
+		points, err := c.fetchStockKlineWithFallback(ctx, tradeDate, stock)
+		if err == nil {
+			return points, nil
+		}
+		lastErr = err
+		if attempt < 4 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt) * c.stockKlineRetryGap):
+			}
+		}
+	}
+	return nil, fmt.Errorf("fetch %s kline: %w", stock.Code, lastErr)
+}
+
 func (c *Client) fetchStockKlineFromTrendsWithRetry(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
 	var lastErr error
 	for attempt := 1; attempt <= 4; attempt++ {
@@ -181,6 +207,86 @@ func (c *Client) fetchStockKlineFromTrends(ctx context.Context, tradeDate string
 		}
 	}
 	return nil, combined
+}
+
+func (c *Client) fetchStockKlineWithFallback(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
+	trendPoints, trendErr := c.fetchStockKlineFromTrends(ctx, tradeDate, stock)
+	if trendErr == nil {
+		return trendPoints, nil
+	}
+	historyPoints, historyErr := c.fetchStockKlineFromHistory(ctx, tradeDate, stock)
+	if historyErr == nil {
+		return historyPoints, nil
+	}
+	return nil, errors.Join(fmt.Errorf("trends2: %w", trendErr), fmt.Errorf("historical kline: %w", historyErr))
+}
+
+func (c *Client) fetchStockKlineFromHistory(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
+	dateToken := strings.ReplaceAll(tradeDate, "-", "")
+	params := url.Values{
+		"secid": {fmt.Sprintf("%d.%s", stock.Market, stock.Code)},
+		"klt":   {"5"}, "fqt": {"0"}, "beg": {dateToken}, "end": {dateToken},
+		"fields1": {"f1,f2,f3,f4,f5,f6"},
+		"fields2": {"f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"},
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.stockKlineBaseURL+"?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", "Mozilla/5.0 ShadowFlow/0.1")
+	request.Header.Set("Referer", "https://quote.eastmoney.com/")
+	response, err := c.guard.Do(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, response.Body)
+		return nil, fmt.Errorf("upstream returned HTTP %d", response.StatusCode)
+	}
+	var payload stockKlineResponse
+	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("%w: %v", graymarket.ErrDecode, err)
+	}
+	if payload.ReturnCode != 0 || payload.Data == nil || len(payload.Data.Klines) != 48 {
+		count := 0
+		if payload.Data != nil {
+			count = len(payload.Data.Klines)
+		}
+		return nil, fmt.Errorf("expected 48 historical klines, got %d", count)
+	}
+	fetchedAt := time.Now().UTC()
+	points := make([]graymarket.StockKlinePoint, 0, 48)
+	seen := make(map[int]struct{}, 48)
+	for _, raw := range payload.Data.Klines {
+		fields, err := csv.NewReader(strings.NewReader(raw)).Read()
+		if err != nil || len(fields) != 11 {
+			return nil, fmt.Errorf("invalid historical kline row %q", raw)
+		}
+		at, err := time.ParseInLocation("2006-01-02 15:04", fields[0], snapshotLocation(stock.SnapshotAt))
+		if err != nil || at.Format("2006-01-02") != tradeDate {
+			return nil, fmt.Errorf("historical kline date mismatch %q", fields[0])
+		}
+		index, ok := researchMinuteIndexForSource(at)
+		if !ok {
+			return nil, fmt.Errorf("unexpected historical kline time %s", fields[0])
+		}
+		if _, duplicate := seen[index]; duplicate {
+			return nil, fmt.Errorf("duplicate historical kline time %s", fields[0])
+		}
+		seen[index] = struct{}{}
+		points = append(points, graymarket.StockKlinePoint{
+			TradeDate: tradeDate, SnapshotAt: at, Market: stock.Market, Code: stock.Code, Source: graymarket.KlineSourceFiveMinute,
+			OpenPrice: decimal(fields[1]), ClosePrice: decimal(fields[2]), HighPrice: decimal(fields[3]), LowPrice: decimal(fields[4]),
+			Volume: integer(fields[5]), Turnover: integer(fields[6]), Amplitude: percent(fields[7]), ChangePct: percent(fields[8]),
+			ChangeValue: decimal(fields[9]), TurnoverRate: percent(fields[10]), FetchedAt: fetchedAt,
+		})
+	}
+	if len(seen) != 48 {
+		return nil, fmt.Errorf("historical kline has %d distinct points", len(seen))
+	}
+	return points, nil
 }
 
 func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
@@ -383,4 +489,17 @@ func decimal(value string) float64 { result, _ := strconv.ParseFloat(value, 64);
 func integer(value string) int64 {
 	result, _ := strconv.ParseInt(strings.SplitN(value, ".", 2)[0], 10, 64)
 	return result
+}
+
+func percent(value string) float64 { return decimal(value) / 100 }
+
+func researchMinuteIndexForSource(value time.Time) (int, bool) {
+	minutes := value.Hour()*60 + value.Minute()
+	if minutes >= 9*60+35 && minutes <= 11*60+30 && (minutes-(9*60+35))%5 == 0 {
+		return (minutes - (9*60 + 35)) / 5, true
+	}
+	if minutes >= 13*60+5 && minutes <= 15*60 && (minutes-(13*60+5))%5 == 0 {
+		return 24 + (minutes-(13*60+5))/5, true
+	}
+	return 0, false
 }

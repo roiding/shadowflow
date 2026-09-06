@@ -63,6 +63,7 @@ type StockArchiveQuality struct {
 	ExpectedStocks      int        `json:"expected_stocks"`
 	ExpectedPoints      int        `json:"expected_points"`
 	ExpectedKlineStocks int        `json:"expected_kline_stocks"`
+	KlineStocks         int        `json:"kline_stocks"`
 	MoneyRows           int        `json:"money_rows"`
 	KlineRows           int        `json:"kline_rows"`
 	DailyCloseRows      int        `json:"daily_close_rows"`
