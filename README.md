@@ -135,6 +135,7 @@ GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go 测
 | `SHADOWFLOW_SCHEDULER_ENABLED` | `true` | 是否运行盘中和盘后采集调度；健康检查或只读 API 模式可设为 `false` |
 | `SHADOWFLOW_SUCCESS_RUN_RETENTION_DAYS` | `30` | 成功/跳过的采集运行记录保留天数 |
 | `SHADOWFLOW_FAILURE_RUN_RETENTION_DAYS` | `180` | 失败/部分成功的采集运行记录保留天数，必须不少于成功记录保留天数 |
+| `SHADOWFLOW_BACKUP_RETENTION_DAYS` | `3` | 压缩数据库备份文件保留数量，不是自然日；只清理自动命名的 `.db.gz` 及其 sidecar |
 | `SHADOWFLOW_API_TOKEN` | 空 | 非空时开启 `/api/v1/*` 和 `/metrics` 的 Bearer Token 鉴权，至少 16 个字符；为空时关闭 |
 
 其余运行参数已固定在 `compose.yaml` 中，通常不需要额外配置。
@@ -143,13 +144,21 @@ GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go 测
 
 ## 备份和恢复
 
-在线备份使用 SQLite `.backup`，不会直接复制 WAL 模式下可能不完整的主文件：
+`backup.sh` 是手动备份脚本，使用 SQLite `.backup`，不会直接复制 WAL 模式下可能不完整的主文件：
 
 ```bash
 docker exec shadowflow /app/scripts/backup.sh
 ```
 
-备份会执行 `integrity_check`、gzip 校验，生成 SHA-256 sidecar 和关键表计数 metadata。默认保留 30 天，可通过 `SHADOWFLOW_BACKUP_RETENTION_DAYS` 调整。恢复前可先做不落库验证：
+备份会执行 `integrity_check`、gzip 校验，生成 SHA-256 sidecar 和关键表计数 metadata。`SHADOWFLOW_BACKUP_RETENTION_DAYS` 按 `.db.gz` 备份文件数量计数，默认保留 3 个；设置为 `3` 就只保留最近 3 个压缩备份，及其对应的 `.sha256` 和 `.meta` 文件。手工命名的 `.db`、`pre-*` 文件不在自动清理范围内。自动任务使用 `auto-backup.sh`，只在交易日调用 `backup.sh`；`backup.sh` 本身仍可在任何时间手动执行。恢复前可先做不落库验证：
+
+线上自动任务应调用先判断交易日的包装脚本：
+
+```bash
+docker exec shadowflow /app/scripts/auto-backup.sh
+```
+
+它读取 `SHADOWFLOW_CALENDAR_PATH`，当天为周末、法定休市日且不在 `workdays` 中时跳过；交易日才调用 `backup.sh`。主机 cron 仍可每天触发这个入口，不会在非交易日生成备份。
 
 ```bash
 docker compose run --rm --entrypoint /app/scripts/restore.sh shadowflow \

@@ -15,6 +15,9 @@ services:
     volumes:
       - /mnt/data/shadowflow/data:/data
       - /mnt/data/shadowflow/backups:/backups
+    environment:
+      # Count completed compressed database backups, not calendar days.
+      SHADOWFLOW_BACKUP_RETENTION_DAYS: ${SHADOWFLOW_BACKUP_RETENTION_DAYS:-3}
     # End-of-day archives hold ~250k rows of batch state plus SQLite page
     # cache in the Go heap; 256m caused OOM headroom concerns on archive days.
     mem_limit: 768m

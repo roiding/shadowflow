@@ -3,7 +3,14 @@ set -eu
 
 database_path="${SHADOWFLOW_DATABASE_PATH:-/data/shadowflow.db}"
 backup_dir="${SHADOWFLOW_BACKUP_DIR:-/backups}"
-retention_days="${SHADOWFLOW_BACKUP_RETENTION_DAYS:-30}"
+retention_count="${SHADOWFLOW_BACKUP_RETENTION_DAYS:-3}"
+
+case "$retention_count" in
+  ''|*[!0-9]*|0)
+    echo "SHADOWFLOW_BACKUP_RETENTION_DAYS must be a positive integer backup count" >&2
+    exit 2
+    ;;
+esac
 
 if [ ! -f "$database_path" ]; then
   echo "database not found: $database_path" >&2
@@ -29,5 +36,19 @@ integrity="$(sqlite3 "$backup_path" 'PRAGMA integrity_check;')"
 gzip -f "$backup_path"
 gzip -t "$backup_path.gz"
 sha256sum "$backup_path.gz" > "$backup_path.gz.sha256"
-find "$backup_dir" -type f \( -name 'shadowflow-*.db.gz' -o -name 'shadowflow-*.db.gz.sha256' -o -name 'shadowflow-*.meta' \) -mtime "+$retention_days" -delete
+# Retain the newest N completed compressed backups. Sidecars are removed by
+# the same timestamp prefix; files created manually with other names are not
+# touched by the automatic retention sweep.
+backup_prefixes="$(
+  for archive in "$backup_dir"/shadowflow-*.db.gz; do
+    [ -f "$archive" ] || continue
+    basename "$archive" .db.gz
+  done | sort -r | tail -n +$((retention_count + 1))
+)"
+if [ -n "$backup_prefixes" ]; then
+  printf '%s\n' "$backup_prefixes" | while IFS= read -r prefix; do
+    [ -n "$prefix" ] || continue
+    rm -f "$backup_dir/$prefix.db.gz" "$backup_dir/$prefix.db.gz.sha256" "$backup_dir/$prefix.meta"
+  done
+fi
 echo "$backup_path.gz"
