@@ -42,7 +42,12 @@ sha256sum "$backup_path.gz" > "$backup_path.gz.sha256"
 backup_prefixes="$(
   for archive in "$backup_dir"/shadowflow-*.db.gz; do
     [ -f "$archive" ] || continue
-    basename "$archive" .db.gz
+    filename="$(basename "$archive")"
+    case "$filename" in
+      shadowflow-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].db.gz)
+        basename "$archive" .db.gz
+        ;;
+    esac
   done | sort -r | tail -n +$((retention_count + 1))
 )"
 if [ -n "$backup_prefixes" ]; then
