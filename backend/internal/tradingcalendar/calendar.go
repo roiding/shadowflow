@@ -51,22 +51,34 @@ type Coverage struct {
 }
 
 func Load(path string) (*Calendar, error) {
+	return load(path, true)
+}
+
+// LoadRequired never falls back to weekdays when the calendar is missing.
+func LoadRequired(path string) (*Calendar, error) {
+	return load(path, false)
+}
+
+func load(path string, allowMissing bool) (*Calendar, error) {
 	calendar := &Calendar{holiday: make(map[string]struct{}), workday: make(map[string]struct{})}
 	body, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
+	if allowMissing && errors.Is(err, os.ErrNotExist) {
 		return calendar, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read trading calendar: %w", err)
 	}
-	var data fileData
+	var data *fileData
 	if err := json.Unmarshal(body, &data); err != nil {
 		return nil, fmt.Errorf("parse trading calendar: %w", err)
 	}
-	if err := validateFileData(data); err != nil {
+	if data == nil {
+		return nil, errors.New("trading calendar must be a JSON object")
+	}
+	if err := validateFileData(*data); err != nil {
 		return nil, err
 	}
-	calendar.replace(data)
+	calendar.replace(*data)
 	return calendar, nil
 }
 

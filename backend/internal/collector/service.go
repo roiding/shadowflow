@@ -257,9 +257,8 @@ func (s *Service) collectMoneyArchiveIncremental(ctx context.Context, rankType g
 	})
 	_ = completed
 	if fetchErr != nil {
-		// Preserve the last partial batch, but do not seal quality/manifest as
-		// complete; the next independent retry will continue from the durable
-		// rows.
+		// Account for the last fetched batch without publishing a replacement.
+		// FinishRun discards its stage; retries fetch a fresh complete snapshot.
 		if err = flush(false); err != nil {
 			fetchErr = errors.Join(fetchErr, err)
 		}
@@ -436,6 +435,11 @@ func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error
 
 func (s *Service) HasStockKlineArchive(ctx context.Context, tradeDate string) (bool, error) {
 	return s.store.HasStockKlineArchive(ctx, tradeDate)
+}
+
+func (s *Service) FinalizeArchive(ctx context.Context, tradeDate string) error {
+	_, err := s.store.SealArchiveRevision(ctx, tradeDate, "seal-"+newRunID())
+	return err
 }
 func (s *Service) HasEndOfDayArchive(ctx context.Context, tradeDate string) (bool, error) {
 	return s.store.HasEndOfDayArchive(ctx, tradeDate)

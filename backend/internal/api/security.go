@@ -136,6 +136,24 @@ func requestTimeout(duration time.Duration) func(http.Handler) http.Handler {
 	}
 }
 
+// Install inside the timeout handler so an expired HTTP response does not
+// release the slot before its scan goroutine has actually stopped.
+func scanConcurrencyGate() func(http.Handler) http.Handler {
+	slots := make(chan struct{}, 1)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case slots <- struct{}{}:
+				defer func() { <-slots }()
+				next.ServeHTTP(w, r)
+			default:
+				w.Header().Set("Retry-After", "1")
+				writeError(w, http.StatusServiceUnavailable, "scan_busy", "another focus scan is running")
+			}
+		})
+	}
+}
+
 func noStore(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/metrics" {

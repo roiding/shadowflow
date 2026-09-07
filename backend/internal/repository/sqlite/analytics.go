@@ -56,6 +56,34 @@ type derivedCurve struct {
 }
 
 func buildAnalyticsForRevision(ctx context.Context, tx *sql.Tx, revisionID, tradeDate string) error {
+	if err := buildDailyFeatures(ctx, tx, revisionID, tradeDate); err != nil {
+		return err
+	}
+	refs, err := loadAllCurrentRevisionRefs(ctx, tx)
+	if err != nil {
+		return err
+	}
+	throughDate := tradeDate
+	following := 0
+	// A corrected or newly inserted day contributes to the following 59
+	// sixty-day windows. Rebuild them in the same transaction as the seal.
+	for _, ref := range refs {
+		if ref.TradeDate <= tradeDate {
+			continue
+		}
+		if following >= maxFeatureHistory-1 {
+			break
+		}
+		if err := buildDailyFeatures(ctx, tx, ref.RevisionID, ref.TradeDate); err != nil {
+			return err
+		}
+		throughDate = ref.TradeDate
+		following++
+	}
+	return rebuildFutureLabels(ctx, tx, tradeDate, throughDate)
+}
+
+func buildDailyFeatures(ctx context.Context, tx *sql.Tx, revisionID, tradeDate string) error {
 	refs, err := loadCurrentRevisionRefs(ctx, tx, tradeDate, maxFeatureHistory)
 	if err != nil {
 		return err
@@ -197,7 +225,7 @@ source_revisions_json=excluded.source_revisions_json,generated_at=excluded.gener
 		revisionID, tradeDate, dailyFeatureVersion, string(sourceJSON), generatedAt); err != nil {
 		return err
 	}
-	return rebuildFutureLabels(ctx, tx, tradeDate)
+	return nil
 }
 
 func (s *Store) RebuildAnalytics(ctx context.Context, revisionID string) error {
@@ -624,7 +652,7 @@ func nullableFloat(value sql.NullFloat64) *float64 {
 	return &result
 }
 
-func rebuildFutureLabels(ctx context.Context, tx *sql.Tx, changedDate string) error {
+func rebuildFutureLabels(ctx context.Context, tx *sql.Tx, changedDate, throughDate string) error {
 	refs, err := loadAllCurrentRevisionRefs(ctx, tx)
 	if err != nil {
 		return err
@@ -638,6 +666,10 @@ func rebuildFutureLabels(ctx context.Context, tx *sql.Tx, changedDate string) er
 	}
 	if changedIndex < 0 {
 		return nil
+	}
+	throughIndex := changedIndex
+	for index := changedIndex + 1; index < len(refs) && refs[index].TradeDate <= throughDate; index++ {
+		throughIndex = index
 	}
 	start := max(0, changedIndex-20)
 	recordCache := make(map[string]map[featureKey]float64)
@@ -683,7 +715,7 @@ label_version=excluded.label_version,generated_at=excluded.generated_at`)
 		return err
 	}
 	defer statement.Close()
-	for signalIndex := start; signalIndex <= changedIndex; signalIndex++ {
+	for signalIndex := start; signalIndex <= throughIndex; signalIndex++ {
 		signalRef := refs[signalIndex]
 		signalRecords, err := loadRecords(signalRef)
 		if err != nil {
@@ -694,16 +726,16 @@ label_version=excluded.label_version,generated_at=excluded.generated_at`)
 			return err
 		}
 		for _, horizon := range labelHorizons {
+			// Inserting a missing date moves the target of an existing horizon.
+			// Remove the old mapping even when its target revision still exists.
+			if _, err := tx.ExecContext(ctx, `DELETE FROM future_return_label WHERE signal_revision_id=? AND horizon=?`, signalRef.RevisionID, horizon); err != nil {
+				return err
+			}
 			targetIndex := signalIndex + horizon
 			if targetIndex >= len(refs) {
 				continue
 			}
 			targetRef := refs[targetIndex]
-			if _, err := tx.ExecContext(ctx, `DELETE FROM future_return_label
-WHERE signal_revision_id=? AND target_revision_id=? AND horizon=?`,
-				signalRef.RevisionID, targetRef.RevisionID, horizon); err != nil {
-				return err
-			}
 			targetRecords, err := loadRecords(targetRef)
 			if err != nil {
 				return err

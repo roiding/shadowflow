@@ -40,6 +40,9 @@ func TestCalendarRejectsInvalidOrConflictingDates(t *testing.T) {
 	for name, body := range map[string]string{
 		"invalid":  `{"holidays":["2026-02-30"]}`,
 		"conflict": `{"holidays":["2026-10-01"],"workdays":["2026-10-01"]}`,
+		"null":     `null`,
+		"array":    `[]`,
+		"type":     `{"holidays":"2026-10-01"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "calendar.json")
@@ -50,6 +53,16 @@ func TestCalendarRejectsInvalidOrConflictingDates(t *testing.T) {
 				t.Fatal("expected invalid calendar to be rejected")
 			}
 		})
+	}
+}
+
+func TestRequiredCalendarDoesNotFallBackWhenMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.json")
+	if _, err := LoadRequired(path); err == nil {
+		t.Fatal("required calendar silently fell back to weekdays")
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("optional calendar fallback changed: %v", err)
 	}
 }
 

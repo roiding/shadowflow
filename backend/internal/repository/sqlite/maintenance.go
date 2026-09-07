@@ -23,6 +23,12 @@ func (s *Store) Maintain(ctx context.Context, at time.Time, successRetentionDays
 		return result, err
 	}
 	defer tx.Rollback()
+	if err := recoverExpiredRuns(ctx, tx, time.Now()); err != nil {
+		return result, err
+	}
+	if err := cleanupMoneyStages(ctx, tx); err != nil {
+		return result, err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO collection_run_rollup
 (rank_type,status,run_count,record_count,duration_ms,latest_success_at)
 SELECT rank_type,status,count(*),coalesce(sum(fetched_total),0),coalesce(sum(duration_ms),0),

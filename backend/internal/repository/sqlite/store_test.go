@@ -224,6 +224,9 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "stale", now.Format(timestampLayout),
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.db.Exec(`UPDATE collection_run SET lease_until=? WHERE run_id='stale'`, formatTimestamp(now.Add(-time.Minute))); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -624,6 +627,17 @@ func TestSaveBoardArchiveBatchFinalizesRankPerSnapshot(t *testing.T) {
 		point("10:05", "BK002", 100),
 		point("10:10", "BK002", 200),
 	}
+	for _, extra := range testMoneyPoints(snapshot) {
+		clock := extra.SnapshotAt.Format("15:04")
+		if clock == "10:00" || clock == "10:05" || clock == "10:10" {
+			continue
+		}
+		if extra.Code == "BK001" {
+			first = append(first, extra)
+		} else {
+			final = append(final, extra)
+		}
+	}
 	if err := store.SaveBoardArchiveBatch(ctx, "rank-batch", snapshot, first, true, false); err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +645,7 @@ func TestSaveBoardArchiveBatchFinalizesRankPerSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := store.db.QueryContext(ctx, `SELECT snapshot_at, code, rank FROM board_money_5m
-WHERE trade_date=? AND rank_type='concept' ORDER BY snapshot_at, rank`, snapshot.TradeDate)
+WHERE trade_date=? AND rank_type='concept' AND strftime('%H:%M',snapshot_at,'+8 hours') IN ('10:00','10:05','10:10') ORDER BY snapshot_at, rank`, snapshot.TradeDate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -699,6 +713,17 @@ func TestSaveStockArchiveBatchFinalizesMoneyRankPerMinute(t *testing.T) {
 		point("10:00", records[1], 200),
 		point("10:05", records[1], 100),
 	}
+	for _, extra := range testMoneyPoints(snapshot) {
+		clock := extra.SnapshotAt.Format("15:04")
+		if clock == "10:00" || clock == "10:05" {
+			continue
+		}
+		if extra.Code == records[0].Code {
+			first = append(first, extra)
+		} else {
+			final = append(final, extra)
+		}
+	}
 	if err := store.SaveStockArchiveBatch(ctx, "rank-stock-batch", snapshot, first, true, false); err != nil {
 		t.Fatal(err)
 	}
@@ -706,7 +731,7 @@ func TestSaveStockArchiveBatchFinalizesMoneyRankPerMinute(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := store.db.QueryContext(ctx, `SELECT minute_index, code, money_rank FROM stock_research_5m
-WHERE trade_date=? ORDER BY minute_index, money_rank`, snapshot.TradeDate)
+WHERE trade_date=? AND minute_index IN (5,6) ORDER BY minute_index, money_rank`, snapshot.TradeDate)
 	if err != nil {
 		t.Fatal(err)
 	}

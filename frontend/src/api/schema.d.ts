@@ -821,7 +821,7 @@ export interface paths {
         put?: never;
         /**
          * 按动态条件筛选连续完整日终截面
-         * @description 每个所选交易日都必须符合规则；资金字段单位为元，百分比行情字段使用原始小数，control_coefficient 使用百分数。
+         * @description 每个所选交易日都必须符合规则；资金字段单位为元，百分比行情字段使用原始小数，control_coefficient 使用百分数。两种筛选接口共用一个并发槽，已有扫描运行时返回 503 和 Retry-After。
          */
         post: {
             parameters: {
@@ -848,6 +848,7 @@ export interface paths {
                     };
                 };
                 400: components["responses"]["Error"];
+                503: components["responses"]["Error"];
             };
         };
         delete?: never;
@@ -888,6 +889,7 @@ export interface paths {
                     };
                 };
                 400: components["responses"]["Error"];
+                503: components["responses"]["Error"];
             };
         };
         put?: never;

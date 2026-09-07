@@ -130,6 +130,25 @@ CREATE INDEX IF NOT EXISTS idx_board_money_series
 CREATE INDEX IF NOT EXISTS idx_board_money_rank
     ON board_money_5m (trade_date, rank_type, snapshot_at, rank);
 
+CREATE TABLE IF NOT EXISTS archive_money_stage (
+    run_id TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    rank_type TEXT NOT NULL CHECK (rank_type IN ('industry', 'concept', 'stock')),
+    minute_index INTEGER NOT NULL CHECK (minute_index BETWEEN 0 AND 47),
+    snapshot_at TEXT NOT NULL,
+    market INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    dark_money INTEGER NOT NULL,
+    regular_money INTEGER NOT NULL,
+    main_money_inflow INTEGER NOT NULL,
+    source_time INTEGER NOT NULL,
+    fetched_at TEXT NOT NULL,
+    staged_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, trade_date, rank_type, market, code, minute_index)
+);
+
 CREATE TABLE IF NOT EXISTS stock_research_5m (
     trade_date TEXT NOT NULL,
     minute_index INTEGER NOT NULL CHECK (minute_index BETWEEN 0 AND 47),
@@ -307,6 +326,9 @@ CREATE TABLE IF NOT EXISTS future_return_label (
 
 CREATE INDEX IF NOT EXISTS idx_future_return_target
     ON future_return_label (target_date, horizon, rank_type, code);
+
+CREATE INDEX IF NOT EXISTS idx_future_return_signal_horizon
+    ON future_return_label (signal_revision_id, horizon);
 
 CREATE TABLE IF NOT EXISTS database_maintenance (
     name TEXT PRIMARY KEY,

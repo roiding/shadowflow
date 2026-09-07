@@ -347,7 +347,7 @@ paths:
   /api/v1/focus/scan:
     post:
       summary: 按动态条件筛选连续完整日终截面
-      description: 每个所选交易日都必须符合规则；资金字段单位为元，百分比行情字段使用原始小数，control_coefficient 使用百分数。
+      description: 每个所选交易日都必须符合规则；资金字段单位为元，百分比行情字段使用原始小数，control_coefficient 使用百分数。两种筛选接口共用一个并发槽，已有扫描运行时返回 503 和 Retry-After。
       requestBody:
         required: true
         content:
@@ -363,6 +363,7 @@ paths:
                 properties:
                   data: { $ref: "#/components/schemas/FocusResult" }
         "400": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/focus/three-day:
     get:
       summary: 使用内置三日策略模板筛选
@@ -378,6 +379,7 @@ paths:
                 properties:
                   data: { $ref: "#/components/schemas/FocusResult" }
         "400": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/system/status:
     get:
       summary: 系统和市场状态

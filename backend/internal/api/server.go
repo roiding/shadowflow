@@ -92,6 +92,7 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 	normal := newRateLimiter(normalLimit)
 	export := newRateLimiter(exportLimit)
 	scan := newRateLimiter(scanLimit)
+	scanGate := scanConcurrencyGate()
 	var trustedProxy *net.IPNet
 	if len(options) > 0 && options[0].TrustedProxyCIDR != "" {
 		_, parsed, err := net.ParseCIDR(options[0].TrustedProxyCIDR)
@@ -174,8 +175,8 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 			r.Get("/research/features", server.dailyFeatures)
 			r.Get("/research/labels", server.futureLabels)
 			r.Get("/collection-runs", server.collectionRuns)
-			r.Get("/focus/three-day", server.threeDayFocus)
-			r.Post("/focus/scan", server.focusScan)
+			r.With(scanGate).Get("/focus/three-day", server.threeDayFocus)
+			r.With(scanGate).Post("/focus/scan", server.focusScan)
 			r.Get("/system/status", server.status)
 		})
 	})

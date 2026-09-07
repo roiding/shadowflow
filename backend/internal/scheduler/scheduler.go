@@ -27,6 +27,7 @@ type collectorService interface {
 	Maintain(context.Context, time.Time, int, int) (repository.MaintenanceResult, error)
 	HasEndOfDayArchive(context.Context, string) (bool, error)
 	HasStockKlineArchive(context.Context, string) (bool, error)
+	FinalizeArchive(context.Context, string) error
 	CollectStockBoardRelations(context.Context, string) error
 	HasStockBoardRelations(context.Context, string) (bool, error)
 }
@@ -440,8 +441,7 @@ func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current ti
 			return err
 		}
 		if exists {
-			s.logger.Info("stock kline archive already available; skipping retry", "trade_date", tradeDate, "at", current)
-			return nil
+			return s.collector.FinalizeArchive(ctx, tradeDate)
 		}
 		endExists, err := s.collector.HasEndOfDayArchive(ctx, tradeDate)
 		if err != nil {
@@ -526,6 +526,9 @@ func (s *Scheduler) recoverArchive(ctx context.Context, tradeDate string, curren
 	}
 	if combined != nil {
 		return combined
+	}
+	if err := s.collector.FinalizeArchive(ctx, tradeDate); err != nil {
+		return err
 	}
 	return s.collector.CleanupArchivedIntraday(ctx, current.Format("2006-01-02"))
 }

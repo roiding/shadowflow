@@ -236,6 +236,9 @@ func (s *Service) Scan(ctx context.Context, asOf string) (Result, error) {
 }
 
 func (s *Service) ScanWith(ctx context.Context, request ScanRequest) (Result, error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	if err := validateRequest(request); err != nil {
 		return Result{}, err
 	}
@@ -262,6 +265,9 @@ func (s *Service) ScanWith(ctx context.Context, request ScanRequest) (Result, er
 	conceptRows := make(map[string]map[string]dayRow, len(dates))
 	stockRows := make(map[string]map[string]dayRow, len(dates))
 	for _, date := range dates {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		records, err := s.source.DailyCloseRecords(ctx, date)
 		if err != nil {
 			return result, err
@@ -271,7 +277,10 @@ func (s *Service) ScanWith(ctx context.Context, request ScanRequest) (Result, er
 	}
 
 	rejections := &rejectionBuffer{}
-	result.Concepts, result.Stats = evaluateConcepts(dates, conceptRows, request, rejections)
+	result.Concepts, result.Stats, err = evaluateConcepts(ctx, dates, conceptRows, request, rejections)
+	if err != nil {
+		return result, err
+	}
 	universe := make(map[string]graymarket.StockBoardRelation)
 	memberships := make(map[string][]ConceptRef)
 	if request.StockScope.RequireQualifiedConcepts {
@@ -307,17 +316,48 @@ func (s *Service) ScanWith(ctx context.Context, request ScanRequest) (Result, er
 			universe[code] = graymarket.StockBoardRelation{StockMarket: row.market, StockCode: code, StockName: row.name}
 		}
 	}
-	result.Stocks, result.Stats = evaluateStocks(dates, stockRows, universe, memberships, request, result.Stats, rejections)
-	result.Rejections, result.RejectionsTruncated = rejections.items, rejections.truncated
-	if len(result.Concepts) > maxCandidates {
-		result.Concepts = result.Concepts[:maxCandidates]
-		result.ConceptsTruncated = true
+	result.Stocks, result.Stats, err = evaluateStocks(ctx, dates, stockRows, universe, memberships, request, result.Stats, rejections)
+	if err != nil {
+		return result, err
 	}
-	if len(result.Stocks) > maxCandidates {
-		result.Stocks = result.Stocks[:maxCandidates]
-		result.StocksTruncated = true
+	result.Rejections, result.RejectionsTruncated = rejections.items, rejections.truncated
+	// Qualification retains only identity and the last metric used for sorting.
+	// Build the expensive per-day explanations only for returned candidates.
+	concepts, stocks := result.Concepts, result.Stocks
+	result.ConceptsTruncated, result.StocksTruncated = len(concepts) > maxCandidates, len(stocks) > maxCandidates
+	result.Concepts = make([]ConceptCandidate, min(len(concepts), maxCandidates))
+	result.Stocks = make([]StockCandidate, min(len(stocks), maxCandidates))
+	copy(result.Concepts, concepts)
+	copy(result.Stocks, stocks)
+	for index := range result.Concepts {
+		candidate := &result.Concepts[index]
+		candidate.Days, candidate.Evaluations, err = explainCandidateDays(ctx, dates, conceptRows, candidate.Code, request.ConceptConditions, request.ConceptMatch)
+		if err != nil {
+			return result, err
+		}
+	}
+	for index := range result.Stocks {
+		candidate := &result.Stocks[index]
+		candidate.Days, candidate.Evaluations, err = explainCandidateDays(ctx, dates, stockRows, candidate.Code, request.StockConditions, request.StockMatch)
+		if err != nil {
+			return result, err
+		}
 	}
 	return result, nil
+}
+
+func explainCandidateDays(ctx context.Context, dates []string, records map[string]map[string]dayRow, code string, conditions []Condition, mode MatchMode) ([]DailyMetric, []DayEvaluation, error) {
+	days := make([]DailyMetric, 0, len(dates))
+	evaluations := make([]DayEvaluation, 0, len(dates))
+	for _, date := range dates {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		metric := records[date][code].metric
+		days = append(days, metric)
+		evaluations = append(evaluations, evaluateConditions(metric, conditions, mode))
+	}
+	return days, evaluations, nil
 }
 
 func validateRequest(request ScanRequest) error {
@@ -382,36 +422,41 @@ func validOperator(operator Operator) bool {
 	}
 }
 
-func evaluateConcepts(dates []string, records map[string]map[string]dayRow, request ScanRequest, rejections *rejectionBuffer) ([]ConceptCandidate, Stats) {
+func evaluateConcepts(ctx context.Context, dates []string, records map[string]map[string]dayRow, request ScanRequest, rejections *rejectionBuffer) ([]ConceptCandidate, Stats, error) {
 	var stats Stats
 	codes := commonCodes(dates, records)
 	stats.ConceptsEvaluated = len(codes)
 	result := make([]ConceptCandidate, 0)
 	for _, code := range codes {
+		if err := ctx.Err(); err != nil {
+			return nil, stats, err
+		}
 		candidate := ConceptCandidate{Code: code, Name: records[dates[len(dates)-1]][code].name}
 		qualified := true
 		for _, date := range dates {
+			if err := ctx.Err(); err != nil {
+				return nil, stats, err
+			}
 			metric := records[date][code].metric
-			candidate.Days = append(candidate.Days, metric)
-			evaluation := evaluateConditions(metric, request.ConceptConditions, request.ConceptMatch)
-			candidate.Evaluations = append(candidate.Evaluations, evaluation)
-			if !evaluation.Matched {
+			if !conditionsMatch(metric, request.ConceptConditions, request.ConceptMatch) {
 				qualified = false
+				evaluation := evaluateConditions(metric, request.ConceptConditions, request.ConceptMatch)
 				rejections.add(CandidateRejection{Kind: "concept", Code: code, Name: candidate.Name,
 					Reason: "condition_failed", FailedDate: date, Evaluation: &evaluation})
 				break
 			}
 		}
 		if qualified {
+			candidate.Days = []DailyMetric{records[dates[len(dates)-1]][code].metric}
 			result = append(result, candidate)
 		}
 	}
 	sortCandidates(result)
 	stats.ConceptsQualified = len(result)
-	return result, stats
+	return result, stats, nil
 }
 
-func evaluateStocks(dates []string, records map[string]map[string]dayRow, universe map[string]graymarket.StockBoardRelation, memberships map[string][]ConceptRef, request ScanRequest, stats Stats, rejections *rejectionBuffer) ([]StockCandidate, Stats) {
+func evaluateStocks(ctx context.Context, dates []string, records map[string]map[string]dayRow, universe map[string]graymarket.StockBoardRelation, memberships map[string][]ConceptRef, request ScanRequest, stats Stats, rejections *rejectionBuffer) ([]StockCandidate, Stats, error) {
 	codes := make([]string, 0, len(universe))
 	for code := range universe {
 		codes = append(codes, code)
@@ -420,7 +465,15 @@ func evaluateStocks(dates []string, records map[string]map[string]dayRow, univer
 	stats.StocksEvaluated = len(codes)
 	result := make([]StockCandidate, 0)
 	for _, code := range codes {
+		if err := ctx.Err(); err != nil {
+			return nil, stats, err
+		}
 		relation := universe[code]
+		// Membership events can retain an old security name after an ST change.
+		// Scope and display identity follow the requested daily-close snapshot.
+		if latest, ok := records[dates[len(dates)-1]][code]; ok {
+			relation.StockName, relation.StockMarket = latest.name, latest.market
+		}
 		if request.StockScope.MainBoardOnly && !isMainBoard(relation.StockMarket, code) {
 			stats.NonMainBoardExcluded++
 			rejections.add(CandidateRejection{Kind: "stock", Market: relation.StockMarket, Code: code,
@@ -439,6 +492,9 @@ func evaluateStocks(dates []string, records map[string]map[string]dayRow, univer
 		}
 		qualified := true
 		for _, date := range dates {
+			if err := ctx.Err(); err != nil {
+				return nil, stats, err
+			}
 			row, exists := records[date][code]
 			if !exists {
 				// indexRecords only retains quote-available records, so a
@@ -450,11 +506,9 @@ func evaluateStocks(dates []string, records map[string]map[string]dayRow, univer
 				break
 			}
 			metric := row.metric
-			candidate.Days = append(candidate.Days, metric)
-			evaluation := evaluateConditions(metric, request.StockConditions, request.StockMatch)
-			candidate.Evaluations = append(candidate.Evaluations, evaluation)
-			if !evaluation.Matched {
+			if !conditionsMatch(metric, request.StockConditions, request.StockMatch) {
 				qualified = false
+				evaluation := evaluateConditions(metric, request.StockConditions, request.StockMatch)
 				rejections.add(CandidateRejection{Kind: "stock", Market: relation.StockMarket, Code: code,
 					Name: relation.StockName, Reason: "condition_failed", FailedDate: date,
 					Evaluation: &evaluation})
@@ -462,12 +516,13 @@ func evaluateStocks(dates []string, records map[string]map[string]dayRow, univer
 			}
 		}
 		if qualified {
+			candidate.Days = []DailyMetric{records[dates[len(dates)-1]][code].metric}
 			result = append(result, candidate)
 		}
 	}
 	sortStocks(result)
 	stats.StocksQualified = len(result)
-	return result, stats
+	return result, stats, nil
 }
 
 // dayRow is the memory-bounded per-day representation used by scans: the
@@ -521,11 +576,23 @@ func metricFor(record graymarket.RankRecord) DailyMetric {
 }
 
 func conditionsMatch(metric DailyMetric, conditions []Condition, mode MatchMode) bool {
-	return evaluateConditions(metric, conditions, mode).Matched
+	if len(conditions) == 0 {
+		return true
+	}
+	for _, condition := range conditions {
+		matched := conditionMatches(metric, condition)
+		if mode == MatchAny && matched {
+			return true
+		}
+		if mode == MatchAll && !matched {
+			return false
+		}
+	}
+	return mode == MatchAll
 }
 
 func evaluateConditions(metric DailyMetric, conditions []Condition, mode MatchMode) DayEvaluation {
-	evaluation := DayEvaluation{TradeDate: metric.TradeDate, Conditions: []ConditionEvaluation{}}
+	evaluation := DayEvaluation{TradeDate: metric.TradeDate, Conditions: make([]ConditionEvaluation, 0, len(conditions))}
 	if len(conditions) == 0 {
 		evaluation.Matched = true
 		return evaluation

@@ -90,6 +90,9 @@ func OpenWithReadConns(path string, readConns int) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("migrate database: %w", err)
 	}
+	if err := migrateRunLeases(db); err != nil {
+		return nil, fmt.Errorf("migrate collection run leases: %w", err)
+	}
 	if path == ":memory:" {
 		store.reader = db
 	} else {
@@ -146,26 +149,17 @@ func OpenWithReadConns(path string, readConns int) (*Store, error) {
 	if err := recordSchemaMigration(store); err != nil {
 		return nil, fmt.Errorf("record schema migration: %w", err)
 	}
-	// Remove staging rows whose sync run is no longer live. This must run
-	// BEFORE the interrupted-run recovery below: another process (cmd/collect)
-	// may be mid-sync against this database, and its run is only identifiable
-	// as live while its relation_sync_run row still says 'running'. Deleting
-	// unconditionally here used to wipe that process's staged relations.
+	if err := recoverExpiredRuns(context.Background(), db, time.Now()); err != nil {
+		return nil, err
+	}
+	if err := cleanupMoneyStages(context.Background(), db); err != nil {
+		return nil, fmt.Errorf("cleanup abandoned money stages: %w", err)
+	}
+	// Only expired leases were failed above; another process may still be
+	// collecting against the same database, so retain all other live stages.
 	if _, err := db.Exec(`DELETE FROM stock_board_relation_stage
 WHERE run_id NOT IN (SELECT run_id FROM relation_sync_run WHERE status='running')`); err != nil {
 		return nil, fmt.Errorf("cleanup orphaned relation stage: %w", err)
-	}
-	if _, err := db.Exec(`UPDATE collection_run
-SET status='failed', finished_at=COALESCE(finished_at, ?), error_code='interrupted',
-error_message='process stopped before collection completed'
-WHERE status='running'`, formatTimestamp(time.Now())); err != nil {
-		return nil, fmt.Errorf("recover interrupted runs: %w", err)
-	}
-	if _, err := db.Exec(`UPDATE relation_sync_run
-SET status='failed', finished_at=COALESCE(finished_at, ?), error_code='interrupted',
-error_message='process stopped before relation synchronization completed'
-WHERE status='running'`, formatTimestamp(time.Now())); err != nil {
-		return nil, fmt.Errorf("recover interrupted relation syncs: %w", err)
 	}
 	success = true
 	return store, nil
@@ -959,9 +953,8 @@ updated_at=excluded.updated_at`,
 	return tx.Commit()
 }
 
-// SaveBoardArchiveBatch persists one incremental batch. The first batch owns
-// replacement of the day's board close/archive rows; later batches only add
-// money curves. The final batch refreshes quality and the manifest.
+// Incremental batches stay private until every candidate has 48 points. The
+// final transaction publishes the replacement and its quality together.
 func (s *Store) SaveBoardArchiveBatch(ctx context.Context, runID string, snapshot graymarket.RankSnapshot, points []graymarket.MoneyPoint, first, final bool) error {
 	if snapshot.RankType != graymarket.RankIndustry && snapshot.RankType != graymarket.RankConcept {
 		return fmt.Errorf("invalid board rank type %s", snapshot.RankType)
@@ -971,45 +964,23 @@ func (s *Store) SaveBoardArchiveBatch(ctx context.Context, runID string, snapsho
 		return err
 	}
 	defer tx.Rollback()
-	if first {
-		for _, q := range []string{
-			`DELETE FROM board_money_5m WHERE trade_date=? AND rank_type=?`,
-			`DELETE FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type=?`,
-			`DELETE FROM raw_response WHERE date(snapshot_at,'+8 hours')=? AND snapshot_kind='daily_close' AND rank_type=?`,
-		} {
-			if _, err := tx.ExecContext(ctx, q, snapshot.TradeDate, string(snapshot.RankType)); err != nil {
-				return err
-			}
-		}
-		if err := insertRecords(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), snapshot.Records); err != nil {
-			return err
-		}
-		for _, page := range snapshot.RawPages {
-			if err := insertRawPage(ctx, tx, runID, snapshot.SnapshotAt, graymarket.SnapshotDailyClose, snapshot.RankType, page); err != nil {
-				return err
-			}
-		}
-	}
-	moneyStmt, err := tx.PrepareContext(ctx, `INSERT INTO board_money_5m
-(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,snapshot_at,rank_type,code) DO UPDATE SET
-dark_money=excluded.dark_money,regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow,money_available=1,source_time=excluded.source_time,fetched_at=excluded.fetched_at`)
-	if err != nil {
+	if err := stageMoneyArchive(ctx, tx, runID, snapshot, snapshot.Records, points, first, final); err != nil {
 		return err
-	}
-	defer moneyStmt.Close()
-	for _, point := range points {
-		minute := point.SnapshotAt.Format("15:04")
-		if point.TradeDate != snapshot.TradeDate || point.RankType != snapshot.RankType || (!isResearchMinute(minute) && minute != "15:00") {
-			return fmt.Errorf("invalid %s board money point %s %s", snapshot.RankType, point.Code, point.SnapshotAt)
-		}
-		if _, err := moneyStmt.ExecContext(ctx,
-			runID, formatTimestamp(point.SnapshotAt), point.TradeDate, string(point.RankType), point.Rank, point.Market, point.Code, point.Name, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1, point.SourceTime, formatTimestamp(point.FetchedAt)); err != nil {
-			return err
-		}
 	}
 	if !final {
 		return tx.Commit()
+	}
+	if err := replaceArchiveClose(ctx, tx, runID, snapshot, snapshot.Records); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM board_money_5m WHERE trade_date=? AND rank_type=?`, snapshot.TradeDate, string(snapshot.RankType)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO board_money_5m
+(run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at)
+SELECT run_id,snapshot_at,trade_date,rank_type,rank,market,code,name,dark_money,regular_money,main_money_inflow,1,source_time,fetched_at
+FROM archive_money_stage WHERE run_id=? AND trade_date=? AND rank_type=?`, runID, snapshot.TradeDate, string(snapshot.RankType)); err != nil {
+		return err
 	}
 	if err := finalizeBoardArchiveRanks(ctx, tx, snapshot.TradeDate, snapshot.RankType); err != nil {
 		return err
@@ -1027,6 +998,9 @@ dark_money=excluded.dark_money,regular_money=excluded.regular_money,main_money_i
 	if err := upsertQuality(ctx, tx, summary); err != nil {
 		return err
 	}
+	if err := deleteMoneyStage(ctx, tx, runID, snapshot); err != nil {
+		return err
+	}
 	if err := refreshArchiveManifest(ctx, tx, snapshot.TradeDate); err != nil {
 		return err
 	}
@@ -1034,7 +1008,7 @@ dark_money=excluded.dark_money,regular_money=excluded.regular_money,main_money_i
 }
 
 // SaveStockArchiveBatch is the incremental counterpart of SaveStockArchive.
-// It keeps only one archive copy and makes each 500-stock batch durable.
+// Only the final, validated transaction can replace an existing archive.
 func (s *Store) SaveStockArchiveBatch(ctx context.Context, runID string, snapshot graymarket.RankSnapshot, points []graymarket.MoneyPoint, first, final bool) error {
 	if snapshot.RankType != graymarket.RankStock || len(snapshot.Records) == 0 {
 		return fmt.Errorf("invalid stock archive batch")
@@ -1048,43 +1022,25 @@ func (s *Store) SaveStockArchiveBatch(ctx context.Context, runID string, snapsho
 		return err
 	}
 	defer tx.Rollback()
-	if first {
-		for _, q := range []string{
-			`DELETE FROM stock_research_5m WHERE trade_date=?`, `DELETE FROM stock_kline_source WHERE trade_date=?`,
-			`DELETE FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock'`,
-			`DELETE FROM raw_response WHERE date(snapshot_at,'+8 hours')=? AND snapshot_kind='daily_close' AND rank_type='stock'`,
-		} {
-			if _, err := tx.ExecContext(ctx, q, snapshot.TradeDate); err != nil {
-				return err
-			}
-		}
-		if err := insertRecords(ctx, tx, "rank_snapshot", runID, snapshot.TradeDate, string(graymarket.SnapshotDailyClose), records); err != nil {
-			return err
-		}
-		for _, page := range snapshot.RawPages {
-			if err := insertRawPage(ctx, tx, runID, snapshot.SnapshotAt, graymarket.SnapshotDailyClose, snapshot.RankType, page); err != nil {
-				return err
-			}
-		}
-	}
-	pointStmt, err := tx.PrepareContext(ctx, `INSERT INTO stock_research_5m
-(trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available)
-VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_date,minute_index,market,code) DO UPDATE SET money_rank=excluded.money_rank,dark_money=excluded.dark_money,regular_money=excluded.regular_money,main_money_inflow=excluded.main_money_inflow,money_available=1`)
-	if err != nil {
+	if err := stageMoneyArchive(ctx, tx, runID, snapshot, records, points, first, final); err != nil {
 		return err
-	}
-	defer pointStmt.Close()
-	for _, point := range points {
-		minuteIndex, ok := researchMinuteIndex(point.SnapshotAt)
-		if !ok || point.TradeDate != snapshot.TradeDate || point.RankType != graymarket.RankStock {
-			return fmt.Errorf("invalid stock money point %s %s", point.Code, point.SnapshotAt)
-		}
-		if _, err := pointStmt.ExecContext(ctx, point.TradeDate, minuteIndex, point.Market, point.Code, point.Rank, point.DarkMoney, point.RegularMoney, point.MainMoneyInflow, 1); err != nil {
-			return err
-		}
 	}
 	if !final {
 		return tx.Commit()
+	}
+	if err := replaceArchiveClose(ctx, tx, runID, snapshot, records); err != nil {
+		return err
+	}
+	for _, query := range []string{`DELETE FROM stock_research_5m WHERE trade_date=?`, `DELETE FROM stock_kline_source WHERE trade_date=?`} {
+		if _, err := tx.ExecContext(ctx, query, snapshot.TradeDate); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO stock_research_5m
+(trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available)
+SELECT trade_date,minute_index,market,code,rank,dark_money,regular_money,main_money_inflow,1
+FROM archive_money_stage WHERE run_id=? AND trade_date=? AND rank_type='stock'`, runID, snapshot.TradeDate); err != nil {
+		return err
 	}
 	if err := finalizeStockArchiveRanks(ctx, tx, snapshot.TradeDate); err != nil {
 		return err
@@ -1111,6 +1067,9 @@ WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock'`, snaps
 kline_archived_at=CASE WHEN excluded.kline_rows=excluded.expected_kline_stocks*excluded.expected_points
 THEN coalesce(stock_archive_quality.kline_archived_at,excluded.updated_at) ELSE NULL END,
 updated_at=excluded.updated_at`, snapshot.TradeDate, expected, expected, moneyRows, klineRows, dailyCloseRows, dailyKlineRows, now, now); err != nil {
+		return err
+	}
+	if err := deleteMoneyStage(ctx, tx, runID, snapshot); err != nil {
 		return err
 	}
 	if err := refreshArchiveManifest(ctx, tx, snapshot.TradeDate); err != nil {

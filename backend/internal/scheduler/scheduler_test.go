@@ -209,6 +209,35 @@ func (c *schedulerCollector) HasStockKlineArchive(context.Context, string) (bool
 	return c.hasKline, nil
 }
 
+func (c *schedulerCollector) FinalizeArchive(context.Context, string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, "seal")
+	return nil
+}
+
+func TestCompletedKlinesStillRunFinalization(t *testing.T) {
+	collector := &schedulerCollector{hasEnd: true, hasKline: true}
+	calendar, err := tradingcalendar.Load(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(collector, calendar, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 4, 17, 30, 0, 0, s.location)
+	if err := s.executeJob(context.Background(), newScheduledJob("stock-kline", now, "2026-09-04"), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.recoverArchive(context.Background(), "2026-09-04", now); err != nil {
+		t.Fatal(err)
+	}
+	if len(collector.calls) != 2 || collector.calls[0] != "seal" || collector.calls[1] != "seal" {
+		t.Fatalf("completion skipped finalization: %v", collector.calls)
+	}
+}
+
 func (c *schedulerCollector) CollectStockBoardRelations(context.Context, string) error {
 	c.mu.Lock()
 	c.calls = append(c.calls, "relations")

@@ -14,10 +14,10 @@ import (
 func (s *Store) StartRelationSync(ctx context.Context, run repository.RelationSyncRun) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO relation_sync_run
 (run_id,trade_date,status,board_count,relation_count,added_count,removed_count,baseline_built,
-started_at,finished_at,duration_ms,error_code,error_message)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, run.RunID, run.TradeDate, string(run.Status), run.BoardCount, run.RelationCount,
+started_at,finished_at,duration_ms,error_code,error_message,lease_until)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, run.RunID, run.TradeDate, string(run.Status), run.BoardCount, run.RelationCount,
 		run.AddedCount, run.RemovedCount, boolInt(run.BaselineBuilt), formatTimestamp(run.StartedAt), nil,
-		run.DurationMS, run.ErrorCode, run.ErrorMessage)
+		run.DurationMS, run.ErrorCode, run.ErrorMessage, runLeaseUntil(ctx))
 	return err
 }
 
@@ -119,7 +119,7 @@ AND current.relation_scope=stage.relation_scope WHERE stage.run_id=? AND current
 		}
 		if currentOnly == 0 && stageOnly == 0 {
 			finishedAt := time.Now().UTC()
-			if _, err := tx.ExecContext(ctx, `UPDATE relation_sync_run SET status='success',board_count=?,relation_count=?,
+			if _, err := tx.ExecContext(ctx, `UPDATE relation_sync_run SET status='success',lease_until=NULL,board_count=?,relation_count=?,
 added_count=0,removed_count=0,baseline_built=0,finished_at=?,duration_ms=?,error_code='',error_message=''
 WHERE run_id=?`, boardCount, result.RelationCount, formatTimestamp(finishedAt), finishedAt.Sub(detectedAt).Milliseconds(), runID); err != nil {
 				return result, err
@@ -233,7 +233,7 @@ board_type=excluded.board_type,source_order=excluded.source_order,detected_at=ex
 	}
 
 	finishedAt := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx, `UPDATE relation_sync_run SET status='success',board_count=?,relation_count=?,
+	if _, err := tx.ExecContext(ctx, `UPDATE relation_sync_run SET status='success',lease_until=NULL,board_count=?,relation_count=?,
 added_count=?,removed_count=?,baseline_built=?,finished_at=?,duration_ms=?,error_code='',error_message=''
 WHERE run_id=?`, boardCount, result.RelationCount, result.AddedCount, result.RemovedCount, boolInt(result.BaselineBuilt),
 		formatTimestamp(finishedAt), finishedAt.Sub(detectedAt).Milliseconds(), runID); err != nil {
@@ -262,7 +262,7 @@ func (s *Store) FailRelationSync(ctx context.Context, run repository.RelationSyn
 		finished = formatTimestamp(*run.FinishedAt)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE relation_sync_run SET status=?,board_count=?,relation_count=?,
-added_count=?,removed_count=?,baseline_built=?,finished_at=?,duration_ms=?,error_code=?,error_message=? WHERE run_id=?`,
+added_count=?,removed_count=?,baseline_built=?,finished_at=?,duration_ms=?,error_code=?,error_message=?,lease_until=NULL WHERE run_id=?`,
 		string(run.Status), run.BoardCount, run.RelationCount, run.AddedCount, run.RemovedCount, boolInt(run.BaselineBuilt),
 		finished, run.DurationMS, run.ErrorCode, run.ErrorMessage, run.RunID); err != nil {
 		return err

@@ -617,23 +617,36 @@ FROM stock_archive_quality WHERE trade_date=?`, tradeDate, tradeDate).Scan(&qual
 func (s *Store) StartRun(ctx context.Context, run repository.CollectionRun) error {
 	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO collection_run
 (run_id,snapshot_at,snapshot_kind,rank_type,status,requested_date,actual_trade_date,expected_total,fetched_total,page_count,
-attempt_count,started_at,finished_at,duration_ms,error_code,error_message)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, run.RunID, formatTimestamp(run.SnapshotAt), string(run.SnapshotKind),
+attempt_count,started_at,finished_at,duration_ms,error_code,error_message,lease_until)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, run.RunID, formatTimestamp(run.SnapshotAt), string(run.SnapshotKind),
 		string(run.RankType), string(run.Status), run.RequestedDate, run.ActualTradeDate, run.ExpectedTotal, run.FetchedTotal,
-		run.PageCount, run.AttemptCount, formatTimestamp(run.StartedAt), nil, run.DurationMS, run.ErrorCode, run.ErrorMessage)
+		run.PageCount, run.AttemptCount, formatTimestamp(run.StartedAt), nil, run.DurationMS, run.ErrorCode, run.ErrorMessage, runLeaseUntil(ctx))
 	return err
 }
 
 func (s *Store) FinishRun(ctx context.Context, run repository.CollectionRun) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	var finished any
 	if run.FinishedAt != nil {
 		finished = formatTimestamp(*run.FinishedAt)
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE collection_run SET status=?,actual_trade_date=?,expected_total=?,fetched_total=?,
-page_count=?,attempt_count=?,finished_at=?,duration_ms=?,error_code=?,error_message=? WHERE run_id=?`, string(run.Status),
+	_, err = tx.ExecContext(ctx, `UPDATE collection_run SET status=?,actual_trade_date=?,expected_total=?,fetched_total=?,
+page_count=?,attempt_count=?,finished_at=?,duration_ms=?,error_code=?,error_message=?,lease_until=NULL WHERE run_id=?`, string(run.Status),
 		run.ActualTradeDate, run.ExpectedTotal, run.FetchedTotal, run.PageCount, run.AttemptCount, finished, run.DurationMS,
 		run.ErrorCode, run.ErrorMessage, run.RunID)
-	return err
+	if err != nil {
+		return err
+	}
+	if run.Status != repository.RunRunning {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM archive_money_stage WHERE run_id=?`, run.RunID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RecentRuns(ctx context.Context, tradeDate string, limit int) ([]repository.CollectionRun, error) {

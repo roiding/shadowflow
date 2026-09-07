@@ -47,9 +47,11 @@ curl -H "Authorization: Bearer $SHADOWFLOW_API_TOKEN" \
 
 ## 数据修补
 
-- **整日重采**：`./collect -task end-of-day -date YYYY-MM-DD`（生产同路径，含限速/熔断/质量核算；上游仅保留约 5 个交易日）。
+- **整日资金重采**：`./collect -task end-of-day -date YYYY-MM-DD`（生产同路径，含限速/熔断/质量核算；上游仅保留约 5 个交易日）。成功后还需运行 `./collect -task stock-kline -date YYYY-MM-DD` 补齐行情并封存；资金任务成功不等于整个归档已完成。
 - **个别盘中分钟缺失**：`backend/cmd/backfill_minutes`（`--trade-date`/`--clocks` 参数化；collect → insert → verify 三步，payload 有错误时 insert 会拒绝执行）。
-- 历史上的 `backfill_stock` / `backfill_concept` 已删除——功能被 `collect -task end-of-day` 完全覆盖。
+- 历史上的 `backfill_stock` / `backfill_concept` 已删除，资金修补统一走 `collect -task end-of-day`，个股行情及封存走 `collect -task stock-kline`。
+
+分批资金采集先写隔离暂存表，只有候选代码全集均具备 48 点时，才在单个事务内替换对应主归档并更新质量清单。中途失败或发布事务失败不会覆盖旧归档；完成/失败运行的暂存数据会清理，过期运行由维护任务回收。成功替换个股资金后，旧 K 线会失效并等待上述行情任务补齐。
 
 日终数据接口：
 
@@ -85,7 +87,11 @@ curl 'http://localhost:8080/api/v1/relations/changes?trade_date=2026-08-13'
 
 筛选读取本系统已经原子归档的完整 `daily_close`，不请求东方财富概念历史 K 线。只有累积日期达到所选连续日数才会计算结果；不足时接口明确返回 `ready=false`，不会补值或推测。停牌个股不会使整日失效，但它本身因缺少可用行情而不会入选。
 
-通用接口为 `POST /api/v1/focus/scan`。API 使用原始单位：资金/成交额为元，百分比型行情字段为小数，控盘系数为百分数；前端会自动换算为亿元和百分比。示例：
+通用接口为 `POST /api/v1/focus/scan`。API 使用原始单位：资金/成交额为元，百分比型行情字段为小数，控盘系数为百分数；前端会自动换算为亿元和百分比。
+
+筛选先对全量候选执行轻量资格判断和排序，再为最多 500 条概念及 500 条个股生成逐日解释。截断不改变合格概念的成分股范围，响应仍提供完整合格数量和截断标志。两种筛选接口共用一个并发槽，忙时返回 `503 scan_busy` 与 `Retry-After`；ST 状态及股票名称以所选日的日终记录为准，不使用旧成员关系中的名称。
+
+请求示例：
 
 ```bash
 curl -X POST 'http://localhost:8080/api/v1/focus/scan' \
@@ -135,7 +141,7 @@ GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go 测
 | `SHADOWFLOW_SCHEDULER_ENABLED` | `true` | 是否运行盘中和盘后采集调度；健康检查或只读 API 模式可设为 `false` |
 | `SHADOWFLOW_SUCCESS_RUN_RETENTION_DAYS` | `30` | 成功/跳过的采集运行记录保留天数 |
 | `SHADOWFLOW_FAILURE_RUN_RETENTION_DAYS` | `180` | 失败/部分成功的采集运行记录保留天数，必须不少于成功记录保留天数 |
-| `SHADOWFLOW_BACKUP_RETENTION_DAYS` | `3` | 压缩数据库备份文件保留数量，不是自然日；只清理自动命名的 `.db.gz` 及其 sidecar |
+| `SHADOWFLOW_BACKUP_RETENTION_DAYS` | `3` | 有效压缩备份保留数量，必须为正整数，不是自然日；只清理自动命名且校验通过的备份及其 sidecar |
 | `SHADOWFLOW_API_TOKEN` | 空 | 非空时开启 `/api/v1/*` 和 `/metrics` 的 Bearer Token 鉴权，至少 16 个字符；为空时关闭 |
 
 其余运行参数已固定在 `compose.yaml` 中，通常不需要额外配置。
@@ -150,7 +156,9 @@ GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go 测
 docker exec shadowflow /app/scripts/backup.sh
 ```
 
-备份会执行 `integrity_check`、gzip 校验，生成 SHA-256 sidecar 和关键表计数 metadata。`SHADOWFLOW_BACKUP_RETENTION_DAYS` 按 `.db.gz` 备份文件数量计数，默认保留 3 个；设置为 `3` 就只保留最近 3 个压缩备份，及其对应的 `.sha256` 和 `.meta` 文件。手工命名的 `.db`、`pre-*` 文件不在自动清理范围内。自动任务使用 `auto-backup.sh`，只在交易日调用 `backup.sh`；`backup.sh` 本身仍可在任何时间手动执行。恢复前可先做不落库验证：
+备份先在备份目录的独立暂存目录中执行 SQLite `integrity_check` 和 gzip 校验，再通过同文件系统的硬链接占用最终名称，不覆盖并发备份；同秒重名会等待下一秒重试。最后发布 `.db.gz.sha256`，作为完成标记，配套 `.meta` 保存关键表计数。该目录所在文件系统需支持硬链接。
+
+`SHADOWFLOW_BACKUP_RETENTION_DAYS` 默认保留最近 3 个有效备份：只有自动命名、同时具备 `.meta` 和 `.sha256`、摘要及 gzip 校验通过的归档才计数、参与清理。半成品、损坏文件和手工命名文件不挤占名额，也不自动删除；异常退出遗留的隐藏暂存目录需在确认无备份进程后人工清理。备份目录需容纳未压缩快照、压缩暂存文件及保留副本。`backup.sh` 仍可在任何时间手动执行。
 
 线上自动任务应调用先判断交易日的包装脚本：
 
@@ -158,7 +166,9 @@ docker exec shadowflow /app/scripts/backup.sh
 docker exec shadowflow /app/scripts/auto-backup.sh
 ```
 
-它读取 `SHADOWFLOW_CALENDAR_PATH`，当天为周末、法定休市日且不在 `workdays` 中时跳过；交易日才调用 `backup.sh`。主机 cron 仍可每天触发这个入口，不会在非交易日生成备份。
+它通过 `/app/collect -task is-trading-day -date YYYY-MM-DD` 读取 `SHADOWFLOW_CALENDAR_PATH`，复用服务的 JSON 日历解析与日期校验，不打开数据库、不读取上游。周末或休市日跳过，显式 `workdays` 覆盖周末；文件缺失、JSON/日期非法或节假日与工作日冲突时失败，不调用备份。主机 cron 仍可每天触发入口。非容器环境可设置 `SHADOWFLOW_COLLECT_BIN` 和 `SHADOWFLOW_BACKUP_SCRIPT` 指向本机程序。
+
+恢复会对传入归档的私有副本计算 SHA-256，再解压同一副本；不使用 sidecar 中的文件路径寻找被校验文件。新 sidecar 只记录文件名，旧版绝对路径 sidecar 和迁移后的归档也兼容。恢复验证需要数据库目录中的临时空间，可先做不落库验证：
 
 ```bash
 docker compose run --rm --entrypoint /app/scripts/restore.sh shadowflow \
@@ -213,6 +223,12 @@ curl 'http://localhost:8080/api/v1/research/labels?trade_date=2026-08-14&type=st
 
 未来标签严格按后续完整交易日生成，包含收益率、相对首要行业收益、最大有利波动和最大不利波动。目标交易日重跑时会根据更新后的主归档重新计算。
 
+K 线已经落库但封存失败时，常规重试和启动恢复仍会执行封存；内容摘要未变化且特征已存在时不会重复生成分析。补入中间交易日会替换受影响周期的旧目标映射；修正某日归档会在同一分析事务内重算该日及后续最多 59 个完整归档日的滚动特征和相应标签。
+
+旧版本已经产生的分析错误不会在本机审计过程中修改生产数据。部署修复后，可对最早受影响的日期执行 `collect -task analytics -date YYYY-MM-DD` 重新计算；若影响范围超过 60 个归档日，需分段覆盖。金额/行情主数据缺损需先重采，再重新封存。
+
+采集运行记录使用任务 context 的截止时间加一分钟收尾余量作为租约。打开管理进程不会把其他活跃任务判为中断；初始化和维护只回收租约明确过期的任务。没有租约的历史运行记录不会被推断为已停止，需保留并核对后处理。
+
 动态筛选结果包含逐日逐条件实际值和通过状态；未入选解释返回首个失败日或范围剔除原因。前端支持本地模板保存、删除、JSON 导入和复制分享。多概念成分股使用一次批量截面查询，不再逐概念访问数据库。
 
 ## 研究工作站导出
@@ -229,11 +245,23 @@ python3 scripts/export_research.py \
   --format both
 ```
 
-导出目录包含日期范围内的归档摘要、`daily_close`、`daily_features`、`future_labels`、板块资金曲线和个股五分钟联合数据。`manifest.json` 记录每个交易日的归档标识与内容 SHA-256，研究脚本可据此校验输入。
+导出目录包含日期范围内的归档摘要、`daily_close`、`daily_features`、`future_labels`、板块资金曲线和个股五分钟联合数据。导出先通过 SQLite online backup 固定一份磁盘快照，之后关闭源库连接，CSV、Parquet 和 `manifest.json` 均从同一快照生成；系统临时目录需额外容纳一份未压缩数据库，不会为整个导出过程持续持有源库读事务。
+
+仅导出完整清单与封存版本匹配、滚动特征来源仍有效的当前归档日。未封存、重采中、清单已变化但尚未重新封存、依赖窗口过期的日期不会混入，清单的 `excluded_dates` 列出范围内已存在但被排除的日期；范围内没有可导出的日期时直接失败。无内容变化的重复封存也会同步清单元数据。旧库被排除的日期需先完成采集/封存或修复分析，再重新导出。
+
+日期范围对收益标签按信号日应用，目标日可以在范围之外，但信号和目标都必须是有效当前版本，`label_target_revisions` 记录实际目标的摘要。为兼容旧脚本，保留 `future_label_history` 文件名；此文件现在与 `future_labels` 同为有效当前标签，不再混入过期目标历史。`manifest.json` 同时记录归档 SHA-256、固定快照方式及各文件行数。
+
+`--output` 必须为新目录或空目录。所有文件成功后才将同一父目录下的暂存包原子发布，失败不留下可误读的半套导出，也不覆盖已有导出；父目录需额外容纳整个暂存包。
 
 关系维护按东方财富行业目录 `t:2` 和广义概念目录 `t:3` 逐板块反查全部成分股。它会在交易日开盘前的 `07:00` 自动执行，失败或当天尚未成功时在 `07:30`、`08:00` 补试。自动关系任务最晚运行至当日 `09:15`；到点取消未完成扫描，排队或重启后迟到的任务标记为跳过，也不再安排越过截止时间的重试，盘中继续使用上次完整关系。目录每次从上游重新获取，按板块代码稳定分页，新增行业和概念自动纳入；分页途中总数变化、重复代码或缺页会让本轮失败重取。扫描数据逐板块写入临时表，不在内存中保存全市场关系；只有完整扫描成功后，才会在一个事务中写入首次全量基线或当日 `added`/`removed` 事件并更新物化当前态。新增行业/概念、个股新增或删除概念、个股行业变更都统一表现为关系事件，任意历史日期的成分由基线加截至当日的事件重建，不保存每日目录快照。中途失败只清理临时数据，不会改变已有关系。首次部署或错过调度时可手工执行 `-task relations`。
 
 ## 验证
+
+导出、备份及交易日包装脚本的回归使用临时数据库，不接触业务库。需要 Python 3.9+、Go、`sqlite3`、`gzip`、`sha256sum`；有 `dash` 时另跑一套 shell 回归，有 `pyarrow` 时额外验证 CSV/Parquet 逐值一致，CI 会安装并执行这两项：
+
+```bash
+python3 -m unittest discover -s scripts/tests -v
+```
 
 ```bash
 cd backend && go test ./... && go vet ./...

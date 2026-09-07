@@ -27,8 +27,8 @@ func (s *Store) SealArchiveRevision(ctx context.Context, tradeDate, revisionID s
 
 	if existing, found, err := archiveRevisionByID(ctx, tx, revisionID); err != nil {
 		return repository.ArchiveRevision{}, err
-	} else if found {
-		return existing, nil
+	} else if found && existing.TradeDate != tradeDate {
+		return repository.ArchiveRevision{}, fmt.Errorf("revision %s belongs to %s", revisionID, existing.TradeDate)
 	}
 
 	manifest, err := scanArchiveManifest(tx.QueryRowContext(ctx, `SELECT trade_date,status,
@@ -56,24 +56,47 @@ FROM daily_archive_manifest WHERE trade_date=?`, tradeDate))
 		return repository.ArchiveRevision{}, err
 	}
 	revisionNo := 1
+	var current repository.ArchiveRevision
 	if previous.Valid {
 		revisionID = previous.String
-		if err := tx.QueryRowContext(ctx, `SELECT revision_no FROM daily_archive_revision WHERE revision_id=?`, revisionID).Scan(&revisionNo); err != nil {
+		var found bool
+		current, found, err = archiveRevisionByID(ctx, tx, revisionID)
+		if err != nil {
 			return repository.ArchiveRevision{}, err
 		}
+		if !found {
+			return repository.ArchiveRevision{}, fmt.Errorf("current archive revision %s is missing", revisionID)
+		}
+		revisionNo = current.RevisionNo
 	}
 
 	contentSHA256, err := hashArchiveData(ctx, tx, tradeDate)
 	if err != nil {
 		return repository.ArchiveRevision{}, err
 	}
-	createdAt := time.Now().UTC()
 	manifest.CurrentRevisionID = revisionID
 	manifest.RevisionNo = revisionNo
 	manifestJSON, err := json.Marshal(manifest)
 	if err != nil {
 		return repository.ArchiveRevision{}, err
 	}
+	// K-line completion and sealing are separate commits. Retrying a seal is
+	// necessary after interruption, but unchanged archives need no new analytics.
+	if current.RevisionID != "" && current.ContentSHA256 == contentSHA256 {
+		var ready int
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM daily_feature_set WHERE revision_id=? AND feature_version=?)`, current.RevisionID, dailyFeatureVersion).Scan(&ready); err != nil {
+			return repository.ArchiveRevision{}, err
+		}
+		if ready == 1 {
+			// Revalidation can refresh the manifest timestamp without changing
+			// archive content. Keep the seal bound to that validated generation.
+			if _, err := tx.ExecContext(ctx, `UPDATE daily_archive_revision SET manifest_json=? WHERE revision_id=?`, string(manifestJSON), current.RevisionID); err != nil {
+				return repository.ArchiveRevision{}, err
+			}
+			return current, tx.Commit()
+		}
+	}
+	createdAt := time.Now().UTC()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO daily_archive_revision
 (revision_id,trade_date,revision_no,previous_revision_id,content_sha256,manifest_json,created_at)
 VALUES (?,?,?,?,?,?,?)

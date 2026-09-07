@@ -1,0 +1,95 @@
+{
+  "workflows": [
+    "token gate, invalid token, valid token",
+    "industry pagination, 451-concept universe, search, change sorting",
+    "chart metric update changes canvas",
+    "multi-day history, 144 points, authenticated CSV download",
+    "stock server pagination and debounced search",
+    "default three-day focus scan, stock membership, template save/delete",
+    "quality manifest display",
+    "390px and 360px mobile pane navigation and charts"
+  ],
+  "pageErrors": [],
+  "failedResponses": [],
+  "canvases": [
+    {
+      "name": "desktop-monitor",
+      "width": 619,
+      "height": 350,
+      "painted": 12782,
+      "colored": 10974,
+      "hash": 2605548826
+    },
+    {
+      "name": "desktop-changed-metric",
+      "width": 619,
+      "height": 350,
+      "painted": 19789,
+      "colored": 17715,
+      "hash": 2210726698
+    },
+    {
+      "name": "desktop-history",
+      "width": 1334,
+      "height": 350,
+      "painted": 30610,
+      "colored": 27231,
+      "hash": 1557198255
+    },
+    {
+      "name": "mobile-390-trend",
+      "width": 336,
+      "height": 310,
+      "painted": 5538,
+      "colored": 4336,
+      "hash": 3511468870
+    },
+    {
+      "name": "mobile-360-trend",
+      "width": 306,
+      "height": 310,
+      "painted": 4997,
+      "colored": 3839,
+      "hash": 3339210141
+    }
+  ],
+  "layouts": [
+    {
+      "name": "desktop-monitor",
+      "viewport": 1440,
+      "documentWidth": 1440
+    },
+    {
+      "name": "desktop-quality",
+      "viewport": 1440,
+      "documentWidth": 1440
+    },
+    {
+      "name": "mobile-390-ranks",
+      "viewport": 390,
+      "documentWidth": 390
+    },
+    {
+      "name": "mobile-390-trend",
+      "viewport": 390,
+      "documentWidth": 390
+    },
+    {
+      "name": "mobile-360-ranks",
+      "viewport": 360,
+      "documentWidth": 360
+    },
+    {
+      "name": "mobile-360-trend",
+      "viewport": 360,
+      "documentWidth": 360
+    }
+  ],
+  "screenshots": [
+    "/private/tmp/shadowflow-audit-runtime.5Iqxno/screenshots/desktop-monitor.png",
+    "/private/tmp/shadowflow-audit-runtime.5Iqxno/screenshots/mobile-390-ranks.png",
+    "/private/tmp/shadowflow-audit-runtime.5Iqxno/screenshots/mobile-390-trend.png",
+    "/private/tmp/shadowflow-audit-runtime.5Iqxno/screenshots/mobile-360-ranks.png",
+    "/private/tmp/shadowflow-audit-runtime.5Iqxno/screenshots/mobile-360-trend.png"
+  ]
+}

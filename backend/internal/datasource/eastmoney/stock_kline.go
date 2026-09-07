@@ -10,7 +10,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -257,7 +256,7 @@ func (c *Client) fetchStockKlineFromHistory(ctx context.Context, tradeDate strin
 		return nil, fmt.Errorf("expected 48 historical klines, got %d", count)
 	}
 	fetchedAt := time.Now().UTC()
-	points := make([]graymarket.StockKlinePoint, 0, 48)
+	points := make([]graymarket.StockKlinePoint, 48)
 	seen := make(map[int]struct{}, 48)
 	for _, raw := range payload.Data.Klines {
 		fields, err := csv.NewReader(strings.NewReader(raw)).Read()
@@ -276,15 +275,30 @@ func (c *Client) fetchStockKlineFromHistory(ctx context.Context, tradeDate strin
 			return nil, fmt.Errorf("duplicate historical kline time %s", fields[0])
 		}
 		seen[index] = struct{}{}
-		points = append(points, graymarket.StockKlinePoint{
+		numbers, err := klineNumbers(fields, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+		if err != nil {
+			return nil, err
+		}
+		volume, err := klineAmount(numbers[5], true)
+		if err != nil {
+			return nil, fmt.Errorf("volume at %s: %w", fields[0], err)
+		}
+		turnover, err := klineAmount(numbers[6], false)
+		if err != nil {
+			return nil, fmt.Errorf("turnover at %s: %w", fields[0], err)
+		}
+		points[index] = graymarket.StockKlinePoint{
 			TradeDate: tradeDate, SnapshotAt: at, Market: stock.Market, Code: stock.Code, Source: graymarket.KlineSourceFiveMinute,
-			OpenPrice: decimal(fields[1]), ClosePrice: decimal(fields[2]), HighPrice: decimal(fields[3]), LowPrice: decimal(fields[4]),
-			Volume: integer(fields[5]), Turnover: integer(fields[6]), Amplitude: percent(fields[7]), ChangePct: percent(fields[8]),
-			ChangeValue: decimal(fields[9]), TurnoverRate: percent(fields[10]), FetchedAt: fetchedAt,
-		})
+			OpenPrice: numbers[1], ClosePrice: numbers[2], HighPrice: numbers[3], LowPrice: numbers[4],
+			Volume: volume, Turnover: turnover, Amplitude: numbers[7] / 100, ChangePct: numbers[8] / 100,
+			ChangeValue: numbers[9], TurnoverRate: numbers[10] / 100, FetchedAt: fetchedAt,
+		}
 	}
 	if len(seen) != 48 {
 		return nil, fmt.Errorf("historical kline has %d distinct points", len(seen))
+	}
+	if err := validateKlinePrices(points, stock, false); err != nil {
+		return nil, err
 	}
 	return points, nil
 }
@@ -354,9 +368,16 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 		}
 		previousAt = at
 		minuteRows++
-		openPrice, closePrice, highPrice, lowPrice := decimal(fields[1]), decimal(fields[2]), decimal(fields[3]), decimal(fields[4])
+		numbers, err := klineNumbers(fields, 1, 2, 3, 4, 10, 11)
+		if err != nil {
+			return nil, err
+		}
+		openPrice, closePrice, highPrice, lowPrice := numbers[1], numbers[2], numbers[3], numbers[4]
 		bar := &bars[index]
-		nextCumulativeVolume := integer(fields[10])
+		nextCumulativeVolume, err := klineAmount(numbers[10], true)
+		if err != nil {
+			return nil, fmt.Errorf("volume at %s: %w", fields[0], err)
+		}
 		if nextCumulativeVolume < cumulativeVolume {
 			return nil, fmt.Errorf("trend cumulative volume decreased at %s", fields[0])
 		}
@@ -366,7 +387,10 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 		}
 		bar.point.Volume += minuteVolume
 		cumulativeVolume = nextCumulativeVolume
-		nextCumulativeTurnover := integer(fields[11])
+		nextCumulativeTurnover, err := klineAmount(numbers[11], false)
+		if err != nil {
+			return nil, fmt.Errorf("turnover at %s: %w", fields[0], err)
+		}
 		if nextCumulativeTurnover < cumulativeTurnover {
 			return nil, fmt.Errorf("trend cumulative turnover decreased at %s", fields[0])
 		}
@@ -437,11 +461,8 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 	// matching trade. In that case the final one-minute row has zero volume,
 	// so the last traded five-minute close may legitimately differ from the
 	// daily close. The daily close remains authoritative for the daily bar.
-	closeMatches := samePrice(points[47].ClosePrice, stock.ClosePrice) ||
-		(closeAuctionVolume == 0 && math.Abs(points[47].ClosePrice-stock.ClosePrice) <= 0.0101)
-	if !samePrice(points[0].OpenPrice, stock.OpenPrice) || !samePrice(maxKlinePrice(points), stock.HighPrice) ||
-		!samePrice(minKlinePrice(points), stock.LowPrice) || !closeMatches {
-		return nil, fmt.Errorf("aggregated trend OHLC does not match daily bar")
+	if err := validateKlinePrices(points, stock, closeAuctionVolume == 0); err != nil {
+		return nil, err
 	}
 	return points, nil
 }
@@ -484,14 +505,6 @@ func minKlinePrice(points []graymarket.StockKlinePoint) float64 {
 	}
 	return result
 }
-
-func decimal(value string) float64 { result, _ := strconv.ParseFloat(value, 64); return result }
-func integer(value string) int64 {
-	result, _ := strconv.ParseInt(strings.SplitN(value, ".", 2)[0], 10, 64)
-	return result
-}
-
-func percent(value string) float64 { return decimal(value) / 100 }
 
 func researchMinuteIndexForSource(value time.Time) (int, bool) {
 	minutes := value.Hour()*60 + value.Minute()

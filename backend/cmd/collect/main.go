@@ -14,6 +14,7 @@ import (
 	"github.com/roiding/shadowflow/internal/datasource/eastmoney"
 	"github.com/roiding/shadowflow/internal/datasource/upstream"
 	"github.com/roiding/shadowflow/internal/repository/sqlite"
+	"github.com/roiding/shadowflow/internal/tradingcalendar"
 )
 
 // main only translates run's outcome into an exit code: calling os.Exit
@@ -28,7 +29,7 @@ func main() {
 
 func run() error {
 	var task, date, at string
-	flag.StringVar(&task, "task", "", "task: boards, end-of-day, stock-kline, daily-close, relations, cleanup, maintenance, or analytics")
+	flag.StringVar(&task, "task", "", "task: boards, end-of-day, stock-kline, daily-close, relations, cleanup, maintenance, analytics, or is-trading-day")
 	flag.StringVar(&date, "date", "", "trade date in YYYY-MM-DD")
 	flag.StringVar(&at, "at", "15:00", "snapshot time in HH:MM for boards")
 	flag.Parse()
@@ -43,6 +44,18 @@ func run() error {
 	tradeDate, err := time.ParseInLocation("2006-01-02", date, location)
 	if err != nil || tradeDate.Format("2006-01-02") != date {
 		return fmt.Errorf("date must use YYYY-MM-DD")
+	}
+	if task == "is-trading-day" {
+		path := os.Getenv("SHADOWFLOW_CALENDAR_PATH")
+		if path == "" {
+			path = "./config/trading_calendar.json"
+		}
+		calendar, err := tradingcalendar.LoadRequired(path)
+		if err != nil {
+			return err
+		}
+		fmt.Println(calendar.IsTradingDay(tradeDate))
+		return nil
 	}
 	snapshotAt, err := time.ParseInLocation("2006-01-02 15:04", date+" "+at, location)
 	if err != nil {
@@ -78,7 +91,8 @@ func run() error {
 		// The full archive is intentionally sequential to avoid saturating the
 		// upstream guard and SQLite writer.
 		timeout = 90 * time.Minute
-	} else if task == "stock-kline" {
+	} else if task == "stock-kline" || task == "analytics" {
+		// Historical analysis repairs may rebuild up to sixty daily windows.
 		timeout = 90 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
