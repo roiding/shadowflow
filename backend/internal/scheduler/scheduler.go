@@ -17,6 +17,7 @@ import (
 )
 
 var errDependencyUnavailable = errors.New("scheduled job dependency is unavailable")
+var errRelationWindowClosed = errors.New("automatic relation synchronization must finish before 09:15 Asia/Shanghai on its trade date")
 
 type collectorService interface {
 	CollectBoards(context.Context, time.Time) error
@@ -155,7 +156,7 @@ func (s *Scheduler) enqueueReplayableJobs(ctx context.Context, now time.Time) {
 		at   string
 	}{
 		{"cleanup", "09:00"}, {"maintenance", "09:05"},
-		{"relations", "08:00"}, {"relations", "08:50"}, {"relations", "09:15"},
+		{"relations", "07:00"}, {"relations", "07:30"}, {"relations", "08:00"},
 		{"end-of-day-industry", "16:00"}, {"end-of-day-industry", "16:05"}, {"end-of-day-industry", "16:10"},
 		{"end-of-day-concept", "16:00"}, {"end-of-day-concept", "16:05"}, {"end-of-day-concept", "16:10"},
 		{"end-of-day-stock", "16:00"}, {"end-of-day-stock", "16:05"}, {"end-of-day-stock", "16:10"},
@@ -306,14 +307,27 @@ func (s *Scheduler) release(lane, key string, current time.Time) {
 }
 
 func (s *Scheduler) runJob(parent context.Context, job ScheduledJob, current time.Time) {
-	ctx, cancel := context.WithTimeout(parent, policyFor(job.Kind).timeout)
-	defer cancel()
 	startedAt := time.Now().UTC()
+	// Claiming a queued job can be delayed by the database. Enforce the
+	// morning cutoff against actual execution time, not the old tick time.
+	deadline, err := s.executionDeadline(job, startedAt)
+	ctx, cancel := context.WithDeadline(parent, deadline)
+	defer cancel()
 
-	err := s.executeJob(ctx, job, current)
+	if err == nil {
+		if job.Kind == "relations" {
+			s.logger.Info("scheduled relation sync starting", "trade_date", job.TradeDate,
+				"planned_at", job.PlannedAt, "started_at", startedAt, "deadline", deadline, "attempt", job.AttemptCount)
+		}
+		err = s.executeJob(ctx, job, current)
+	}
 	finishedAt := time.Now().UTC()
 	job.DurationMS = finishedAt.Sub(startedAt).Milliseconds()
 	switch {
+	case errors.Is(err, errRelationWindowClosed):
+		job.Status = JobSkipped
+		job.LastErrorCode, job.LastError = "outside_relation_window", err.Error()
+		job.RetryAt = nil
 	case ctx.Err() != nil && parent.Err() == nil:
 		job.Status = JobFailed
 		job.LastErrorCode, job.LastError = "timeout", ctx.Err().Error()
@@ -325,8 +339,9 @@ func (s *Scheduler) runJob(parent context.Context, job ScheduledJob, current tim
 	}
 	if job.Status == JobFailed {
 		policy := policyFor(job.Kind)
-		if job.AttemptCount < policy.maxAttempts {
-			retryAt := finishedAt.Add(policy.retryAfter)
+		retryAt := finishedAt.Add(policy.retryAfter)
+		_, retryErr := s.executionDeadline(job, retryAt)
+		if job.AttemptCount < policy.maxAttempts && retryErr == nil {
 			job.RetryAt = &retryAt
 		} else {
 			job.RetryAt = nil
@@ -335,10 +350,31 @@ func (s *Scheduler) runJob(parent context.Context, job ScheduledJob, current tim
 	if err := s.jobs.FinishScheduledJob(context.WithoutCancel(ctx), job); err != nil {
 		s.logger.Error("finish scheduled job", "kind", job.Kind, "job_key", job.JobKey, "error", err)
 	}
-	if err != nil {
+	if job.Status == JobSkipped {
+		s.logger.Warn("scheduled job skipped", "kind", job.Kind, "trade_date", job.TradeDate,
+			"planned_at", job.PlannedAt, "started_at", startedAt, "reason", err)
+	} else if err != nil {
 		s.logger.Error("scheduled job failed", "kind", job.Kind, "trade_date", job.TradeDate,
 			"at", current, "attempt", job.AttemptCount, "retry_at", job.RetryAt, "error", err)
 	}
+}
+
+func (s *Scheduler) executionDeadline(job ScheduledJob, startedAt time.Time) (time.Time, error) {
+	deadline := startedAt.Add(policyFor(job.Kind).timeout)
+	if job.Kind != "relations" {
+		return deadline, nil
+	}
+	cutoff, err := time.ParseInLocation("2006-01-02 15:04", job.TradeDate+" 09:15", s.location)
+	if err != nil {
+		return deadline, fmt.Errorf("invalid relation trade date: %w", err)
+	}
+	if !startedAt.Before(cutoff) {
+		return deadline, errRelationWindowClosed
+	}
+	if cutoff.Before(deadline) {
+		deadline = cutoff
+	}
+	return deadline, nil
 }
 
 func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current time.Time) error {
@@ -548,8 +584,8 @@ func jobKind(current time.Time) string {
 		return "cleanup"
 	case current.Hour() == 9 && current.Minute() == 5:
 		return "maintenance"
-	case current.Hour() == 8 && (current.Minute() == 0 || current.Minute() == 50),
-		current.Hour() == 9 && current.Minute() == 15:
+	case current.Hour() == 7 && (current.Minute() == 0 || current.Minute() == 30),
+		current.Hour() == 8 && current.Minute() == 0:
 		return "relations"
 	default:
 		return ""

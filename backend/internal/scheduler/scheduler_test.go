@@ -46,8 +46,9 @@ func TestTradingDayContainsExactly240MinuteJobs(t *testing.T) {
 func TestScheduledJobBoundaries(t *testing.T) {
 	location := time.FixedZone("Asia/Shanghai", 8*60*60)
 	tests := map[string]string{
-		"07:59": "", "08:00": "relations", "08:01": "", "08:50": "relations", "08:51": "",
-		"08:59": "", "09:00": "cleanup", "09:01": "", "09:15": "relations", "09:16": "", "09:30": "",
+		"06:59": "", "07:00": "relations", "07:01": "", "07:29": "", "07:30": "relations", "07:31": "",
+		"07:59": "", "08:00": "relations", "08:01": "", "08:50": "", "08:51": "",
+		"08:59": "", "09:00": "cleanup", "09:01": "", "09:15": "", "09:16": "", "09:30": "",
 		"09:05": "maintenance",
 		"15:05": "", "15:30": "", "16:00": "end-of-day", "16:05": "end-of-day", "16:10": "end-of-day", "16:11": "",
 		"16:15": "stock-kline", "17:30": "stock-kline", "20:00": "stock-kline", "20:01": "",
@@ -57,6 +58,94 @@ func TestScheduledJobBoundaries(t *testing.T) {
 		if actual := jobKind(parsed); actual != expected {
 			t.Errorf("%s: expected %q, got %q", value, expected, actual)
 		}
+	}
+}
+
+func TestRelationExecutionDeadlineUsesShanghaiMorningWindow(t *testing.T) {
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Scheduler{location: location}
+	for _, tc := range []struct {
+		at       string
+		deadline string
+	}{
+		{"07:00", "07:45"}, {"08:00", "08:45"}, {"08:50", "09:15"},
+		{"09:14", "09:15"}, {"09:15", ""}, {"10:40", ""}, {"16:00", ""},
+	} {
+		t.Run(tc.at, func(t *testing.T) {
+			at, err := time.ParseInLocation("2006-01-02 15:04", "2026-09-07 "+tc.at, location)
+			if err != nil {
+				t.Fatal(err)
+			}
+			deadline, err := s.executionDeadline(ScheduledJob{Kind: "relations", TradeDate: "2026-09-07"}, at.UTC())
+			if tc.deadline == "" {
+				if !errors.Is(err, errRelationWindowClosed) {
+					t.Fatalf("late relation sync was allowed: deadline=%v err=%v", deadline, err)
+				}
+			} else if err != nil || deadline.In(location).Format("15:04") != tc.deadline {
+				t.Fatalf("unexpected deadline: got=%v want=%s err=%v", deadline, tc.deadline, err)
+			}
+			minuteDeadline, err := s.executionDeadline(ScheduledJob{Kind: "minute"}, at)
+			if err != nil || !minuteDeadline.Equal(at.Add(policyFor("minute").timeout)) {
+				t.Fatalf("relation window changed minute collection: deadline=%v err=%v", minuteDeadline, err)
+			}
+		})
+	}
+}
+
+func TestDelayedRelationJobDoesNotRunAfterItsMorning(t *testing.T) {
+	jobs := &recordingJobStore{finished: make(chan ScheduledJob, 1)}
+	collector := &schedulerCollector{}
+	s, err := New(collector, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{Jobs: jobs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	yesterday := time.Now().In(s.location).AddDate(0, 0, -1)
+	staleTick := time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 8, 0, 0, 0, s.location)
+	job := newScheduledJob("relations", staleTick, staleTick.Format("2006-01-02"))
+	job.RetryAt = &staleTick
+	s.runJob(context.Background(), job, staleTick)
+	finished := <-jobs.finished
+	if finished.Status != JobSkipped || finished.LastErrorCode != "outside_relation_window" || finished.RetryAt != nil {
+		t.Fatalf("late queued sync was not closed: %+v", finished)
+	}
+	if len(collector.calls) != 0 {
+		t.Fatalf("late queued sync reached the collector: %v", collector.calls)
+	}
+}
+
+type replayRecordingJobStore struct {
+	noopJobStore
+	jobs []ScheduledJob
+}
+
+func (s *replayRecordingJobStore) EnsureScheduledJob(_ context.Context, job ScheduledJob) error {
+	s.jobs = append(s.jobs, job)
+	return nil
+}
+
+func TestReplayableRelationJobsUseEarlyMorningSchedule(t *testing.T) {
+	calendar, err := tradingcalendar.Load(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := &replayRecordingJobStore{}
+	s, err := New(&schedulerCollector{}, calendar, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{Jobs: jobs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 7, 9, 30, 0, 0, s.location)
+	s.enqueueReplayableJobs(context.Background(), now)
+	var clocks []string
+	for _, job := range jobs.jobs {
+		if job.Kind == "relations" {
+			clocks = append(clocks, job.PlannedAt.In(s.location).Format("15:04"))
+		}
+	}
+	if fmt.Sprint(clocks) != "[07:00 07:30 08:00]" {
+		t.Fatalf("restart replay used a different relation schedule: %v", clocks)
 	}
 }
 

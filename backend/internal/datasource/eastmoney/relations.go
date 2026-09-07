@@ -43,11 +43,12 @@ func (c *Client) FetchBoardQuotes(ctx context.Context, rankType graymarket.RankT
 	}
 	result := make([]graymarket.BoardQuote, 0, 512)
 	expectedTotal := 0
-	seen := make(map[string]struct{})
+	seen := make(map[string]int)
 	for page := 1; ; page++ {
 		params := url.Values{
 			"pn": {strconv.Itoa(page)}, "pz": {strconv.Itoa(c.pageSize)}, "po": {"1"}, "np": {"1"},
-			"fltt": {"2"}, "invt": {"2"}, "fid": {"f3"},
+			// Quote changes must not move boards across page boundaries.
+			"fltt": {"2"}, "invt": {"2"}, "fid": {"f12"},
 			"fields": {"f2,f3,f4,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f124"},
 			"fs":     {"m:90+t:" + typeCode + "+f:!50"},
 		}
@@ -57,6 +58,8 @@ func (c *Client) FetchBoardQuotes(ctx context.Context, rankType graymarket.RankT
 		}
 		if page == 1 {
 			expectedTotal = payload.Data.Total
+		} else if payload.Data.Total != expectedTotal {
+			return nil, fmt.Errorf("%s board quotes total changed on page %d: expected %d, got %d", rankType, page, expectedTotal, payload.Data.Total)
 		}
 		fetchedAt := time.Now().UTC()
 		for _, row := range rows {
@@ -64,10 +67,10 @@ func (c *Client) FetchBoardQuotes(ctx context.Context, rankType graymarket.RankT
 			if code == "" {
 				return nil, fmt.Errorf("%s board quote contains an empty code", rankType)
 			}
-			if _, duplicate := seen[code]; duplicate {
-				return nil, fmt.Errorf("duplicate %s board quote code %s", rankType, code)
+			if firstPage, duplicate := seen[code]; duplicate {
+				return nil, fmt.Errorf("duplicate %s board quote code %s on page %d (first seen on page %d)", rankType, code, page, firstPage)
 			}
-			seen[code] = struct{}{}
+			seen[code] = page
 			latestPrice, available := optionalFloat(row, "f2")
 			result = append(result, graymarket.BoardQuote{
 				BoardCode: code, BoardMarket: intValue(row, "f13"), BoardName: optionalString(row, "f14"),
@@ -220,13 +223,15 @@ func (c *Client) FetchBoardCatalog(ctx context.Context, boardType graymarket.Boa
 	default:
 		return nil, fmt.Errorf("unsupported board type %q", boardType)
 	}
-	seen := make(map[string]struct{})
+	seen := make(map[string]int)
 	result := make([]graymarket.Board, 0, 512)
 	expectedTotal := 0
 	for page := 1; ; page++ {
 		params := url.Values{
 			"pn": {strconv.Itoa(page)}, "pz": {strconv.Itoa(c.pageSize)}, "po": {"1"}, "np": {"1"},
-			"fltt": {"2"}, "invt": {"2"}, "fid": {"f3"}, "fields": {"f12,f14,f3"},
+			// Fetch the live catalog in code order; gain rankings can overlap
+			// between pages even though the final result is sorted below.
+			"fltt": {"2"}, "invt": {"2"}, "fid": {"f12"}, "fields": {"f12,f14"},
 			"fs": {"m:90+t:" + typeCode + "+f:!50"},
 		}
 		payload, rows, err := c.fetchQuotePage(ctx, "/api/qt/clist/get", params)
@@ -235,16 +240,18 @@ func (c *Client) FetchBoardCatalog(ctx context.Context, boardType graymarket.Boa
 		}
 		if page == 1 {
 			expectedTotal = payload.Data.Total
+		} else if payload.Data.Total != expectedTotal {
+			return nil, fmt.Errorf("%s board catalog total changed on page %d: expected %d, got %d", boardType, page, expectedTotal, payload.Data.Total)
 		}
 		for _, row := range rows {
 			code := optionalString(row, "f12")
 			if code == "" {
 				return nil, fmt.Errorf("%s board catalog contains an empty code", boardType)
 			}
-			if _, duplicate := seen[code]; duplicate {
-				return nil, fmt.Errorf("duplicate %s board code %s", boardType, code)
+			if firstPage, duplicate := seen[code]; duplicate {
+				return nil, fmt.Errorf("duplicate %s board code %s on page %d (first seen on page %d)", boardType, code, page, firstPage)
 			}
-			seen[code] = struct{}{}
+			seen[code] = page
 			result = append(result, graymarket.Board{Code: code, Name: optionalString(row, "f14"), Type: boardType, SourceRank: len(result) + 1})
 		}
 		// Eastmoney returns rc=102 for pages beyond the declared total. Stop as

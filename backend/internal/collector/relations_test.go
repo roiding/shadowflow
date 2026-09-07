@@ -16,6 +16,7 @@ type fakeRelationSource struct {
 	boards       map[graymarket.BoardType][]graymarket.Board
 	constituents map[string][]graymarket.StockBoardRelation
 	catalogErr   error
+	errBoardType graymarket.BoardType
 }
 
 func (f *fakeRelationSource) FetchAll(context.Context, graymarket.RankType, string, time.Time) (graymarket.RankSnapshot, error) {
@@ -23,7 +24,7 @@ func (f *fakeRelationSource) FetchAll(context.Context, graymarket.RankType, stri
 }
 
 func (f *fakeRelationSource) FetchBoardCatalog(_ context.Context, boardType graymarket.BoardType) ([]graymarket.Board, error) {
-	if f.catalogErr != nil {
+	if f.catalogErr != nil && (f.errBoardType == "" || f.errBoardType == boardType) {
 		return nil, f.catalogErr
 	}
 	return f.boards[boardType], nil
@@ -87,6 +88,53 @@ func TestCollectStockBoardRelationsDoesNotApplyPartialScan(t *testing.T) {
 	}
 	if exists, err := service.HasStockBoardRelations(context.Background(), "2026-08-14"); err != nil || exists {
 		t.Fatal("failed relation sync was marked successful")
+	}
+}
+
+func TestConceptCatalogFailurePreservesRelationsAfterIndustryWasStaged(t *testing.T) {
+	store, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	source := &fakeRelationSource{
+		boards: map[graymarket.BoardType][]graymarket.Board{
+			graymarket.BoardIndustry: {{Code: "BK001", Type: graymarket.BoardIndustry}},
+			graymarket.BoardConcept:  {{Code: "BK101", Type: graymarket.BoardConcept}},
+		},
+		constituents: map[string][]graymarket.StockBoardRelation{
+			"BK001": {collectorTestRelation("000001", "BK001", graymarket.BoardIndustry)},
+			"BK101": {collectorTestRelation("000001", "BK101", graymarket.BoardConcept)},
+		},
+	}
+	service := New(source, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	service.retries = 0
+	ctx := context.Background()
+	if err := service.CollectStockBoardRelations(ctx, "2026-09-04"); err != nil {
+		t.Fatal(err)
+	}
+	source.constituents["BK001"] = []graymarket.StockBoardRelation{collectorTestRelation("000002", "BK001", graymarket.BoardIndustry)}
+	source.catalogErr = errors.New("duplicate concept board code BK0614")
+	source.errBoardType = graymarket.BoardConcept
+	if err := service.CollectStockBoardRelations(ctx, "2026-09-07"); !errors.Is(err, source.catalogErr) {
+		t.Fatalf("expected concept catalog failure, got %v", err)
+	}
+	if exists, err := service.HasStockBoardRelations(ctx, "2026-09-07"); err != nil || exists {
+		t.Fatalf("failed scan was marked successful: exists=%v err=%v", exists, err)
+	}
+	relations, err := store.StockBoardRelations(ctx, "000001", "2026-09-07")
+	if err != nil || len(relations) != 2 {
+		t.Fatalf("previous complete relationships were changed: relations=%+v err=%v", relations, err)
+	}
+	relations, err = store.StockBoardRelations(ctx, "000002", "2026-09-07")
+	if err != nil || len(relations) != 0 {
+		t.Fatalf("staged industry relationships became visible: relations=%+v err=%v", relations, err)
+	}
+	for _, boardType := range []graymarket.BoardType{graymarket.BoardIndustry, graymarket.BoardConcept} {
+		changes, err := store.RelationChanges(ctx, "2026-09-07", boardType)
+		if err != nil || len(changes) != 0 {
+			t.Fatalf("failed scan emitted %s relationship changes: changes=%+v err=%v", boardType, changes, err)
+		}
 	}
 }
 

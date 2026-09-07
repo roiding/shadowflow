@@ -2,8 +2,15 @@ package eastmoney
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/roiding/shadowflow/internal/graymarket"
@@ -160,4 +167,148 @@ func TestFetchBoardQuotesMapsIndustryAndConceptFields(t *testing.T) {
 			t.Fatalf("unexpected mapped %s board quote: %+v", rankType, quote)
 		}
 	}
+}
+
+func TestFetchBoardListsStayCompleteWhenGainsChangeAndBoardsAreAdded(t *testing.T) {
+	for _, list := range []string{"catalog", "quotes"} {
+		for _, boardType := range []graymarket.BoardType{graymarket.BoardIndustry, graymarket.BoardConcept} {
+			t.Run(list+"/"+string(boardType), func(t *testing.T) {
+				var calls, total atomic.Int32
+				handler := boardListTestTransport(func(w http.ResponseWriter, r *http.Request) {
+					calls.Add(1)
+					count := int(total.Load())
+					query := r.URL.Query()
+					page, err := strconv.Atoi(query.Get("pn"))
+					if err != nil || page < 1 || page > (count+1)/2 || query.Get("pz") != "2" || query.Get("po") != "1" {
+						t.Errorf("unexpected pagination request: %s", r.URL)
+						http.Error(w, "invalid page", http.StatusBadRequest)
+						return
+					}
+					typeCode := "2"
+					if boardType == graymarket.BoardConcept {
+						typeCode = "3"
+					}
+					if query.Get("fs") != "m:90+t:"+typeCode+"+f:!50" {
+						t.Errorf("unexpected board filter: %s", query.Get("fs"))
+					}
+					type row struct {
+						Code   string `json:"f12"`
+						Change int    `json:"f3"`
+					}
+					rows := make([]row, count)
+					for index := range rows {
+						rows[index] = row{Code: fmt.Sprintf("BK%03d", index+1), Change: count - index}
+					}
+					// The third board overtakes the second after page one. A gain
+					// sort repeats BK002 on page two and never returns BK003.
+					if page > 1 {
+						rows[1].Change, rows[2].Change = rows[2].Change, rows[1].Change
+					}
+					switch query.Get("fid") {
+					case "f12":
+						sort.Slice(rows, func(i, j int) bool { return rows[i].Code > rows[j].Code })
+					case "f3":
+						sort.Slice(rows, func(i, j int) bool { return rows[i].Change > rows[j].Change })
+					default:
+						t.Errorf("unsupported sort field: %s", query.Get("fid"))
+						http.Error(w, "invalid sort", http.StatusBadRequest)
+						return
+					}
+					start := (page - 1) * 2
+					if err := json.NewEncoder(w).Encode(map[string]any{
+						"rc": 0, "data": map[string]any{"total": count, "diff": rows[start:min(start+2, count)]},
+					}); err != nil {
+						t.Error(err)
+					}
+				})
+				client := NewClient("unused", &http.Client{Transport: handler}, 2).WithQuoteBaseURLs([]string{"https://quote.test"})
+				for _, count := range []int{4, 5} {
+					total.Store(int32(count))
+					calls.Store(0)
+					codes, err := fetchTestBoardListCodes(client, list, boardType)
+					if err != nil {
+						t.Fatalf("moving gains broke board pagination with %d boards: %v", count, err)
+					}
+					if list == "catalog" && !sort.StringsAreSorted(codes) {
+						t.Fatalf("catalog order changed: %v", codes)
+					}
+					sort.Strings(codes)
+					want := make([]string, count)
+					for index := range want {
+						want[index] = fmt.Sprintf("BK%03d", index+1)
+					}
+					if !slices.Equal(codes, want) || int(calls.Load()) != (count+1)/2 {
+						t.Fatalf("incomplete board list: got=%v want=%v calls=%d", codes, want, calls.Load())
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestFetchBoardListsRejectInconsistentPages(t *testing.T) {
+	for _, list := range []string{"catalog", "quotes"} {
+		for _, tc := range []struct {
+			name       string
+			secondPage string
+			wantError  string
+		}{
+			{"duplicate", `{"rc":0,"data":{"total":4,"diff":[{"f12":"BK002"},{"f12":"BK003"}]}}`, "duplicate"},
+			{"truncated", `{"rc":0,"data":{"total":4,"diff":[{"f12":"BK003"}]}}`, "incomplete"},
+			{"total_increased", `{"rc":0,"data":{"total":5,"diff":[{"f12":"BK003"},{"f12":"BK004"}]}}`, "total changed"},
+			{"total_decreased", `{"rc":0,"data":{"total":3,"diff":[{"f12":"BK003"},{"f12":"BK004"}]}}`, "total changed"},
+		} {
+			t.Run(list+"/"+tc.name, func(t *testing.T) {
+				handler := boardListTestTransport(func(w http.ResponseWriter, r *http.Request) {
+					switch r.URL.Query().Get("pn") {
+					case "1":
+						_, _ = w.Write([]byte(`{"rc":0,"data":{"total":4,"diff":[{"f12":"BK001"},{"f12":"BK002"}]}}`))
+					case "2":
+						_, _ = w.Write([]byte(tc.secondPage))
+					default:
+						t.Errorf("unexpected page: %s", r.URL.Query().Get("pn"))
+						http.Error(w, "invalid page", http.StatusBadRequest)
+					}
+				})
+				client := NewClient("unused", &http.Client{Transport: handler}, 2).WithQuoteBaseURLs([]string{"https://quote.test"})
+				codes, err := fetchTestBoardListCodes(client, list, graymarket.BoardIndustry)
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) || len(codes) != 0 {
+					t.Fatalf("invalid board list was not rejected: codes=%v err=%v", codes, err)
+				}
+			})
+		}
+	}
+}
+
+type boardListTestTransport http.HandlerFunc
+
+func (handler boardListTestTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	recorder := httptest.NewRecorder()
+	handler(recorder, request)
+	return recorder.Result(), nil
+}
+
+func fetchTestBoardListCodes(client *Client, list string, boardType graymarket.BoardType) ([]string, error) {
+	var codes []string
+	if list == "catalog" {
+		boards, err := client.FetchBoardCatalog(context.Background(), boardType)
+		if err != nil {
+			return nil, err
+		}
+		for index, board := range boards {
+			if board.Type != boardType || board.SourceRank != index+1 {
+				return nil, fmt.Errorf("invalid catalog mapping: %+v", board)
+			}
+			codes = append(codes, board.Code)
+		}
+	} else {
+		quotes, err := client.FetchBoardQuotes(context.Background(), graymarket.RankType(boardType))
+		if err != nil {
+			return nil, err
+		}
+		for _, quote := range quotes {
+			codes = append(codes, quote.BoardCode)
+		}
+	}
+	return codes, nil
 }
