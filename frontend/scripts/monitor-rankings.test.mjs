@@ -116,3 +116,27 @@ test('change sorting treats a missing delta as unavailable rather than zero', ()
     assert.equal(sorted.at(-1).code, 'new')
   }
 })
+
+test('current control rank sorts independently of the previous close and movement', () => {
+  const rows = [record('missing', 0, { dark_activity: 0 }), record('A', 1), record('B', 3), record('new', 4)]
+  for (const previous of [undefined, [record('A', 3), record('B', 1)]]) {
+    const changes = compareControlRanks(rows, previous, 'industry')
+    assert.equal(changes.get('new').currentRank, 1)
+    for (const direction of ['asc', 'desc']) {
+      const sorted = rows.toSorted((a, b) => compareMonitorRecords(a, b, { key: 'control_rank', direction }, changes))
+      assert.deepEqual(sorted.map((row) => row.code), direction === 'asc'
+        ? ['new', 'B', 'A', 'missing'] : ['A', 'B', 'new', 'missing'])
+    }
+  }
+})
+
+test('closing stock control uses daily turnover and guards unavailable money or denominator', () => {
+  const row = record('000001', 30, { rank_type: 'stock', turnover: 2000, dark_activity: 0 })
+  assert.equal(controlRate(row, row.turnover), 15)
+  assert.equal(controlRate({ ...row, main_money_inflow: -300 }, row.turnover), -15)
+  assert.equal(controlRate({ ...row, main_money_inflow: 0 }, row.turnover), 0)
+  assert.equal(controlRate({ ...row, money_available: false }, row.turnover), null)
+  for (const turnover of [0, -1, NaN, Infinity, null]) {
+    assert.equal(controlRate(row, turnover), null)
+  }
+})

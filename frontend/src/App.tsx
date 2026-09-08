@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, AlertTriangle, BarChart3, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Download, Gauge, Info, LineChart, RefreshCw, Search, Server, Table2, Wifi, WifiOff } from 'lucide-react'
+import { Activity, AlertTriangle, BarChart3, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Columns3, Crosshair, Download, Gauge, Info, LineChart, RefreshCw, RotateCcw, Search, Server, Table2, Wifi, WifiOff } from 'lucide-react'
 import { api } from './api/client'
 import { UNAUTHORIZED_EVENT } from './auth'
 import { TokenGate } from './TokenGate'
@@ -18,9 +18,36 @@ type Metric = 'dark_money' | 'regular_money' | 'main_money_inflow' | 'dark_activ
 type SortDirection = 'asc' | 'desc'
 type SortState<Key extends string> = { key: Key; direction: SortDirection }
 type ConstituentSortKey = 'stock_name' | 'stock_code' | 'dark_rank' | 'dark_money' | 'main_money_inflow' | 'dark_activity' | 'latest_price' | 'change_pct' | 'turnover'
+type ColumnOption<Key extends string> = { key: Key; label: string; className?: string }
+type MonitorColumnKey = Exclude<MonitorSortKey, 'control_rank_change'>
+type StockColumnKey = keyof RankRecord | 'control_rate'
 
 const MONITOR_PAGE_SIZE = 25
 const CONSTITUENT_PAGE_SIZE = 25
+
+const MONITOR_COLUMNS: ColumnOption<MonitorColumnKey>[] = [
+  { key: 'rank', label: '暗盘排名' },
+  { key: 'control_rank', label: '控盘度排名' },
+  { key: 'name', label: '板块/概念', className: 'rank-name-column' },
+  { key: 'code', label: '代码', className: 'rank-code-column' },
+  { key: 'dark_money', label: '暗盘资金' },
+  { key: 'regular_money', label: '明盘资金' },
+  { key: 'main_money_inflow', label: '主力净流入（含暗盘）', className: 'rank-main-money-column' },
+  { key: 'derived_turnover', label: '成交额' },
+  { key: 'control_rate', label: '控盘度' },
+  { key: 'change_pct', label: '涨跌幅' },
+  { key: 'dark_activity', label: '暗盘活跃度' },
+  { key: 'dark_inflow_ratio', label: '暗盘流入家数比例' },
+]
+const STOCK_COLUMNS: ColumnOption<StockColumnKey>[] = [
+  { key: 'rank', label: '排名' }, { key: 'name', label: '股票' }, { key: 'code', label: '代码' },
+  { key: 'close_price', label: '收盘' }, { key: 'change_pct', label: '涨跌幅' },
+  { key: 'open_price', label: '开盘' }, { key: 'high_price', label: '最高' },
+  { key: 'low_price', label: '最低' }, { key: 'previous_close', label: '前收' },
+  { key: 'turnover_rate', label: '换手率' }, { key: 'turnover', label: '成交额' },
+  { key: 'dark_money', label: '暗盘资金' }, { key: 'main_money_inflow', label: '主力净流入' },
+  { key: 'control_rate', label: '控盘度' }, { key: 'dark_activity', label: '活跃度' },
+]
 
 const BOARD_LABELS: Record<BoardType, string> = { industry: '行业', concept: '概念' }
 const METRIC_LABELS: Record<Metric, string> = {
@@ -114,6 +141,64 @@ function sortableNumber(value: unknown) {
 function jitterInterval(base: number) {
   const factor = base * 0.2
   return Math.round(base - factor + Math.random() * factor * 2)
+}
+
+function useStoredColumns<Key extends string>(storageKey: string, columns: ColumnOption<Key>[]) {
+  const [visible, setVisible] = useState<Key[]>(() => {
+    const defaults = columns.map((column) => column.key)
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem(storageKey) ?? 'null')
+      if (!Array.isArray(saved)) return defaults
+      const selected = defaults.filter((key) => saved.includes(key))
+      return selected.length ? selected : defaults
+    } catch {
+      return defaults
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(visible))
+    } catch {
+      // Storage may be disabled; the current tab can still customize columns.
+    }
+  }, [storageKey, visible])
+  return [visible, setVisible] as const
+}
+
+function ColumnPicker<Key extends string>({ label, columns, visible, onChange }: { label: string; columns: ColumnOption<Key>[]; visible: Key[]; onChange: (keys: Key[]) => void }) {
+  const [open, setOpen] = useState(false)
+  const element = useRef<HTMLDivElement>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const closeOutside = (event: PointerEvent) => {
+      if (!element.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false)
+        trigger.current?.focus()
+      }
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+  return <div className="column-picker" ref={element} onBlur={(event) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false)
+  }}>
+    <button ref={trigger} type="button" className={`icon-button ${open ? 'active' : ''}`} title={`${label}显示字段`} aria-label={`${label}显示字段`} aria-expanded={open} onClick={() => setOpen((current) => !current)}><Columns3 size={16} /></button>
+    {open && <div className="column-picker-menu" role="group" aria-label={`${label}显示字段`}>
+      <div className="column-picker-heading"><strong>显示字段</strong><button type="button" className="icon-button" title="恢复默认字段" aria-label="恢复默认字段" onClick={() => onChange(columns.map((column) => column.key))}><RotateCcw size={14} /></button></div>
+      <div className="column-picker-options">{columns.map((column) => {
+        const checked = visible.includes(column.key)
+        return <label key={column.key}><input type="checkbox" checked={checked} disabled={checked && visible.length === 1} onChange={() => onChange(checked ? visible.filter((key) => key !== column.key) : [...visible, column.key])} /><span>{column.label}</span></label>
+      })}</div>
+    </div>}
+  </div>
 }
 
 function App() {
@@ -258,7 +343,7 @@ function App() {
       .sort((a, b) => compareMonitorRecords(a, b, sort, rankChanges))
   }, [records, query, sort, rankChanges])
 
-  const onSort = (key: MonitorSortKey) => setSort((current) => ({ key, direction: current.key === key ? (current.direction === 'asc' ? 'desc' : 'asc') : key === 'control_rank_change' || key === 'control_rate' ? 'desc' : 'asc' }))
+  const onSort = (key: MonitorSortKey) => setSort((current) => ({ key, direction: current.key === key ? (current.direction === 'asc' ? 'desc' : 'asc') : key === 'control_rate' ? 'desc' : 'asc' }))
   const refreshAll = () => { void rankQuery.refetch(); void statusQuery.refetch(); if (previousDate && view === 'monitor' && !authRequired) void previousCloseQuery.refetch(); if (selectedId) { void intradayQuery.refetch(); void boardQuotesQuery.refetch() } }
   const historicalSelected = (historyRanksQuery.data ?? []).find((item) => item.code === historyCode) ?? historyRanksQuery.data?.[0]
   const stockRecords = stocksQuery.data?.data ?? []
@@ -311,6 +396,8 @@ type MonitorProps = {
 function MonitorView(props: MonitorProps) {
 	  const { previousDate, rankChanges, previousLoading, previousError, previousAvailable, boardType, setBoardType, records, allRecords, selected, selectedCode, setSelectedCode, query, setQuery, onSort, sort, metric, setMetric, secondaryMetric, setSecondaryMetric, series, loading, rankError, seriesError, requestMs, status, tradeDate, staleSnapshot, mobilePane, setMobilePane, stocks, stocksLoading, stocksError, quoteMeta } = props
   const nonTradingDay = status?.trading_day === false
+  const [visibleColumns, setVisibleColumns] = useStoredColumns('shadowflow.monitor.columns.v1', MONITOR_COLUMNS)
+  const show = (key: MonitorColumnKey) => visibleColumns.includes(key)
   const [page, setPage] = useState(1)
   const pages = Math.ceil(records.length / MONITOR_PAGE_SIZE)
   const pageRecords = records.slice((page - 1) * MONITOR_PAGE_SIZE, page * MONITOR_PAGE_SIZE)
@@ -319,53 +406,43 @@ function MonitorView(props: MonitorProps) {
   return <section className="workspace-grid">
     <div className="mobile-pane-tabs"><button className={mobilePane === 'ranks' ? 'active' : ''} onClick={() => setMobilePane('ranks')}><Table2 size={14} />榜单</button><button className={mobilePane === 'trend' ? 'active' : ''} onClick={() => setMobilePane('trend')}><LineChart size={14} />趋势</button></div>
     <section className={`rank-panel panel-section ${mobilePane === 'trend' ? 'mobile-hidden' : ''}`}>
-      <div className="section-heading"><div><p className="eyebrow">实时榜单</p><h1>{BOARD_LABELS[boardType]}暗盘榜</h1></div><span className="record-count">{records.length}/{allRecords.length || '--'} 条</span></div>
+      <div className="section-heading"><div><p className="eyebrow">实时榜单</p><h1>{BOARD_LABELS[boardType]}暗盘榜</h1></div><div className="section-actions"><span className="record-count">{records.length}/{allRecords.length || '--'} 条</span><ColumnPicker label="今日监控" columns={MONITOR_COLUMNS} visible={visibleColumns} onChange={setVisibleColumns} /></div></div>
       {nonTradingDay && tradeDate && <InlineNotice kind={staleSnapshot ? 'warning' : 'info'} text={staleSnapshot ? `今天不是交易日，最近交易日为 ${status.latest_trading_day}；当前仅有 ${tradeDate} 的快照。` : `今天不是交易日，当前展示 ${tradeDate} 的最近交易日数据。`} />}
       {!nonTradingDay && staleSnapshot && <InlineNotice kind="warning" text={`当前展示 ${tradeDate} 的最近可用快照，并非今日数据。`} />}
       <div className="segmented"><button className={boardType === 'industry' ? 'active' : ''} onClick={() => setBoardType('industry')}>行业</button><button className={boardType === 'concept' ? 'active' : ''} onClick={() => setBoardType('concept')}>概念</button></div>
       <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称或代码" /><kbd>/</kbd></label>
       {rankError && <InlineNotice kind="error" text="榜单读取失败，请检查后端服务。" />}
-      <div className="rank-comparison-note">
-        <span>控盘变动：{tradeDate || '当前截面'} 最新 vs {previousDate ? `${previousDate} 收盘` : '上一个交易日收盘'}</span>
-        <span>按全量{BOARD_LABELS[boardType]}控盘度降序比较；同值并列，搜索与分页不影响名次。首列仍为暗盘榜原始排名。</span>
-      </div>
-      {previousLoading && <InlineNotice kind="info" text="正在读取上一个交易日完整收盘榜…" />}
-      {previousError && <InlineNotice kind="warning" text="昨收榜单读取失败或不完整，暂不展示控盘变动；点击立即刷新可重试。" />}
-      {!previousLoading && !previousError && records.length > 0 && !previousAvailable && <InlineNotice kind="info" text={previousDate ? `${previousDate} 暂无完整收盘榜，控盘变动显示 --，不回退到更早日期。` : '暂未取得上一交易日日期，控盘变动显示 --。'} />}
+      {show('control_rank') && <>
+        <div className="rank-comparison-note"><span>控盘度排名 · {tradeDate || '当前截面'} 最新</span><span>变动基准：{previousDate ? `${previousDate} 收盘` : '上一个交易日收盘'}</span></div>
+        {previousLoading && <InlineNotice kind="info" text="正在读取上一个交易日完整收盘榜…" />}
+        {previousError && <InlineNotice kind="warning" text="昨收榜单读取失败或不完整，排名变化暂显示 --。" />}
+        {!previousLoading && !previousError && records.length > 0 && !previousAvailable && <InlineNotice kind="info" text={previousDate ? `${previousDate} 暂无完整收盘榜，排名变化显示 --。` : '暂未取得上一交易日日期，排名变化显示 --。'} />}
+      </>}
       <div className="table-wrap"><table className="rank-table"><thead><tr>
-        <SortHead label="排名" sortKey="rank" sort={sort} onSort={onSort} />
-        <SortHead label="控盘变动" sortKey="control_rank_change" sort={sort} onSort={onSort} />
-        <SortHead label="板块/概念" sortKey="name" sort={sort} onSort={onSort} className="rank-name-column" />
-        <SortHead label="代码" sortKey="code" sort={sort} onSort={onSort} className="rank-code-column" />
-        <SortHead label="暗盘资金" sortKey="dark_money" sort={sort} onSort={onSort} />
-        <SortHead label="明盘资金" sortKey="regular_money" sort={sort} onSort={onSort} />
-        <SortHead label="主力净流入（含暗盘）" sortKey="main_money_inflow" sort={sort} onSort={onSort} className="rank-main-money-column" />
-        <SortHead label="成交额" sortKey="derived_turnover" sort={sort} onSort={onSort} />
-        <SortHead label="控盘度" sortKey="control_rate" sort={sort} onSort={onSort} />
-        <SortHead label="涨跌幅" sortKey="change_pct" sort={sort} onSort={onSort} />
-        <SortHead label="暗盘活跃度" sortKey="dark_activity" sort={sort} onSort={onSort} />
-        <SortHead label="暗盘流入家数比例" sortKey="dark_inflow_ratio" sort={sort} onSort={onSort} />
+        {MONITOR_COLUMNS.filter((column) => show(column.key)).map((column) => <SortHead key={column.key} label={column.label} sortKey={column.key} sort={sort} onSort={onSort} className={column.className} />)}
       </tr></thead><tbody>{pageRecords.map((record) => {
         const turnover = derivedBoardTurnover(record)
         const control = controlRate(record)
-        const change = controlRankChangeDisplay(rankChanges.get(record.code), tradeDate, previousDate, previousLoading)
+        const controlRank = rankChanges.get(record.code)
+        const currentRank = controlRank?.currentRank ?? null
+        const change = controlRankChangeDisplay(controlRank, tradeDate, previousDate, previousLoading)
         return <tr key={record.code} className={selectedCode === record.code ? 'selected' : ''} onClick={() => { setSelectedCode(record.code); setMobilePane('trend') }}>
-          <td><span className={`rank-number rank-${record.rank}`}>{record.rank}</span></td>
-          <td className="rank-change-cell"><span className={`rank-change ${change.tone}`} title={change.title} aria-label={change.title} tabIndex={0}>{change.label}</span></td>
-          <td className="rank-name-column"><strong>{record.name || '未命名'}</strong><small>{record.leader_name ? `领涨 ${record.leader_name}` : '板块'}</small></td>
-          <td className="muted rank-code-column">{record.code}</td>
-          <td className={signedClass(record.dark_money)}>{formatMoney(record.dark_money)}</td>
-          <td className={signedClass(record.regular_money)}>{formatMoney(record.regular_money)}</td>
-          <td className={`rank-main-money-column ${signedClass(record.main_money_inflow)}`}>{formatMoney(record.main_money_inflow)}</td>
-          <td title="估算成交额 = |暗盘资金| ÷ 暗盘活跃度（原始小数）">{turnover !== null ? formatMoney(turnover) : '--'}</td>
-          <td className={control === null ? 'muted' : signedClass(control)} title="控盘度 = 主力净流入（含暗盘）÷ 估算成交额 × 100，不加百分号">{control !== null ? formatNumber(control, 2) : '--'}</td>
-          <td className={metricAvailable(record, 'change_pct') ? signedClass(record.change_pct) : 'muted'}>{metricAvailable(record, 'change_pct') ? `${record.change_pct > 0 ? '+' : ''}${formatNumber(record.change_pct * 100, 2)}%` : '--'}</td>
-          <td>{metricAvailable(record, 'dark_activity') ? `${formatNumber(record.dark_activity * 100, 2)}%` : '--'}</td>
-          <td>{metricAvailable(record, 'dark_inflow_ratio') ? `${formatNumber(record.dark_inflow_ratio * 100, 2)}%` : '--'}</td>
+          {show('rank') && <td><span className={`rank-number rank-${record.rank}`}>{record.rank}</span></td>}
+          {show('control_rank') && <td className="control-rank-cell"><span className="control-rank"><span className={`control-rank-number ${currentRank === null ? 'muted' : ''}`} title={currentRank === null ? '当前控盘度不可用' : `当前控盘度第 ${currentRank} 名`}>{currentRank ?? '--'}</span>{currentRank !== null && <span className={`rank-change ${change.tone}`} title={change.title} aria-label={change.title} tabIndex={0}>{change.label}</span>}</span></td>}
+          {show('name') && <td className="rank-name-column"><strong>{record.name || '未命名'}</strong><small>{record.leader_name ? `领涨 ${record.leader_name}` : '板块'}</small></td>}
+          {show('code') && <td className="muted rank-code-column">{record.code}</td>}
+          {show('dark_money') && <td className={signedClass(record.dark_money)}>{formatMoney(record.dark_money)}</td>}
+          {show('regular_money') && <td className={signedClass(record.regular_money)}>{formatMoney(record.regular_money)}</td>}
+          {show('main_money_inflow') && <td className={`rank-main-money-column ${signedClass(record.main_money_inflow)}`}>{formatMoney(record.main_money_inflow)}</td>}
+          {show('derived_turnover') && <td title="估算成交额 = |暗盘资金| ÷ 暗盘活跃度（原始小数）">{turnover !== null ? formatMoney(turnover) : '--'}</td>}
+          {show('control_rate') && <td className={control === null ? 'muted' : signedClass(control)} title="控盘度 = 主力净流入（含暗盘）÷ 估算成交额 × 100">{control !== null ? formatNumber(control, 2) : '--'}</td>}
+          {show('change_pct') && <td className={metricAvailable(record, 'change_pct') ? signedClass(record.change_pct) : 'muted'}>{metricAvailable(record, 'change_pct') ? `${record.change_pct > 0 ? '+' : ''}${formatNumber(record.change_pct * 100, 2)}%` : '--'}</td>}
+          {show('dark_activity') && <td>{metricAvailable(record, 'dark_activity') ? `${formatNumber(record.dark_activity * 100, 2)}%` : '--'}</td>}
+          {show('dark_inflow_ratio') && <td>{metricAvailable(record, 'dark_inflow_ratio') ? `${formatNumber(record.dark_inflow_ratio * 100, 2)}%` : '--'}</td>}
         </tr>
       })}</tbody></table>{!records.length && <EmptyState icon={<Table2 size={22} />} title="暂无榜单数据" detail="后端将在交易时段采集完整行业和概念榜单。" />}</div>
       {pages > 1 && <Pagination page={page} pages={pages} setPage={setPage} />}
-      <div className="table-footer"><span><Check size={14} />首列为暗盘榜原始排名</span><span>{requestMs !== undefined ? `${requestMs} ms · ` : ''}筛选后 {records.length} 条</span></div>
+      <div className="table-footer"><span><Check size={14} />全量{BOARD_LABELS[boardType]}榜</span><span>{requestMs !== undefined ? `${requestMs} ms · ` : ''}筛选后 {records.length} 条</span></div>
     </section>
     <section className={`trend-panel panel-section ${mobilePane === 'ranks' ? 'mobile-hidden' : ''}`}>
 	  <div className="section-heading trend-heading"><div><p className="eyebrow">分钟序列</p><h2>{selected?.name ?? '选择一个板块'}</h2><span className="subline">{selected ? `${selected.code} · ${BOARD_LABELS[boardType]} · ${tradeDate} 采集至 ${formatTime(series.at(-1)?.snapshot_at ?? selected.snapshot_at)}${series.at(-1) && shanghaiTime(series.at(-1)!.snapshot_at) === '15:00' ? '（日终快照）' : ''}` : '点击左侧榜单查看当日连续序列'}</span></div><ExportLink href={selected ? api.exportURL(boardType, selected.code, tradeDate, tradeDate) : undefined} title="导出研究数据"><Download size={15} />导出</ExportLink></div>
@@ -523,16 +600,39 @@ function HistoryView({ boardType, setBoardType, selected, historyRanks, historyC
 }
 
 function StockView({ date, setDate, records, total, query, setQuery, sort, onSort, page, pages, setPage, loading, error }: { date: string; setDate: (value: string) => void; records: RankRecord[]; total: number; query: string; setQuery: (value: string) => void; sort: SortState<keyof RankRecord>; onSort: (key: keyof RankRecord) => void; page: number; pages: number; setPage: (value: number) => void; loading: boolean; error: Error | null }) {
-	return <section className="stocks-page panel-section">
-	  <div className="section-heading"><div><p className="eyebrow">日级快照</p><h1>收盘个股榜</h1><span className="subline">同日沉淀个股暗盘榜、OHLC、前收盘、成交额和换手率。</span></div><div className="section-actions"><ExportLink href={api.dailyCloseExportURL(date)}><Download size={15} />导出日终三榜</ExportLink><label className="date-picker"><CalendarDays size={15} /><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label></div></div>
-	  <div className="stocks-toolbar"><label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索股票名称或代码" /></label><span>共 {total || '--'} 条</span></div>
-	  {error && <InlineNotice kind="error" text="收盘榜读取失败。" />}
-	  <div className="stock-table-wrap">{loading && !records.length ? <div className="loading-block">正在读取收盘榜…</div> : <table className={`stock-table ${loading ? 'is-loading' : ''}`}>
-	    <thead><tr><SortHead label="排名" sortKey="rank" sort={sort} onSort={onSort} /><SortHead label="股票" sortKey="name" sort={sort} onSort={onSort} /><SortHead label="代码" sortKey="code" sort={sort} onSort={onSort} /><SortHead label="收盘" sortKey="close_price" sort={sort} onSort={onSort} /><SortHead label="涨跌幅" sortKey="change_pct" sort={sort} onSort={onSort} /><SortHead label="开盘" sortKey="open_price" sort={sort} onSort={onSort} /><SortHead label="最高" sortKey="high_price" sort={sort} onSort={onSort} /><SortHead label="最低" sortKey="low_price" sort={sort} onSort={onSort} /><SortHead label="前收" sortKey="previous_close" sort={sort} onSort={onSort} /><SortHead label="换手率" sortKey="turnover_rate" sort={sort} onSort={onSort} /><SortHead label="成交额" sortKey="turnover" sort={sort} onSort={onSort} /><SortHead label="暗盘资金" sortKey="dark_money" sort={sort} onSort={onSort} /><SortHead label="主力净流入" sortKey="main_money_inflow" sort={sort} onSort={onSort} /><SortHead label="活跃度" sortKey="dark_activity" sort={sort} onSort={onSort} /></tr></thead>
-	    <tbody>{records.map((record) => <tr key={`${record.market}-${record.code}`}><td><span className="rank-number">{record.rank}</span></td><td><strong>{record.name || '未命名'}</strong></td><td className="stock-code">{record.code}</td><td>{record.quote_available ? formatNumber(record.close_price, 2) : '--'}</td><td className={signedClass(record.change_pct)}>{record.change_pct > 0 ? '+' : ''}{formatNumber(record.change_pct * 100, 2)}%</td><td>{record.quote_available ? formatNumber(record.open_price, 2) : '--'}</td><td>{record.quote_available ? formatNumber(record.high_price, 2) : '--'}</td><td>{record.quote_available ? formatNumber(record.low_price, 2) : '--'}</td><td>{record.previous_close > 0 ? formatNumber(record.previous_close, 2) : '--'}</td><td>{record.quote_available ? `${formatNumber(record.turnover_rate * 100, 2)}%` : '--'}</td><td>{record.quote_available ? formatMoney(record.turnover) : '--'}</td><td className={signedClass(record.dark_money)}>{formatMoney(record.dark_money)}</td><td className={signedClass(record.main_money_inflow)}>{formatMoney(record.main_money_inflow)}</td><td>{formatNumber(record.dark_activity * 100, 2)}%</td></tr>)}</tbody>
-	  </table>}{!loading && !records.length && <EmptyState icon={<Table2 size={22} />} title="暂无收盘榜" detail="选择一个已完成个股收盘采集的交易日。" />}</div>
-	  {pages > 0 && <Pagination page={page} pages={pages} setPage={setPage} />}
-	</section>
+  const [visibleColumns, setVisibleColumns] = useStoredColumns('shadowflow.stocks.columns.v1', STOCK_COLUMNS)
+  const show = (key: StockColumnKey) => visibleColumns.includes(key)
+  return <section className="stocks-page panel-section">
+    <div className="section-heading"><div><p className="eyebrow">日级快照</p><h1>收盘个股榜</h1><span className="subline">同日沉淀个股暗盘榜、OHLC、前收盘、成交额和换手率。</span></div><div className="section-actions"><ExportLink href={api.dailyCloseExportURL(date)}><Download size={15} />导出日终三榜</ExportLink><label className="date-picker"><CalendarDays size={15} /><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label></div></div>
+    <div className="stocks-toolbar"><label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索股票名称或代码" /></label><span>共 {total || '--'} 条</span><ColumnPicker label="收盘个股" columns={STOCK_COLUMNS} visible={visibleColumns} onChange={setVisibleColumns} /></div>
+    {error && <InlineNotice kind="error" text="收盘榜读取失败。" />}
+    <div className="stock-table-wrap">{loading && !records.length ? <div className="loading-block">正在读取收盘榜…</div> : <table className={`stock-table ${loading ? 'is-loading' : ''}`}>
+      <thead><tr>{STOCK_COLUMNS.filter((column) => show(column.key)).map((column) => column.key === 'control_rate'
+        ? <th key={column.key} title="控盘度 = 主力净流入（含暗盘）÷ 日终成交额 × 100">{column.label}</th>
+        : <SortHead key={column.key} label={column.label} sortKey={column.key} sort={sort} onSort={onSort} />)}</tr></thead>
+      <tbody>{records.map((record) => {
+        const control = controlRate(record, record.quote_available ? record.turnover : null)
+        return <tr key={`${record.market}-${record.code}`}>
+          {show('rank') && <td><span className="rank-number">{record.rank}</span></td>}
+          {show('name') && <td><strong>{record.name || '未命名'}</strong></td>}
+          {show('code') && <td className="stock-code">{record.code}</td>}
+          {show('close_price') && <td>{record.quote_available ? formatNumber(record.close_price, 2) : '--'}</td>}
+          {show('change_pct') && <td className={signedClass(record.change_pct)}>{record.change_pct > 0 ? '+' : ''}{formatNumber(record.change_pct * 100, 2)}%</td>}
+          {show('open_price') && <td>{record.quote_available ? formatNumber(record.open_price, 2) : '--'}</td>}
+          {show('high_price') && <td>{record.quote_available ? formatNumber(record.high_price, 2) : '--'}</td>}
+          {show('low_price') && <td>{record.quote_available ? formatNumber(record.low_price, 2) : '--'}</td>}
+          {show('previous_close') && <td>{record.previous_close > 0 ? formatNumber(record.previous_close, 2) : '--'}</td>}
+          {show('turnover_rate') && <td>{record.quote_available ? `${formatNumber(record.turnover_rate * 100, 2)}%` : '--'}</td>}
+          {show('turnover') && <td>{record.quote_available ? formatMoney(record.turnover) : '--'}</td>}
+          {show('dark_money') && <td className={signedClass(record.dark_money)}>{formatMoney(record.dark_money)}</td>}
+          {show('main_money_inflow') && <td className={signedClass(record.main_money_inflow)}>{formatMoney(record.main_money_inflow)}</td>}
+          {show('control_rate') && <td className={control === null ? 'muted' : signedClass(control)}>{control === null ? '--' : formatNumber(control, 2)}</td>}
+          {show('dark_activity') && <td>{formatNumber(record.dark_activity * 100, 2)}%</td>}
+        </tr>
+      })}</tbody>
+    </table>}{!loading && !records.length && <EmptyState icon={<Table2 size={22} />} title="暂无收盘榜" detail="选择一个已完成个股收盘采集的交易日。" />}</div>
+    {pages > 0 && <Pagination page={page} pages={pages} setPage={setPage} />}
+  </section>
 }
 
 function ExportLink({ href, title, children }: { href?: string; title?: string; children: React.ReactNode }) {

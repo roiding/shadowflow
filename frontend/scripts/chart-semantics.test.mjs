@@ -127,27 +127,17 @@ test('tooltip labels are escaped even when no record is available', () => {
   assert.doesNotMatch(tooltip, /<img/)
 })
 
-test('mobile hidden columns are semantic and never include board names', () => {
+test('mobile CSS does not override the selected monitor or stock columns', () => {
   const css = postcss.parse(readFileSync(new URL('../src/styles/global.css', import.meta.url), 'utf8'))
   const hidden = []
   css.walkAtRules('media', (media) => {
     if (!media.params.includes('720px')) return
     media.walkRules((rule) => {
-      if (!rule.selector.includes('.rank-table')) return
+      if (!rule.selector.includes('.rank-table') && !rule.selector.includes('.stock-table')) return
       rule.walkDecls('display', (declaration) => {
         if (declaration.value === 'none') hidden.push(...rule.selectors)
       })
     })
   })
-  assert.deepEqual(hidden.sort(), ['.rank-table .rank-code-column', '.rank-table .rank-main-money-column'])
-  const app = ts.createSourceFile('App.tsx', readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
-  const columns = new Set()
-  function visit(node) {
-    if (ts.isJsxAttribute(node) && node.name.getText(app) === 'className' && node.initializer && ts.isStringLiteral(node.initializer)) {
-      if (node.initializer.text.includes('rank-name-column')) columns.add(node.parent.parent.tagName.getText(app))
-    }
-    ts.forEachChild(node, visit)
-  }
-  visit(app)
-  assert.deepEqual([...columns].sort(), ['SortHead', 'td'])
+  assert.deepEqual(hidden, [])
 })

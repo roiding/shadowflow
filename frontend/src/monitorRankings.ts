@@ -2,7 +2,7 @@ import type { RankRecord, RankType } from './api/types'
 
 type BoardType = Exclude<RankType, 'stock'>
 type MoneyRecord = Pick<RankRecord, 'money_available' | 'dark_money' | 'dark_activity' | 'main_money_inflow'>
-export type MonitorSortKey = 'rank' | 'name' | 'code' | 'dark_money' | 'regular_money' | 'main_money_inflow' | 'derived_turnover' | 'control_rate' | 'control_rank_change' | 'change_pct' | 'dark_activity' | 'dark_inflow_ratio'
+export type MonitorSortKey = 'rank' | 'name' | 'code' | 'dark_money' | 'regular_money' | 'main_money_inflow' | 'derived_turnover' | 'control_rate' | 'control_rank' | 'control_rank_change' | 'change_pct' | 'dark_activity' | 'dark_inflow_ratio'
 export type ControlRankChange = {
   currentRank: number | null
   previousRank: number | null
@@ -18,9 +18,8 @@ export function derivedBoardTurnover(record: Pick<MoneyRecord, 'money_available'
   return Number.isFinite(turnover) && turnover > 0 ? turnover : null
 }
 
-export function controlRate(record: MoneyRecord): number | null {
-  const turnover = derivedBoardTurnover(record)
-  if (turnover === null || !Number.isFinite(record.main_money_inflow)) return null
+export function controlRate(record: MoneyRecord, turnover = derivedBoardTurnover(record)): number | null {
+  if (!record.money_available || turnover === null || !Number.isFinite(turnover) || turnover <= 0 || !Number.isFinite(record.main_money_inflow)) return null
   // main_money_inflow already includes dark money; do not add it again.
   const value = record.main_money_inflow / turnover * 100
   return Number.isFinite(value) ? value : null
@@ -59,7 +58,8 @@ export function compareControlRanks(current: readonly RankRecord[], previous: re
 export function compareMonitorRecords(a: RankRecord, b: RankRecord, sort: { key: MonitorSortKey; direction: 'asc' | 'desc' }, changes: ReadonlyMap<string, ControlRankChange>): number {
   const value = (record: RankRecord) => sort.key === 'derived_turnover' ? derivedBoardTurnover(record)
     : sort.key === 'control_rate' ? controlRate(record)
-      : sort.key === 'control_rank_change' ? changes.get(record.code)?.delta ?? null : record[sort.key]
+      : sort.key === 'control_rank' ? changes.get(record.code)?.currentRank ?? null
+        : sort.key === 'control_rank_change' ? changes.get(record.code)?.delta ?? null : record[sort.key]
   const left = value(a), right = value(b)
   const missing = (item: unknown) => item == null || (typeof item === 'number' && !Number.isFinite(item))
   const leftMissing = missing(left), rightMissing = missing(right)

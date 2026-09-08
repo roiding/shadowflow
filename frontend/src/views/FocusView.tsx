@@ -22,7 +22,7 @@ const FOCUS_FIELDS: Array<{ field: FocusField; label: string; unit: string; fact
   { field: 'turnover', label: '成交额', unit: '亿元', factor: 100_000_000, step: 0.1 },
   { field: 'turnover_rate', label: '换手率', unit: '%', factor: 0.01, step: 0.1 },
   { field: 'change_pct', label: '涨跌幅', unit: '%', factor: 0.01, step: 0.1 },
-  { field: 'control_coefficient', label: '控盘系数', unit: '%', factor: 1, step: 0.1 },
+  { field: 'control_coefficient', label: '控盘度', unit: '', factor: 1, step: 0.1 },
   { field: 'dark_money', label: '主力暗盘', unit: '亿元', factor: 100_000_000, step: 0.01 },
   { field: 'regular_money', label: '主力明盘', unit: '亿元', factor: 100_000_000, step: 0.01 },
   { field: 'main_money_inflow', label: '主力净流入', unit: '亿元', factor: 100_000_000, step: 0.01 },
@@ -217,7 +217,7 @@ function ConditionValueInput({ value, factor, unit, onCommit }: { value: number;
       }}
       onBlur={() => setRaw(null)}
     />
-    <span>{unit}</span>
+    {unit && <span>{unit}</span>}
   </label>
 }
 
@@ -235,7 +235,7 @@ function formatFocusMetric(day: FocusDailyMetric, field: FocusField) {
   const meta = focusField(field)
   if (['turnover', 'dark_money', 'regular_money', 'main_money_inflow'].includes(field)) return formatMoney(value)
   if (['turnover_rate', 'change_pct', 'dark_activity', 'dark_inflow_ratio', 'amplitude'].includes(field)) return `${value > 0 && field === 'change_pct' ? '+' : ''}${formatNumber(value * 100, 2)}%`
-  if (field === 'control_coefficient') return `${formatNumber(value, 2)}%`
+  if (field === 'control_coefficient') return formatNumber(value, 2)
   if (field === 'close_price') return `${formatNumber(value, 2)}元`
   return `${formatNumber(value)}${meta.unit}`
 }
@@ -250,7 +250,7 @@ function formatFocusActual(field: FocusField, value: number) {
   const meta = focusField(field)
   if (['turnover', 'dark_money', 'regular_money', 'main_money_inflow'].includes(field)) return formatMoney(value)
   if (['turnover_rate', 'change_pct', 'dark_activity', 'dark_inflow_ratio', 'amplitude'].includes(field)) return `${formatNumber(value * 100, 2)}%`
-  if (field === 'control_coefficient') return `${formatNumber(value, 2)}%`
+  if (field === 'control_coefficient') return formatNumber(value, 2)
   if (field === 'close_price') return `${formatNumber(value, 2)}元`
   return `${formatNumber(value)}${meta.unit}`
 }
