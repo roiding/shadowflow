@@ -195,7 +195,7 @@ func TestFetchStockKlines5mUsesZeroVolumeOpeningAuctionPrice(t *testing.T) {
 	}
 }
 
-func TestFetchStockKlines5mAllowsZeroVolumeClosingAuctionCloseMismatch(t *testing.T) {
+func TestFetchStockKlines5mUsesDailyCloseForZeroVolumeClosingAuction(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/trends2/") {
 			rows := make([]string, 0, 241)
@@ -225,7 +225,7 @@ func TestFetchStockKlines5mAllowsZeroVolumeClosingAuctionCloseMismatch(t *testin
 					high = 4.01
 				}
 				if minute == 15*60 {
-					close = 4.01 // official close updated by a zero-volume auction row
+					close = 4.10 // official close updated by a zero-volume auction row
 				}
 				rows = append(rows, fmt.Sprintf("2026-08-14 %02d:%02d,4.00,%.2f,%.2f,4.00,%d,%d.00,4.000,1,0.00,%d,%d.00", minute/60, minute%60, close, high, volume, turnover, cumulativeVolume, cumulativeTurnover))
 			}
@@ -239,7 +239,7 @@ func TestFetchStockKlines5mAllowsZeroVolumeClosingAuctionCloseMismatch(t *testin
 	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
 	snapshot := graymarket.RankSnapshot{TradeDate: "2026-08-14", RankType: graymarket.RankStock, SnapshotAt: closeAt,
 		Records: []graymarket.RankRecord{{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock,
-			Market: 1, Code: "600543", OpenPrice: 3.93, HighPrice: 4.01, LowPrice: 3.93, ClosePrice: 4.01, PreviousClose: 3.94,
+			Market: 1, Code: "600543", OpenPrice: 3.93, HighPrice: 4.10, LowPrice: 3.93, ClosePrice: 4.10, PreviousClose: 3.94,
 			Volume: 240, Turnover: 24000, TurnoverRate: 0.01, QuoteAvailable: true}}}
 	client := NewClient("unused", server.Client(), 100).
 		WithStockTrendBaseURLs([]string{server.URL + "/api/qt/stock/trends2/get"})
@@ -248,7 +248,7 @@ func TestFetchStockKlines5mAllowsZeroVolumeClosingAuctionCloseMismatch(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(points) != 48 || points[47].ClosePrice != 4.00 {
+	if len(points) != 48 || points[47].ClosePrice != 4.10 || math.Abs(points[47].ChangeValue-0.10) > 0.0001 {
 		t.Fatalf("unexpected zero-volume closing-auction handling: count=%d last=%+v", len(points), points[len(points)-1])
 	}
 }

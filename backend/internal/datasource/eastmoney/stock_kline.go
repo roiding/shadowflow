@@ -201,13 +201,11 @@ func (c *Client) fetchStockKlineFromTrendsWithRetry(ctx context.Context, tradeDa
 }
 
 type aggregatedTrendBar struct {
-	point                graymarket.StockKlinePoint
-	firstAt              time.Time
-	lastAt               time.Time
-	minuteRows           int
-	tradedRows           int
-	openingAuctionPrice  float64
-	openingAuctionUsable bool
+	point      graymarket.StockKlinePoint
+	firstAt    time.Time
+	lastAt     time.Time
+	minuteRows int
+	tradedRows int
 }
 
 func (c *Client) fetchStockKlineFromTrends(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
@@ -314,7 +312,7 @@ func (c *Client) fetchStockKlineFromHistory(ctx context.Context, tradeDate strin
 	if len(seen) != 48 {
 		return nil, fmt.Errorf("historical kline has %d distinct points", len(seen))
 	}
-	if err := validateKlinePrices(points, stock, false); err != nil {
+	if err := validateKlinePrices(points, stock); err != nil {
 		return nil, err
 	}
 	return points, nil
@@ -359,7 +357,6 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 	var previousAt time.Time
 	var cumulativeVolume int64
 	var cumulativeTurnover int64
-	var closeAuctionVolume int64
 	for _, raw := range payload.Data.Trends {
 		fields, err := csv.NewReader(strings.NewReader(raw)).Read()
 		if err != nil || len(fields) < 12 {
@@ -399,9 +396,6 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 			return nil, fmt.Errorf("trend cumulative volume decreased at %s", fields[0])
 		}
 		minuteVolume := nextCumulativeVolume - cumulativeVolume
-		if at.Hour() == 15 && at.Minute() == 0 {
-			closeAuctionVolume = minuteVolume
-		}
 		bar.point.Volume += minuteVolume
 		cumulativeVolume = nextCumulativeVolume
 		nextCumulativeTurnover, err := klineAmount(numbers[11], false)
@@ -417,26 +411,12 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 			bar.firstAt, bar.lastAt = at, at
 			bar.point.OpenPrice, bar.point.ClosePrice = openPrice, closePrice
 			bar.point.HighPrice, bar.point.LowPrice = highPrice, lowPrice
-			// Some instruments publish the opening auction price at 09:30 with
-			// zero volume. Preserve it for the first five-minute bar only when
-			// it agrees with the authoritative daily open; a zero-volume prior
-			// close placeholder must not contaminate the bar.
-			if index == 0 && at.Hour() == 9 && at.Minute() == 30 &&
-				minuteVolume == 0 && samePrice(openPrice, stock.OpenPrice) {
-				bar.openingAuctionPrice = openPrice
-				bar.openingAuctionUsable = true
-			}
 		}
 		if minuteVolume > 0 {
 			if bar.tradedRows == 0 {
 				bar.firstAt, bar.lastAt = at, at
 				bar.point.OpenPrice, bar.point.ClosePrice = openPrice, closePrice
 				bar.point.HighPrice, bar.point.LowPrice = highPrice, lowPrice
-				if bar.openingAuctionUsable {
-					bar.point.OpenPrice = bar.openingAuctionPrice
-					bar.point.HighPrice = max(bar.point.HighPrice, bar.openingAuctionPrice)
-					bar.point.LowPrice = min(bar.point.LowPrice, bar.openingAuctionPrice)
-				}
 			} else {
 				if at.After(bar.lastAt) {
 					bar.lastAt, bar.point.ClosePrice = at, closePrice
@@ -474,11 +454,28 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 		previousClose = bar.point.ClosePrice
 		points = append(points, bar.point)
 	}
-	// The closing auction can publish an official daily close without a
-	// matching trade. In that case the final one-minute row has zero volume,
-	// so the last traded five-minute close may legitimately differ from the
-	// daily close. The daily close remains authoritative for the daily bar.
-	if err := validateKlinePrices(points, stock, closeAuctionVolume == 0); err != nil {
+	// The daily bar is authoritative at both auction boundaries. One-minute
+	// trend rows without a trade are quote updates, so ignoring them as trades
+	// must not leave the first open or final close stuck at the nearest traded
+	// minute. Normalize the two endpoints and then recompute derived fields.
+	first := &points[0]
+	first.OpenPrice = stock.OpenPrice
+	first.HighPrice = max(first.HighPrice, stock.OpenPrice)
+	first.LowPrice = min(first.LowPrice, stock.OpenPrice)
+	last := &points[47]
+	last.ClosePrice = stock.ClosePrice
+	last.HighPrice = max(last.HighPrice, stock.ClosePrice)
+	last.LowPrice = min(last.LowPrice, stock.ClosePrice)
+	previousClose = stock.PreviousClose
+	for index := range points {
+		if index > 0 {
+			previousClose = points[index-1].ClosePrice
+		}
+		points[index].Amplitude = (points[index].HighPrice - points[index].LowPrice) / previousClose
+		points[index].ChangeValue = points[index].ClosePrice - previousClose
+		points[index].ChangePct = points[index].ChangeValue / previousClose
+	}
+	if err := validateKlinePrices(points, stock); err != nil {
 		return nil, err
 	}
 	return points, nil

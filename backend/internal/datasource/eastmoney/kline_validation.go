@@ -31,7 +31,7 @@ func klineAmount(value float64, whole bool) (int64, error) {
 	return int64(value), nil
 }
 
-func validateKlinePrices(points []graymarket.StockKlinePoint, stock graymarket.RankRecord, allowCloseMismatch bool) error {
+func validateKlinePrices(points []graymarket.StockKlinePoint, stock graymarket.RankRecord) error {
 	if len(points) != 48 {
 		return fmt.Errorf("expected 48 klines, got %d", len(points))
 	}
@@ -54,8 +54,7 @@ func validateKlinePrices(points []graymarket.StockKlinePoint, stock graymarket.R
 			return fmt.Errorf("invalid kline change or ratio at %s", point.SnapshotAt)
 		}
 	}
-	closeMatches := samePrice(points[47].ClosePrice, stock.ClosePrice) || allowCloseMismatch && math.Abs(points[47].ClosePrice-stock.ClosePrice) <= 0.0101
-	if !samePrice(points[0].OpenPrice, stock.OpenPrice) || !samePrice(maxKlinePrice(points), stock.HighPrice) || !samePrice(minKlinePrice(points), stock.LowPrice) || !closeMatches {
+	if !samePrice(points[0].OpenPrice, stock.OpenPrice) || !samePrice(maxKlinePrice(points), stock.HighPrice) || !samePrice(minKlinePrice(points), stock.LowPrice) || !samePrice(points[47].ClosePrice, stock.ClosePrice) {
 		return fmt.Errorf("kline OHLC does not match daily bar")
 	}
 	return nil
