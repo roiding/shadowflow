@@ -6,7 +6,7 @@
 
 ## 本地开发
 
-需要 Go 1.25、Node.js 22 和 npm。
+本地开发需要 Go 1.25+、Node.js 22+ 和 npm。生产安全基线以 Dockerfile 的构建工具链和镜像扫描为准，不以本机安装版本判断。
 
 ```bash
 cd backend
@@ -121,9 +121,21 @@ docker compose pull
 docker compose up -d
 ```
 
-仓库地址为 `github.com/roiding/shadowflow`。GHCR 私有包需要具有读取权限的 Personal Access Token；公开包可以省略登录。也可以使用 `docker compose up -d --build` 从源码构建，但日常部署应优先使用 Actions 产出的固定镜像标签或摘要。
+仓库地址为 `github.com/roiding/shadowflow`。GHCR 私有包需要具有读取权限的 Personal Access Token；公开包可以省略登录。`compose.yaml` 使用发布镜像，没有 `build` 配置；日常部署应使用 Actions 产出的固定镜像标签或摘要。
 
-GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go 测试/`go vet` 和 React lint/build，再构建 `linux/arm64` 镜像，通过 QEMU 实际启动容器并检查架构、数据库就绪状态和 React 首页；只有全部通过后，`main` 分支推送、`v*` 版本标签或手工触发才会发布镜像到 GHCR，Pull Request 不发布。镜像是多阶段构建，运行时只包含单个 Go 服务、静态前端、SQLite CLI 和时区数据。默认内存上限为 512 MB，可通过 `SHADOWFLOW_MEMORY_LIMIT` 按 N1 其他服务占用调整。
+GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go race 测试/`go vet`、脚本回归和 React lint/test/build，再构建 `linux/arm64` 镜像。Docker 构建阶段也运行后端测试/vet、前端 lint/test/build；只有 npm 漏洞检查及 `govulncheck` 对实际目标架构的 `shadowflow`、`collect` 两个二进制扫描都成功，才可生成最终镜像。发布前另以 Trivy 检查最终镜像的操作系统和库，HIGH/CRITICAL 告警（包括尚无补丁的告警）会阻止发布；再经 QEMU 验证就绪、鉴权、静态页面和 Alpine 备份/日历脚本。所有门槛通过后，`main` 分支推送、`v*` 标签或手工触发才发布 GHCR，Pull Request 不发布。
+
+容器基线固定为 `golang:1.26.8-alpine3.24`、`node:22.23.2-alpine3.24` 和 `alpine:3.24.1`；`golang.org/x/text` 更新为 v0.39.0。Go 构建设置 `GOTOOLCHAIN=local`，避免自动改用未核验版本；`go.mod` 的 1.25.0 仅是语言最低要求，不是生产安全补丁要求。本机 Go/Node 无需为部署改装。运行时不包含 Go/Node 工具链，只含服务、采集器、静态前端和 SQLite 等系统包；Compose 内存限制为 768 MiB。
+
+CI 每轮设置不同的 `VULN_DB_REFRESH`，重新更新运行时 Alpine 包并执行漏洞扫描，不复用旧安全结果。手动源码构建也应刷新该参数：
+
+```bash
+docker buildx build --platform linux/arm64 --load \
+  --build-arg VULN_DB_REFRESH="$(date -u +%Y%m%dT%H%M%SZ)" \
+  -t shadowflow:local .
+```
+
+构建和扫描需要外网访问官方依赖及漏洞库；失败不会降级为放行。手动构建仍需执行最终镜像扫描和容器烟雾检查，不能以本地源码扫描代替。工具链标签需随安全更新维护，并通过相同门槛后再部署。
 
 关键环境变量：
 

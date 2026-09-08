@@ -37,6 +37,7 @@ export interface RankRecord {
   down_count: number
   leader_name: string
   leader_code: string
+  source_version: number
   fetched_at: string
 }
 

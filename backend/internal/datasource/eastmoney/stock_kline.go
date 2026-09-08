@@ -36,6 +36,23 @@ type stockKlineResult struct {
 	err    error
 }
 
+func decodeKlineBody(body io.Reader, payload any) error {
+	// Consume through EOF before accepting JSON so chunked-body truncation
+	// reaches the upstream guard even when it follows a complete JSON value.
+	const limit = 2 << 20
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return fmt.Errorf("%w: %v", graymarket.ErrDecode, err)
+	}
+	if len(data) > limit {
+		return fmt.Errorf("%w: kline body exceeds %d bytes", graymarket.ErrDecode, limit)
+	}
+	if err := json.Unmarshal(data, payload); err != nil {
+		return fmt.Errorf("%w: %v", graymarket.ErrDecode, err)
+	}
+	return nil
+}
+
 func (c *Client) FetchStockKlines5m(ctx context.Context, snapshot graymarket.RankSnapshot) ([]graymarket.StockKlinePoint, error) {
 	points := make([]graymarket.StockKlinePoint, 0, len(snapshot.Records)*48)
 	_, err := c.FetchStockKlines5mIncremental(ctx, snapshot, func(batch []graymarket.StockKlinePoint) error {
@@ -245,8 +262,8 @@ func (c *Client) fetchStockKlineFromHistory(ctx context.Context, tradeDate strin
 		return nil, fmt.Errorf("upstream returned HTTP %d", response.StatusCode)
 	}
 	var payload stockKlineResponse
-	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("%w: %v", graymarket.ErrDecode, err)
+	if err := decodeKlineBody(response.Body, &payload); err != nil {
+		return nil, err
 	}
 	if payload.ReturnCode != 0 || payload.Data == nil || len(payload.Data.Klines) != 48 {
 		count := 0
@@ -327,8 +344,8 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 		return nil, fmt.Errorf("upstream returned HTTP %d", response.StatusCode)
 	}
 	var payload stockTrendResponse
-	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("%w: %v", graymarket.ErrDecode, err)
+	if err := decodeKlineBody(response.Body, &payload); err != nil {
+		return nil, err
 	}
 	if payload.ReturnCode != 0 || payload.Data == nil {
 		return nil, fmt.Errorf("trend response has no data")

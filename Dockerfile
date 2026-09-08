@@ -1,16 +1,24 @@
 # syntax=docker/dockerfile:1.7
 
-FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-build
+FROM --platform=$BUILDPLATFORM node:22.23.2-alpine3.24 AS frontend-build
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --no-audit --no-fund
 COPY frontend/ ./
-RUN npm run build
+COPY backend/openapi.yaml /src/backend/openapi.yaml
+RUN npm run lint && npm test && npm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS backend-build
+FROM frontend-build AS frontend-audit
+# CI changes this per run so vulnerability results cannot stay cached forever.
+ARG VULN_DB_REFRESH=manual
+RUN printf 'Vulnerability database refresh: %s\n' "$VULN_DB_REFRESH" \
+    && npm audit --audit-level=low --registry=https://registry.npmjs.org
+
+FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine3.24 AS backend-build
 ARG TARGETOS
 ARG TARGETARCH
+ENV GOTOOLCHAIN=local
 WORKDIR /src/backend
 COPY backend/go.mod backend/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
@@ -18,19 +26,36 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY backend/ ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
+    go test -count=1 ./... && go vet ./...
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/shadowflow ./cmd/server && \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/collect ./cmd/collect
 
-FROM alpine:3.22
-RUN apk add --no-cache ca-certificates sqlite tzdata \
+FROM backend-build AS backend-audit
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+ARG VULN_DB_REFRESH=manual
+# Scan the target-platform executables, not a host build or just go.mod.
+RUN printf 'Vulnerability database refresh: %s\n' "$VULN_DB_REFRESH" \
+    && go version -m /out/shadowflow /out/collect \
+    && govulncheck -mode=binary /out/shadowflow \
+    && govulncheck -mode=binary /out/collect
+
+FROM alpine:3.24.1
+ARG VULN_DB_REFRESH=manual
+RUN printf 'Runtime package refresh: %s\n' "$VULN_DB_REFRESH" \
+    && apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates sqlite tzdata \
     && addgroup -g 10001 -S shadowflow \
     && adduser -u 10001 -S -G shadowflow shadowflow
 WORKDIR /app
-COPY --from=backend-build /out/shadowflow /app/shadowflow
-COPY --from=backend-build /out/collect /app/collect
-COPY --from=frontend-build /src/frontend/dist /app/web
+COPY --from=backend-audit /out/shadowflow /app/shadowflow
+COPY --from=backend-audit /out/collect /app/collect
+COPY --from=frontend-audit /src/frontend/dist /app/web
 COPY backend/config/trading_calendar.json /app/config/trading_calendar.json
 COPY scripts /app/scripts
 # The calendar auto-updater rewrites its own file, so /app/config must stay

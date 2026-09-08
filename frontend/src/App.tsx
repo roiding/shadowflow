@@ -6,6 +6,7 @@ import { UNAUTHORIZED_EVENT } from './auth'
 import { TokenGate } from './TokenGate'
 import type { BoardStockQuote, FocusResult, FocusScanRequest, RankRecord, RankType, SystemStatus } from './api/types'
 import { continuousMetricValues } from './continuousSeries'
+import { chartMetricValue, metricAvailable } from './chartMetrics'
 import { compareControlRanks, compareMonitorRecords, controlRankChangeDisplay, controlRate, derivedBoardTurnover } from './monitorRankings'
 import type { ControlRankChange, MonitorSortKey } from './monitorRankings'
 import { FocusView } from './views/FocusView'
@@ -108,12 +109,6 @@ function signedClass(value: number) { return value > 0 ? 'positive' : value < 0 
 function sortableNumber(value: unknown) {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY
-}
-
-function metricAvailable(record: RankRecord, metric: Metric) {
-  if (['dark_money', 'regular_money', 'main_money_inflow'].includes(metric)) return record.money_available
-  if (['dark_activity', 'dark_inflow_ratio', 'rank', 'up_count'].includes(metric)) return record.rank > 0
-  return true
 }
 
 function jitterInterval(base: number) {
@@ -340,11 +335,11 @@ function MonitorView(props: MonitorProps) {
       <div className="table-wrap"><table className="rank-table"><thead><tr>
         <SortHead label="排名" sortKey="rank" sort={sort} onSort={onSort} />
         <SortHead label="控盘变动" sortKey="control_rank_change" sort={sort} onSort={onSort} />
-        <SortHead label="板块/概念" sortKey="name" sort={sort} onSort={onSort} />
-        <SortHead label="代码" sortKey="code" sort={sort} onSort={onSort} />
+        <SortHead label="板块/概念" sortKey="name" sort={sort} onSort={onSort} className="rank-name-column" />
+        <SortHead label="代码" sortKey="code" sort={sort} onSort={onSort} className="rank-code-column" />
         <SortHead label="暗盘资金" sortKey="dark_money" sort={sort} onSort={onSort} />
         <SortHead label="明盘资金" sortKey="regular_money" sort={sort} onSort={onSort} />
-        <SortHead label="主力净流入（含暗盘）" sortKey="main_money_inflow" sort={sort} onSort={onSort} />
+        <SortHead label="主力净流入（含暗盘）" sortKey="main_money_inflow" sort={sort} onSort={onSort} className="rank-main-money-column" />
         <SortHead label="成交额" sortKey="derived_turnover" sort={sort} onSort={onSort} />
         <SortHead label="控盘度" sortKey="control_rate" sort={sort} onSort={onSort} />
         <SortHead label="涨跌幅" sortKey="change_pct" sort={sort} onSort={onSort} />
@@ -357,16 +352,16 @@ function MonitorView(props: MonitorProps) {
         return <tr key={record.code} className={selectedCode === record.code ? 'selected' : ''} onClick={() => { setSelectedCode(record.code); setMobilePane('trend') }}>
           <td><span className={`rank-number rank-${record.rank}`}>{record.rank}</span></td>
           <td className="rank-change-cell"><span className={`rank-change ${change.tone}`} title={change.title} aria-label={change.title} tabIndex={0}>{change.label}</span></td>
-          <td><strong>{record.name || '未命名'}</strong><small>{record.leader_name ? `领涨 ${record.leader_name}` : '板块'}</small></td>
-          <td className="muted">{record.code}</td>
+          <td className="rank-name-column"><strong>{record.name || '未命名'}</strong><small>{record.leader_name ? `领涨 ${record.leader_name}` : '板块'}</small></td>
+          <td className="muted rank-code-column">{record.code}</td>
           <td className={signedClass(record.dark_money)}>{formatMoney(record.dark_money)}</td>
           <td className={signedClass(record.regular_money)}>{formatMoney(record.regular_money)}</td>
-          <td className={signedClass(record.main_money_inflow)}>{formatMoney(record.main_money_inflow)}</td>
+          <td className={`rank-main-money-column ${signedClass(record.main_money_inflow)}`}>{formatMoney(record.main_money_inflow)}</td>
           <td title="估算成交额 = |暗盘资金| ÷ 暗盘活跃度（原始小数）">{turnover !== null ? formatMoney(turnover) : '--'}</td>
           <td className={control === null ? 'muted' : signedClass(control)} title="控盘度 = 主力净流入（含暗盘）÷ 估算成交额 × 100，不加百分号">{control !== null ? formatNumber(control, 2) : '--'}</td>
-          <td className={signedClass(record.change_pct)}>{record.change_pct > 0 ? '+' : ''}{formatNumber(record.change_pct * 100, 2)}%</td>
-          <td>{formatNumber(record.dark_activity * 100, 2)}%</td>
-          <td>{formatNumber(record.dark_inflow_ratio * 100, 2)}%</td>
+          <td className={metricAvailable(record, 'change_pct') ? signedClass(record.change_pct) : 'muted'}>{metricAvailable(record, 'change_pct') ? `${record.change_pct > 0 ? '+' : ''}${formatNumber(record.change_pct * 100, 2)}%` : '--'}</td>
+          <td>{metricAvailable(record, 'dark_activity') ? `${formatNumber(record.dark_activity * 100, 2)}%` : '--'}</td>
+          <td>{metricAvailable(record, 'dark_inflow_ratio') ? `${formatNumber(record.dark_inflow_ratio * 100, 2)}%` : '--'}</td>
         </tr>
       })}</tbody></table>{!records.length && <EmptyState icon={<Table2 size={22} />} title="暂无榜单数据" detail="后端将在交易时段采集完整行业和概念榜单。" />}</div>
       {pages > 1 && <Pagination page={page} pages={pages} setPage={setPage} />}
@@ -427,9 +422,9 @@ function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error,
   </section>
 }
 
-function SortHead<Key extends string>({ label, sortKey, sort, onSort }: { label: string; sortKey: Key; sort: SortState<Key>; onSort: (key: Key) => void }) {
+function SortHead<Key extends string>({ label, sortKey, sort, onSort, className }: { label: string; sortKey: Key; sort: SortState<Key>; onSort: (key: Key) => void; className?: string }) {
   const active = sort.key === sortKey
-  return <th aria-sort={active ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}><button className={`sort-button ${active ? 'active' : ''}`} onClick={() => onSort(sortKey)}>{label}<ChevronDown size={13} className={active && sort.direction === 'asc' ? 'flipped' : ''} /></button></th>
+  return <th className={className} aria-sort={active ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}><button className={`sort-button ${active ? 'active' : ''}`} onClick={() => onSort(sortKey)}>{label}<ChevronDown size={13} className={active && sort.direction === 'asc' ? 'flipped' : ''} /></button></th>
 }
 
 function Pagination({ page, pages, setPage, compact = false }: { page: number; pages: number; setPage: (value: number) => void; compact?: boolean }) {
@@ -458,16 +453,11 @@ function Chart({ series, metric, secondaryMetric, loading, emptyLabel }: { serie
   useEffect(() => {
 	if (!element || !series.length) return
 	let cancelled = false
-	const chartValue = (record: RankRecord, selectedMetric: Metric) => {
-	  if (!metricAvailable(record, selectedMetric)) return null
-	  return ['change_pct', 'dark_inflow_ratio', 'dark_activity'].includes(selectedMetric) ? metricValue(record, selectedMetric) * 100 : metricValue(record, selectedMetric)
-	}
 	const intervalMinutes = isFiveMinuteSeries(series) ? 5 : 1
 	const points = completeTimeline(series, intervalMinutes)
-	const primaryValues = continuousMetricValues(points, metric, chartValue)
-	const secondaryValues = secondaryMetric === 'none' ? [] : continuousMetricValues(points, secondaryMetric, chartValue)
-	const sameUnit = secondaryMetric !== 'none' && (['change_pct', 'dark_inflow_ratio', 'dark_activity'].includes(metric) === ['change_pct', 'dark_inflow_ratio', 'dark_activity'].includes(secondaryMetric))
-	const options = { points, primaryValues, secondaryValues, metric, secondaryMetric, sameUnit }
+	const primaryValues = continuousMetricValues(points, metric, chartMetricValue)
+	const secondaryValues = secondaryMetric === 'none' ? [] : continuousMetricValues(points, secondaryMetric, chartMetricValue)
+	const options = { points, primaryValues, secondaryValues, metric, secondaryMetric }
 	void import('./chartRuntime').then(({ createLineChart }) => {
 	  if (cancelled) return
 	  // Reuse the live instance when only the data changed: disposing and

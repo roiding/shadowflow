@@ -32,12 +32,13 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: backend/go.mod
+          # Match the Docker builder; go.mod is only the language minimum.
+          go-version: '1.26.8'
           cache-dependency-path: backend/go.sum
 
       - name: Test backend
         working-directory: backend
-        run: go test ./...
+        run: go test -race -count=1 ./...
 
       - name: Vet backend
         working-directory: backend
@@ -56,7 +57,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: '22.23.2'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -134,6 +135,17 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: VULN_DB_REFRESH=${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Scan ARM64 runtime image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: shadowflow-smoke:${{ github.sha }}
+          scanners: vuln
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: false
 
       - name: Smoke test ARM64 image
         shell: bash
@@ -197,6 +209,7 @@ jobs:
           cache-from: type=gha
           provenance: mode=max
           sbom: true
+          build-args: VULN_DB_REFRESH=${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Write build summary
         shell: bash

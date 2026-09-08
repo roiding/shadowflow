@@ -4,11 +4,12 @@ import { GridComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { RankRecord } from './api/types'
 import { isCumulativeMetric, type ChartMetric, type TimelinePoint } from './continuousSeries'
+import { metricAvailable, metricUnit } from './chartMetrics'
 
 echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
 
 type Metric = ChartMetric
-type TooltipPoint = { axisValue: string; seriesName: string; value: number; marker: string; dataIndex: number }
+type TooltipPoint = { axisValue: string; dataIndex: number }
 
 const METRIC_LABELS: Record<Metric, string> = {
   dark_money: '暗盘资金', regular_money: '明盘资金', main_money_inflow: '主力净流入（含暗盘）',
@@ -43,12 +44,6 @@ function metricDisplay(record: RankRecord, metric: Metric) {
   return formatNumber(value)
 }
 
-function metricAvailable(record: RankRecord, metric: Metric) {
-  if (['dark_money', 'regular_money', 'main_money_inflow'].includes(metric)) return record.money_available
-  if (['dark_activity', 'dark_inflow_ratio', 'rank', 'up_count'].includes(metric)) return record.rank > 0
-  return true
-}
-
 function metricDisplayValue(value: number, metric: Metric) {
   if (metric === 'dark_money' || metric === 'regular_money' || metric === 'main_money_inflow') return formatMoney(value)
   if (metric === 'change_pct' || metric === 'dark_inflow_ratio' || metric === 'dark_activity') return `${formatNumber(value, 2)}%`
@@ -70,7 +65,6 @@ export type LineChartOptions = {
   secondaryValues: Array<number | null>
   metric: Metric
   secondaryMetric: Metric | 'none'
-  sameUnit: boolean
 }
 
 export type LineChartHandle = {
@@ -78,15 +72,69 @@ export type LineChartHandle = {
   dispose: () => void
 }
 
-function applyLineChartOptions(chart: echarts.ECharts, options: LineChartOptions) {
-  const { points, primaryValues, secondaryValues, metric, secondaryMetric, sameUnit } = options
+export function buildLineChartOption(options: LineChartOptions): echarts.EChartsCoreOption {
+  const { points, primaryValues, secondaryValues, metric, secondaryMetric } = options
+  const sameUnit = secondaryMetric !== 'none' && metricUnit(metric) === metricUnit(secondaryMetric)
+  const dualAxis = secondaryMetric !== 'none' && !sameUnit
   const multiDay = new Set(points.flatMap((point) => point.record ? [point.record.trade_date] : [])).size > 1
-  chart.setOption({ animation: false, grid: { left: 48, right: secondaryMetric === 'none' ? 20 : 48, top: 20, bottom: 42 }, tooltip: { trigger: 'axis', formatter: (raw: unknown) => { const params = (Array.isArray(raw) ? raw : [raw]) as TooltipPoint[]; const point = points[params[0]?.dataIndex ?? 0]; if (!point?.record) return `<strong>${escapeHTML(params[0]?.axisValue ?? '')}</strong><br/>缺少采集点`; return `<strong>${escapeHTML(params[0]?.axisValue ?? '')}</strong><br/>${params.map((item) => { const selectedMetric = item.seriesName === METRIC_LABELS[metric] ? metric : secondaryMetric as Metric; const plotted = metricDisplayValue(Number(item.value), selectedMetric); const daily = metricDisplay(point.record!, selectedMetric); return `${item.marker}${escapeHTML(item.seriesName)}: ${escapeHTML(plotted)}${multiDay && isCumulativeMetric(selectedMetric) ? ` <small>（当日 ${escapeHTML(daily)}）</small>` : ''}` }).join('<br/>')}` } }, xAxis: { type: 'category', boundaryGap: false, data: points.map((item) => item.label), axisLabel: { color: '#8a929e', interval: Math.max(0, Math.floor(points.length / 8) - 1) }, axisLine: { lineStyle: { color: '#dfe4ea' } } }, yAxis: [{ type: 'value', name: METRIC_LABELS[metric], scale: true, axisLabel: { color: '#8a929e', formatter: (value: number) => ['change_pct', 'dark_inflow_ratio', 'dark_activity'].includes(metric) ? `${value}%` : formatCompact(value, metric) }, splitLine: { lineStyle: { color: '#edf0f3' } } }, ...(secondaryMetric !== 'none' && !sameUnit ? [{ type: 'value', name: METRIC_LABELS[secondaryMetric], scale: true, position: 'right', axisLabel: { color: '#8a929e', formatter: (value: number) => formatCompact(value, secondaryMetric) }, splitLine: { show: false } }] : [])], series: [{ name: METRIC_LABELS[metric], type: 'line', connectNulls: false, smooth: 0.22, showSymbol: false, lineStyle: { width: 2.5, color: '#1d6ee8' }, itemStyle: { color: '#1d6ee8' }, areaStyle: { color: 'rgba(29,110,232,.08)' }, data: primaryValues }, ...(secondaryMetric !== 'none' ? [{ name: METRIC_LABELS[secondaryMetric], type: 'line', connectNulls: false, yAxisIndex: sameUnit ? 0 : 1, smooth: 0.22, showSymbol: false, lineStyle: { width: 2, color: '#e07a31' }, itemStyle: { color: '#e07a31' }, data: secondaryValues }] : [])] }, { notMerge: true })
+  const plottedMetrics = [
+    { metric, values: primaryValues, color: '#1d6ee8' },
+    ...(secondaryMetric !== 'none' ? [{ metric: secondaryMetric, values: secondaryValues, color: '#e07a31' }] : []),
+  ]
+  const axisNames = { money: '金额', percent: '%', rank: '名次', count: '家数' }
+  return {
+    animation: false,
+    grid: { left: 56, right: dualAxis ? 56 : 20, top: 26, bottom: 42 },
+    tooltip: {
+      trigger: 'axis', confine: true,
+      formatter: (raw: unknown) => {
+        const params = (Array.isArray(raw) ? raw : [raw]) as TooltipPoint[]
+        const index = params[0]?.dataIndex ?? 0
+        const point = points[index]
+        const heading = `<strong>${escapeHTML(point?.label ?? params[0]?.axisValue ?? '')}</strong>`
+        if (!point?.record) return `${heading}<br/>缺少采集点`
+        return `${heading}<br/>${plottedMetrics.map(({ metric: selectedMetric, values, color }) => {
+          const value = values[index]
+          const available = value != null && Number.isFinite(value) && metricAvailable(point.record!, selectedMetric)
+          const plotted = available ? metricDisplayValue(value, selectedMetric) : '数据不可用'
+          const daily = available && multiDay && isCumulativeMetric(selectedMetric)
+            ? ` <small>（当日 ${escapeHTML(metricDisplay(point.record!, selectedMetric))}）</small>` : ''
+          return `<span style="color:${color}">${escapeHTML(METRIC_LABELS[selectedMetric])}</span>: ${escapeHTML(plotted)}${daily}`
+        }).join('<br/>')}`
+      },
+    },
+    xAxis: {
+      type: 'category', boundaryGap: false, data: points.map((item) => item.label),
+      axisLabel: { color: '#8a929e', interval: 'auto', hideOverlap: true },
+      axisLine: { lineStyle: { color: '#dfe4ea' } },
+    },
+    yAxis: [
+      {
+        type: 'value', name: axisNames[metricUnit(metric)], scale: true,
+        minInterval: metricUnit(metric) === 'rank' || metricUnit(metric) === 'count' ? 1 : undefined,
+        axisLabel: { color: '#8a929e', formatter: (value: number) => formatCompact(value, metric) },
+        splitLine: { lineStyle: { color: '#edf0f3' } },
+      },
+      ...(dualAxis ? [{
+        type: 'value', name: axisNames[metricUnit(secondaryMetric)], scale: true, position: 'right',
+        minInterval: metricUnit(secondaryMetric) === 'rank' || metricUnit(secondaryMetric) === 'count' ? 1 : undefined,
+        axisLabel: { color: '#8a929e', formatter: (value: number) => formatCompact(value, secondaryMetric) },
+        splitLine: { show: false },
+      }] : []),
+    ],
+    series: plottedMetrics.map(({ metric: selectedMetric, values, color }, index) => ({
+      name: METRIC_LABELS[selectedMetric], type: 'line', connectNulls: false, smooth: 0.22, showSymbol: false,
+      yAxisIndex: index === 1 && dualAxis ? 1 : 0,
+      lineStyle: { width: index === 0 ? 2.5 : 2, color }, itemStyle: { color },
+      ...(index === 0 ? { areaStyle: { color: 'rgba(29,110,232,.08)' } } : {}),
+      data: values,
+    })),
+  }
 }
 
 export function createLineChart(element: HTMLDivElement, options: LineChartOptions): LineChartHandle {
   const chart = echarts.init(element)
-  applyLineChartOptions(chart, options)
+  chart.setOption(buildLineChartOption(options), { notMerge: true })
   const resize = () => chart.resize()
   const observer = new ResizeObserver(resize)
   observer.observe(element)
@@ -96,7 +144,7 @@ export function createLineChart(element: HTMLDivElement, options: LineChartOptio
     // Updating in place preserves the instance and its canvas: disposing and
     // re-initializing on every poll made the chart flash and reset tooltip
     // state once a minute.
-    update: (next) => applyLineChartOptions(chart, next),
+    update: (next) => chart.setOption(buildLineChartOption(next), { notMerge: true }),
     dispose: () => {
       cancelAnimationFrame(raf)
       observer.disconnect()

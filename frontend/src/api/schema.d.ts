@@ -1075,6 +1075,8 @@ export interface components {
             down_count?: number;
             leader_name?: string;
             leader_code?: string;
+            /** @description 101 为完整暗盘榜（含活跃度、涨跌幅和板块家数）；100 为纯资金分钟补采；0 为未带暗盘榜指标的其他来源。quote_available 仅表示完整行情是否可用。 */
+            source_version?: number;
             /** Format: date-time */
             fetched_at?: string;
         };

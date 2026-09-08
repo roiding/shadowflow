@@ -606,6 +606,7 @@ components:
         down_count: { type: integer, format: int64 }
         leader_name: { type: string }
         leader_code: { type: string }
+        source_version: { type: integer, description: '101 为完整暗盘榜（含活跃度、涨跌幅和板块家数）；100 为纯资金分钟补采；0 为未带暗盘榜指标的其他来源。quote_available 仅表示完整行情是否可用。' }
         fetched_at: { type: string, format: date-time }
     StockBoardRelation:
       type: object

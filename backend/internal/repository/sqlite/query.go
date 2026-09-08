@@ -20,21 +20,23 @@ const recordColumns = `snapshot_at,trade_date,rank_type,rank,market,code,name,qu
 up_count,flat_count,down_count,leader_name,leader_code,source_version,source_sort_flag,source_descending,fetched_at`
 
 func (s *Store) LatestRank(ctx context.Context, rankType graymarket.RankType) ([]graymarket.RankRecord, error) {
-	rows, err := s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_intraday_work
-WHERE rank_type=? AND snapshot_at=(SELECT max(snapshot_at) FROM rank_intraday_work WHERE rank_type=?)
-ORDER BY rank`, string(rankType), string(rankType))
-	if err != nil {
-		return nil, err
-	}
-	result, err := scanRecords(rows)
-	if err != nil || len(result) > 0 {
-		return result, err
-	}
-	// The post-close full snapshot is authoritative after intraday cleanup.
-	rows, err = s.readDB().QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_snapshot
+	// Select and read one whole snapshot in a single SQLite read view. Old
+	// retained work must not hide a newer archive; at equal times prefer close.
+	rows, err := s.readDB().QueryContext(ctx, `WITH latest AS (
+  SELECT 'work' AS source,max(snapshot_at) AS snapshot_at FROM rank_intraday_work WHERE rank_type=?
+  UNION ALL
+  SELECT 'close',max(snapshot_at) FROM rank_snapshot WHERE rank_type=? AND snapshot_kind='daily_close'
+), selected AS (
+  SELECT source,snapshot_at FROM latest WHERE snapshot_at IS NOT NULL
+  ORDER BY snapshot_at DESC,source ASC LIMIT 1
+)
+SELECT `+recordColumns+` FROM rank_intraday_work
+WHERE rank_type=? AND snapshot_at=(SELECT snapshot_at FROM selected WHERE source='work')
+UNION ALL
+SELECT `+recordColumns+` FROM rank_snapshot
 WHERE rank_type=? AND snapshot_kind='daily_close'
-AND snapshot_at=(SELECT max(snapshot_at) FROM rank_snapshot WHERE rank_type=? AND snapshot_kind='daily_close')
-ORDER BY rank`, string(rankType), string(rankType))
+AND snapshot_at=(SELECT snapshot_at FROM selected WHERE source='close')
+ORDER BY rank`, string(rankType), string(rankType), string(rankType), string(rankType))
 	if err != nil {
 		return nil, err
 	}

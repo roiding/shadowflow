@@ -27,6 +27,7 @@ func TestGuardReopensOnFailedProbeAndRecoversAfterSuccesses(t *testing.T) {
 		request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
 		response, err := guard.Do(context.Background(), request)
 		if response != nil {
+			_, err = io.Copy(io.Discard, response.Body)
 			_ = response.Body.Close()
 		}
 		return err

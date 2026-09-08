@@ -47,29 +47,22 @@ type Guard struct {
 
 type guardedBody struct {
 	io.ReadCloser
-	once     sync.Once
-	release  func()
-	failOnce sync.Once
-	onFail   func()
+	once   sync.Once
+	finish func(complete bool, err error)
 }
 
 func (b *guardedBody) Read(buffer []byte) (int, error) {
 	n, err := b.ReadCloser.Read(buffer)
 	if err != nil {
-		// A mid-body disconnect is a primary upstream failure mode; health was
-		// otherwise only judged at the response-header stage, so a host that
-		// keeps truncating bodies never tripped the breaker.
-		if err != io.EOF && b.onFail != nil {
-			b.failOnce.Do(b.onFail)
-		}
-		b.once.Do(b.release)
+		b.once.Do(func() { b.finish(err == io.EOF, err) })
 	}
 	return n, err
 }
 
 func (b *guardedBody) Close() error {
 	err := b.ReadCloser.Close()
-	b.once.Do(b.release)
+	// Closing an unread body abandons the request, but does not prove health.
+	b.once.Do(func() { b.finish(false, err) })
 	return err
 }
 
@@ -112,6 +105,7 @@ func (g *Guard) Do(ctx context.Context, request *http.Request) (*http.Response, 
 		return nil, ctx.Err()
 	}
 	releaseSlot := func() { <-g.semaphore }
+	callerCanceled := func() bool { return ctx.Err() != nil || request.Context().Err() != nil }
 	if err := g.waitSend(ctx); err != nil {
 		releaseSlot()
 		g.releaseProbe(key, probe)
@@ -120,11 +114,9 @@ func (g *Guard) Do(ctx context.Context, request *http.Request) (*http.Response, 
 	response, err := g.httpClient.Do(request)
 	if err != nil {
 		releaseSlot()
-		// A cancelled or deadline-exceeded caller context says nothing about
-		// upstream health; recording it as a failure lets a batch abort (e.g.
-		// consecutive-failure cutoff or process shutdown) trip the breaker and
-		// lock out the host for the next scheduled task.
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		// Caller cancellation is neutral. A client/transport timeout with a
+		// live caller context is still an upstream failure.
+		if !callerCanceled() {
 			g.record(key, false)
 		}
 		g.releaseProbe(key, probe)
@@ -136,15 +128,26 @@ func (g *Guard) Do(ctx context.Context, request *http.Request) (*http.Response, 
 		response.StatusCode != http.StatusTooManyRequests &&
 		response.StatusCode != http.StatusUnauthorized &&
 		response.StatusCode != http.StatusForbidden
-	g.record(key, healthy)
-	g.releaseProbe(key, probe)
 	if !healthy {
-		_, _ = io.Copy(io.Discard, response.Body)
 		_ = response.Body.Close()
+		if !callerCanceled() {
+			g.record(key, false)
+		}
+		g.releaseProbe(key, probe)
 		releaseSlot()
 		return nil, fmt.Errorf("upstream returned HTTP %d", response.StatusCode)
 	}
-	response.Body = &guardedBody{ReadCloser: response.Body, release: releaseSlot, onFail: func() { g.record(key, false) }}
+	body := &guardedBody{ReadCloser: response.Body, finish: func(complete bool, readErr error) {
+		if !callerCanceled() && (complete || readErr != nil) {
+			g.record(key, complete)
+		}
+		g.releaseProbe(key, probe)
+		releaseSlot()
+	}}
+	response.Body = body
+	if body.ReadCloser == http.NoBody {
+		body.once.Do(func() { body.finish(true, nil) })
+	}
 	return response, nil
 }
 

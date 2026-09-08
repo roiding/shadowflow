@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { AlertTriangle, CalendarDays, Check, ChevronLeft, ChevronRight, Info, Server } from 'lucide-react'
 
 import type { CollectionRun, DailyArchiveManifest, QualitySummary, StockArchiveQuality } from '../api/types'
+import { isStockDailyKlineComplete, isStockKlineComplete } from '../qualityStatus'
 
 type BoardType = 'industry' | 'concept'
 
@@ -40,11 +41,12 @@ export function QualityView({ date, setDate, quality, stockQuality, manifest, ru
   const expectedStocks = stockQuality?.expected_stocks ?? 0
   const expectedKlineStocks = stockQuality?.expected_kline_stocks ?? 0
   const moneyOK = expectedStocks > 0 && stockQuality?.money_rows === expectedStocks * expectedPoints
-  // A day where no stock traded has zero expected klines and is complete by
-  // definition, not permanently pending.
-  const klineOK = expectedKlineStocks === 0 ? Boolean(stockQuality) : stockQuality?.kline_rows === expectedKlineStocks * expectedPoints
+  // A zero expectation is only complete when the archive manifest explicitly
+  // says this date was sealed. The API returns a zero-value quality object for
+  // dates without a row, so checking Boolean(stockQuality) is not sufficient.
+  const klineOK = isStockKlineComplete(stockQuality, manifest)
   const closeOK = expectedStocks > 0 && stockQuality?.daily_close_rows === expectedStocks
-  const dailyKOK = expectedKlineStocks === 0 ? Boolean(stockQuality) : stockQuality?.daily_kline_rows === expectedKlineStocks
+  const dailyKOK = isStockDailyKlineComplete(stockQuality, manifest)
   const stockAllOK = moneyOK && klineOK && closeOK && dailyKOK
   const moneyPoints = expectedStocks ? Math.floor((stockQuality?.money_rows ?? 0) / expectedStocks) : 0
   const klineStocks = stockQuality?.kline_stocks ?? 0
