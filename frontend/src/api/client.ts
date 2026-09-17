@@ -1,7 +1,7 @@
 import { getToken, notifyUnauthorized } from '../auth'
 import type { components } from './schema'
 import { loadCompleteBoardClose } from './boardClose'
-import type { ApiEnvelope, ArchiveRevision, BoardStockQuote, CollectionRun, DailyFeature, FutureReturnLabel, FocusResult, FocusScanRequest, PageMeta, QualityMeta, QualitySummary, RankRecord, RankType, StockResearchPoint, SystemStatus } from './types'
+import type { ApiEnvelope, ArchiveRevision, BoardQuoteMeta, BoardStockQuote, CollectionRun, DailyFeature, FutureReturnLabel, FocusResult, FocusScanRequest, PageMeta, QualityMeta, QualitySummary, RankRecord, RankType, StockResearchPoint, SystemStatus } from './types'
 
 const REQUEST_TIMEOUT_MS = 25_000
 const SCAN_TIMEOUT_MS = 35_000
@@ -54,7 +54,7 @@ export const api = {
   intraday: (type: Exclude<RankType, 'stock'>, code: string, date: string, signal?: AbortSignal) =>
     request<RankRecord[]>(`/api/v1/boards/${type}/${encodeURIComponent(code)}/intraday?trade_date=${date}`, { signal }),
   boardQuotes: (type: Exclude<RankType, 'stock'>, code: string, asOf: string, signal?: AbortSignal) =>
-    request<BoardStockQuote[], { as_of: string; quote_source: string; quote_available: boolean; quoted_count?: number; quote_error?: string; quote_status: string; stale: boolean; cache_age_ms?: number; dark_data_available: boolean; dark_data_count: number }>(`/api/v1/boards/${type}/${encodeURIComponent(code)}/quotes?as_of=${asOf}`, { signal }),
+    request<BoardStockQuote[], BoardQuoteMeta>(`/api/v1/boards/${type}/${encodeURIComponent(code)}/quotes?as_of=${asOf}`, { signal }),
   trend: (type: Exclude<RankType, 'stock'>, code: string, from: string, to: string, revisionId?: string, signal?: AbortSignal) => {
     const params = new URLSearchParams({ from, to, interval: '5m' })
     if (revisionId) params.set('revision_id', revisionId)

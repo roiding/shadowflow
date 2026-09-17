@@ -3,6 +3,7 @@ export type RankType = 'industry' | 'concept' | 'stock'
 import type { components } from './schema'
 
 export type BoardStockQuote = components['schemas']['BoardStockQuote']
+export type BoardQuoteMeta = components['schemas']['BoardQuoteMeta']
 
 export interface RankRecord {
   trade_date: string

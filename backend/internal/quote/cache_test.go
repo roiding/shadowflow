@@ -33,7 +33,7 @@ func TestSnapshotDoesNotBlockOnFirstRefresh(t *testing.T) {
 	cache := NewCache(source, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	started := time.Now()
 	snapshot, status := cache.Snapshot(graymarket.BoardIndustry, "BK001", nil)
-	if time.Since(started) > 20*time.Millisecond || status != StatusWarming {
+	if time.Since(started) > 20*time.Millisecond || status != StatusWarming || !snapshot.Refreshing {
 		t.Fatalf("first snapshot blocked or wrong status=%s elapsed=%s", status, time.Since(started))
 	}
 	close(source.release)
@@ -48,7 +48,7 @@ func TestSnapshotDoesNotBlockOnFirstRefresh(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if len(snapshot.Quotes) != 1 || !snapshot.Quotes[0].Available {
+	if len(snapshot.Quotes) != 1 || !snapshot.Quotes[0].Available || snapshot.Refreshing {
 		t.Fatalf("unexpected snapshot %+v", snapshot)
 	}
 }
@@ -88,9 +88,9 @@ func TestRefreshFailureIsVisibleToCallers(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	snapshot, _ := cache.Snapshot(graymarket.BoardIndustry, "BK001", nil)
-	if snapshot.Error == "" {
-		t.Fatal("latest refresh error was hidden")
+	snapshot, status := cache.Snapshot(graymarket.BoardIndustry, "BK001", nil)
+	if snapshot.Error == "" || snapshot.Refreshing || status != StatusUnavailable {
+		t.Fatalf("failed warmup must stop polling, got status=%s snapshot=%+v", status, snapshot)
 	}
 }
 

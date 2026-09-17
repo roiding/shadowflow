@@ -73,7 +73,7 @@ func TestRelationAPIsReconstructAsOfDate(t *testing.T) {
 		RequestedDate: "20260813", TradeDate: run.TradeDate, RankType: graymarket.RankStock, SnapshotAt: closeAt,
 		Records: []graymarket.RankRecord{{TradeDate: run.TradeDate, SnapshotAt: closeAt, RankType: graymarket.RankStock,
 			Rank: 7, Code: "000001", Name: "平安银行", OpenPrice: 10.1, HighPrice: 10.8, LowPrice: 9.9,
-			ClosePrice: 10.5, PreviousClose: 10, Turnover: 1000, TurnoverRate: 0.02, QuoteAvailable: true,
+			ClosePrice: 10.5, PreviousClose: 10, Turnover: 1000, TurnoverRate: 0.02, QuoteAvailable: true, MoneyAvailable: true,
 			DarkMoney: -250, MainMoneyInflow: 125, DarkActivity: 0.25, FetchedAt: closeAt}},
 	}); err != nil {
 		t.Fatal(err)

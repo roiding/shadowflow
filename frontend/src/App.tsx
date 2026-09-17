@@ -4,11 +4,14 @@ import { Activity, AlertTriangle, BarChart3, CalendarDays, Check, ChevronDown, C
 import { api } from './api/client'
 import { UNAUTHORIZED_EVENT } from './auth'
 import { TokenGate } from './TokenGate'
-import type { BoardStockQuote, FocusResult, FocusScanRequest, RankRecord, RankType, SystemStatus } from './api/types'
+import type { BoardQuoteMeta, BoardStockQuote, FocusResult, FocusScanRequest, RankRecord, RankType, SystemStatus } from './api/types'
 import { continuousMetricValues } from './continuousSeries'
 import { chartMetricValue, metricAvailable } from './chartMetrics'
 import { compareControlRanks, compareMonitorRecords, controlRankChangeDisplay, controlRate, derivedBoardTurnover } from './monitorRankings'
 import type { ControlRankChange, MonitorSortKey } from './monitorRankings'
+import { quoteRefreshInterval, refreshMonitorQueries } from './monitorRefresh'
+import { compareConstituents, constituentSort, showConstituentDarkData } from './constituents'
+import type { ConstituentSortKey } from './constituents'
 import { FocusView } from './views/FocusView'
 import { QualityView } from './views/QualityView'
 
@@ -17,7 +20,6 @@ type View = 'monitor' | 'focus' | 'history' | 'stocks' | 'quality'
 type Metric = 'dark_money' | 'regular_money' | 'main_money_inflow' | 'dark_activity' | 'dark_inflow_ratio' | 'change_pct' | 'rank' | 'up_count'
 type SortDirection = 'asc' | 'desc'
 type SortState<Key extends string> = { key: Key; direction: SortDirection }
-type ConstituentSortKey = 'stock_name' | 'stock_code' | 'dark_rank' | 'dark_money' | 'main_money_inflow' | 'dark_activity' | 'latest_price' | 'change_pct' | 'turnover'
 type ColumnOption<Key extends string> = { key: Key; label: string; className?: string }
 type MonitorColumnKey = Exclude<MonitorSortKey, 'control_rank_change'>
 type StockColumnKey = keyof RankRecord | 'control_rate'
@@ -131,13 +133,6 @@ function metricValue(record: RankRecord, metric: Metric) {
 
 function signedClass(value: number) { return value > 0 ? 'positive' : value < 0 ? 'negative' : 'neutral' }
 
-// Sort comparators must stay consistent: Number(undefined) is NaN and makes
-// the comparator non-total, which lets Array.sort produce arbitrary order.
-function sortableNumber(value: unknown) {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY
-}
-
 function jitterInterval(base: number) {
   const factor = base * 0.2
   return Math.round(base - factor + Math.random() * factor * 2)
@@ -212,7 +207,8 @@ function App() {
   }, [])
   const [view, setView] = useState<View>('monitor')
   const [boardType, setBoardType] = useState<BoardType>('industry')
-  const [selectedCode, setSelectedCode] = useState('')
+  const [selectedCodes, setSelectedCodes] = useState<Record<BoardType, string>>({ industry: '', concept: '' })
+  const selectedCode = selectedCodes[boardType]
   const [mobilePane, setMobilePane] = useState<'ranks' | 'trend'>('ranks')
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortState<MonitorSortKey>>({ key: 'rank', direction: 'asc' })
@@ -237,9 +233,9 @@ function App() {
   // While the Token Gate is shown every query keeps polling into 401s (and
   // the retry doubles them), needlessly consuming the backend rate budget;
   // gate all queries on !authRequired.
-  const statusQuery = useQuery({ queryKey: ['system-status'], queryFn: async ({ signal }) => (await api.status(signal)).data as SystemStatus, enabled: !authRequired, refetchInterval: refreshInterval, refetchIntervalInBackground: false })
+  const statusQuery = useQuery({ queryKey: ['system-status'], queryFn: async ({ signal }) => (await api.status(signal)).data as SystemStatus, enabled: !authRequired })
   const latestTradingDay = statusQuery.data?.latest_trading_day ?? ''
-  const rankQuery = useQuery({ queryKey: ['latest', boardType], queryFn: async ({ signal }) => { const started = performance.now(); const result = await api.latest(boardType, signal); return { records: result.data ?? [], previousDate: result.meta?.previous_trade_date ?? '', requestMs: Math.round(performance.now() - started) } }, enabled: !authRequired, refetchInterval: refreshInterval, refetchIntervalInBackground: false })
+  const rankQuery = useQuery({ queryKey: ['latest', boardType], queryFn: async ({ signal }) => { const started = performance.now(); const result = await api.latest(boardType, signal); return { records: result.data ?? [], previousDate: result.meta?.previous_trade_date ?? '', requestMs: Math.round(performance.now() - started) } }, enabled: !authRequired })
   const records = useMemo(() => rankQuery.data?.records ?? [], [rankQuery.data?.records])
   const selected = records.find((item) => item.code === selectedCode) ?? records[0]
   const selectedId = selected?.code ?? ''
@@ -252,23 +248,21 @@ function App() {
     queryFn: ({ signal }) => api.boardDailyClose(boardType, previousDate, signal),
     enabled: !authRequired && view === 'monitor' && records.length > 0 && Boolean(previousDate),
     staleTime: 5 * 60_000,
-    // Retry a late/missing archive during normal refreshes, but do not reload
-    // a complete prior-day universe on every minute tick.
-    refetchInterval: (query) => !query.state.data?.length || query.state.status === 'error' ? refreshInterval : false,
-    refetchIntervalInBackground: false,
   })
   const rankChanges = useMemo(() => compareControlRanks(records, previousCloseQuery.isError ? undefined : previousCloseQuery.data, boardType), [records, previousCloseQuery.data, previousCloseQuery.isError, boardType])
   const intradayQuery = useQuery({
     queryKey: ['intraday', boardType, selectedId, monitorDate],
     queryFn: async ({ signal }) => (await api.intraday(boardType, selectedId, monitorDate, signal)).data ?? [],
     enabled: !authRequired && Boolean(selectedId && monitorDate) && view === 'monitor',
-    refetchInterval: refreshInterval, refetchIntervalInBackground: false,
   })
   const boardQuotesQuery = useQuery({
     queryKey: ['board-quotes', boardType, selectedId, monitorDate],
     queryFn: async ({ signal }) => api.boardQuotes(boardType, selectedId, monitorDate, signal),
     enabled: !authRequired && Boolean(selectedId && monitorDate) && view === 'monitor',
-    refetchInterval: refreshInterval, refetchIntervalInBackground: false,
+    // Re-selecting a recently visited board must still request a fresh quote.
+    staleTime: 0,
+    refetchInterval: (query) => quoteRefreshInterval(query.state.data?.meta, query.state.status === 'error'),
+    refetchIntervalInBackground: false,
   })
   const trendQuery = useQuery({
     queryKey: ['trend', boardType, historyCode, historyFrom, historyTo],
@@ -304,6 +298,14 @@ function App() {
   })
 
   useEffect(() => {
+    if (authRequired || refreshInterval === false) return
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshMonitorQueries(queryClient)
+    }, refreshInterval)
+    return () => window.clearInterval(timer)
+  }, [authRequired, refreshInterval, queryClient])
+
+  useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === 'visible' && !authRequired) void queryClient.invalidateQueries()
     }
@@ -320,8 +322,10 @@ function App() {
   }, [latestTradingDay])
 
   useEffect(() => {
-    if (records.length && !records.some((item) => item.code === selectedCode)) setSelectedCode(records[0].code)
-  }, [records, selectedCode])
+    if (records.length && !records.some((item) => item.code === selectedCode)) {
+      setSelectedCodes((current) => ({ ...current, [boardType]: records[0].code }))
+    }
+  }, [records, selectedCode, boardType])
 
   useEffect(() => {
     const available = historyRanksQuery.data ?? []
@@ -344,7 +348,13 @@ function App() {
   }, [records, query, sort, rankChanges])
 
   const onSort = (key: MonitorSortKey) => setSort((current) => ({ key, direction: current.key === key ? (current.direction === 'asc' ? 'desc' : 'asc') : key === 'control_rate' ? 'desc' : 'asc' }))
-  const refreshAll = () => { void rankQuery.refetch(); void statusQuery.refetch(); if (previousDate && view === 'monitor' && !authRequired) void previousCloseQuery.refetch(); if (selectedId) { void intradayQuery.refetch(); void boardQuotesQuery.refetch() } }
+  const refreshAll = () => { if (!authRequired) void refreshMonitorQueries(queryClient, true) }
+  const setSelectedCode = (code: string) => {
+    setSelectedCodes((current) => ({ ...current, [boardType]: code }))
+    // Clicking the already-selected row does not change the query key. It is
+    // nevertheless an explicit request to update that board's constituents.
+    void queryClient.invalidateQueries({ queryKey: ['board-quotes', boardType, code, monitorDate], exact: true }, { cancelRefetch: false })
+  }
   const historicalSelected = (historyRanksQuery.data ?? []).find((item) => item.code === historyCode) ?? historyRanksQuery.data?.[0]
   const stockRecords = stocksQuery.data?.data ?? []
   const stockMeta = stocksQuery.data?.meta
@@ -390,7 +400,7 @@ function MarketStatus({ status }: { status?: SystemStatus }) {
 
 type MonitorProps = {
   previousDate: string; rankChanges: ReadonlyMap<string, ControlRankChange>; previousLoading: boolean; previousError: Error | null; previousAvailable: boolean
-	  boardType: BoardType; setBoardType: (value: BoardType) => void; records: RankRecord[]; allRecords: RankRecord[]; selected?: RankRecord; selectedCode: string; setSelectedCode: (value: string) => void; query: string; setQuery: (value: string) => void; onSort: (key: MonitorSortKey) => void; sort: SortState<MonitorSortKey>; metric: Metric; setMetric: (value: Metric) => void; secondaryMetric: Metric | 'none'; setSecondaryMetric: (value: Metric | 'none') => void; series: RankRecord[]; loading: boolean; rankError: Error | null; seriesError: Error | null; requestMs?: number; status?: SystemStatus; tradeDate: string; staleSnapshot: boolean; mobilePane: 'ranks' | 'trend'; setMobilePane: (value: 'ranks' | 'trend') => void; stocks: BoardStockQuote[]; stocksLoading: boolean; stocksError: Error | null; quoteMeta?: { as_of: string; quote_source: string; quote_available: boolean; quoted_count?: number; quote_error?: string; quote_status: string; stale: boolean; cache_age_ms?: number; dark_data_available: boolean; dark_data_count: number }
+	  boardType: BoardType; setBoardType: (value: BoardType) => void; records: RankRecord[]; allRecords: RankRecord[]; selected?: RankRecord; selectedCode: string; setSelectedCode: (value: string) => void; query: string; setQuery: (value: string) => void; onSort: (key: MonitorSortKey) => void; sort: SortState<MonitorSortKey>; metric: Metric; setMetric: (value: Metric) => void; secondaryMetric: Metric | 'none'; setSecondaryMetric: (value: Metric | 'none') => void; series: RankRecord[]; loading: boolean; rankError: Error | null; seriesError: Error | null; requestMs?: number; status?: SystemStatus; tradeDate: string; staleSnapshot: boolean; mobilePane: 'ranks' | 'trend'; setMobilePane: (value: 'ranks' | 'trend') => void; stocks: BoardStockQuote[]; stocksLoading: boolean; stocksError: Error | null; quoteMeta?: BoardQuoteMeta
 }
 
 function MonitorView(props: MonitorProps) {
@@ -450,52 +460,74 @@ function MonitorView(props: MonitorProps) {
       {seriesError && <InlineNotice kind="error" text="分钟序列读取失败，请稍后重试。" />}
 	      <Chart series={series} metric={metric} secondaryMetric={secondaryMetric} loading={loading} emptyLabel={seriesError ? '分钟序列读取失败' : '选择板块后加载分钟数据'} />
 	      <TrendStats selected={selected} series={series} status={status} />
-	      <ConstituentPanel board={selected} boardType={boardType} tradeDate={tradeDate} stocks={stocks} loading={stocksLoading} error={stocksError} quoteMeta={quoteMeta} />
+	      <ConstituentPanel board={selected} boardType={boardType} tradeDate={tradeDate} stocks={stocks} loading={stocksLoading} error={stocksError} quoteMeta={quoteMeta} status={status} />
 	    </section>
   </section>
 }
 
-function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error, quoteMeta }: { board?: RankRecord; boardType: BoardType; tradeDate: string; stocks: BoardStockQuote[]; loading: boolean; error: Error | null; quoteMeta?: MonitorProps['quoteMeta'] }) {
+function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error, quoteMeta, status }: { board?: RankRecord; boardType: BoardType; tradeDate: string; stocks: BoardStockQuote[]; loading: boolean; error: Error | null; quoteMeta?: BoardQuoteMeta; status?: SystemStatus }) {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortState<ConstituentSortKey>>({ key: 'dark_rank', direction: 'asc' })
   const [page, setPage] = useState(1)
+  const darkReady = showConstituentDarkData(stocks, quoteMeta, status)
+  const displaySort = useMemo(() => constituentSort(sort, darkReady), [sort, darkReady])
   const visibleStocks = useMemo(() => {
     const normalized = query.trim().toLowerCase()
     return stocks
       .filter((stock) => !normalized || stock.stock_name.toLowerCase().includes(normalized) || stock.stock_code.includes(normalized))
-      .sort((left, right) => {
-        const darkField = ['dark_rank', 'dark_money', 'main_money_inflow', 'dark_activity'].includes(sort.key)
-        if (darkField && left.dark_data_available !== right.dark_data_available) return left.dark_data_available ? -1 : 1
-        const quoteField = ['latest_price', 'change_pct', 'turnover'].includes(sort.key)
-        if (quoteField && left.quote_available !== right.quote_available) return left.quote_available ? -1 : 1
-        const leftValue = left[sort.key]
-        const rightValue = right[sort.key]
-        const compared = typeof leftValue === 'string' && typeof rightValue === 'string'
-          ? leftValue.localeCompare(rightValue, 'zh-CN')
-          : sortableNumber(leftValue) - sortableNumber(rightValue)
-        return sort.direction === 'asc' ? compared : -compared
-      })
-  }, [stocks, query, sort])
+      .sort((left, right) => compareConstituents(left, right, displaySort))
+  }, [stocks, query, displaySort])
   const pages = Math.ceil(visibleStocks.length / CONSTITUENT_PAGE_SIZE)
   const pageStocks = visibleStocks.slice((page - 1) * CONSTITUENT_PAGE_SIZE, page * CONSTITUENT_PAGE_SIZE)
-  useEffect(() => setPage(1), [board?.code, query, sort.key, sort.direction])
+  useEffect(() => setPage(1), [board?.code, query, displaySort.key, displaySort.direction])
   useEffect(() => setPage((current) => Math.max(1, Math.min(current, pages || 1))), [pages])
   const onSort = (key: ConstituentSortKey) => setSort((current) => ({ key, direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc' }))
   const quoteTime = stocks.find((stock) => stock.quote_available && stock.quote_time)?.quote_time
   const quoteReady = Boolean(quoteMeta?.quote_available && stocks.some((stock) => stock.quote_available))
-  const darkReady = Boolean(quoteMeta?.dark_data_available && stocks.some((stock) => stock.dark_data_available))
-  const badgeLabel = quoteReady && darkReady ? '暗盘榜 + 行情' : darkReady ? '暗盘榜已关联' : quoteReady ? `行情 ${quoteTime ? formatTime(quoteTime) : '已更新'}` : '仅成分关系'
+  const quoteRefreshing = quoteRefreshInterval(quoteMeta, Boolean(error)) !== false
+  const badgeLabel = quoteRefreshing ? '行情更新中…' : quoteReady && darkReady ? '盘后 · 暗盘榜 + 行情' : darkReady ? '盘后 · 暗盘榜已关联' : quoteReady ? `行情 ${quoteTime ? formatTime(quoteTime) : '已更新'}` : '仅成分关系'
+  const moneyNotice = status?.market_status === 'closed' ? '盘后个股资金数据尚未采集，暂仅显示行情。'
+    : status?.market_status === 'pre_open' ? '盘前仅展示行情；个股暗盘及资金字段在盘后采集完成后显示。'
+      : '盘中仅展示实时行情；个股暗盘及资金字段在盘后采集完成后显示。'
   return <section className="constituent-panel">
     <div className="constituent-heading"><div><p className="eyebrow">级联成分股</p><h3>{board?.name ?? '选择一个板块'} · 个股</h3><span className="subline">{board ? `${board.code} · ${BOARD_LABELS[boardType]} · ${tradeDate} 归属` : '选择板块后加载成分股'}</span></div><span className={`quote-badge ${quoteReady || darkReady ? 'available' : ''}`}>{badgeLabel}</span></div>
-    {quoteMeta?.quote_error && <InlineNotice kind="warning" text="实时行情暂不可用，当前仍保留成分股关系。" />}
+    {quoteMeta?.quote_error && <InlineNotice kind="warning" text="实时行情更新失败，已保留可用缓存及成分股关系。" />}
     {error && <InlineNotice kind="error" text="成分股读取失败，请稍后重试。" />}
+    {board && !darkReady && status && <InlineNotice kind="info" text={moneyNotice} />}
     <label className="constituent-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索成分股名称或代码" /></label>
     <div className={`constituent-table-wrap ${loading ? 'is-loading' : ''}`}>
-      {loading && !stocks.length ? <div className="loading-block">正在读取成分股行情…</div> : <table className="constituent-table"><thead><tr><SortHead label="股票" sortKey="stock_name" sort={sort} onSort={onSort} /><SortHead label="代码" sortKey="stock_code" sort={sort} onSort={onSort} /><SortHead label="暗盘排名" sortKey="dark_rank" sort={sort} onSort={onSort} /><SortHead label="暗盘资金" sortKey="dark_money" sort={sort} onSort={onSort} /><SortHead label="主力净流入（含暗盘）" sortKey="main_money_inflow" sort={sort} onSort={onSort} /><SortHead label="暗盘活跃度" sortKey="dark_activity" sort={sort} onSort={onSort} /><SortHead label="最新价" sortKey="latest_price" sort={sort} onSort={onSort} /><SortHead label="涨跌幅" sortKey="change_pct" sort={sort} onSort={onSort} /><SortHead label="成交额" sortKey="turnover" sort={sort} onSort={onSort} /></tr></thead><tbody>{pageStocks.map((stock) => <tr key={stock.stock_code}><td><strong>{stock.stock_name || '未命名'}</strong></td><td className="stock-code">{stock.stock_code}</td><td>{stock.dark_data_available ? stock.dark_rank : '--'}</td><td className={stock.dark_data_available ? signedClass(stock.dark_money) : 'muted'}>{stock.dark_data_available ? formatMoney(stock.dark_money) : '--'}</td><td className={stock.dark_data_available ? signedClass(stock.main_money_inflow) : 'muted'}>{stock.dark_data_available ? formatMoney(stock.main_money_inflow) : '--'}</td><td>{stock.dark_data_available ? `${formatNumber(stock.dark_activity * 100, 2)}%` : '--'}</td><td>{stock.quote_available ? formatNumber(stock.latest_price, 2) : '--'}</td><td className={stock.quote_available ? signedClass(stock.change_pct) : 'muted'}>{stock.quote_available ? `${stock.change_pct > 0 ? '+' : ''}${formatNumber(stock.change_pct * 100, 2)}%` : '--'}</td><td>{stock.quote_available ? formatMoney(stock.turnover) : '--'}</td></tr>)}</tbody></table>}
+      {loading && !stocks.length ? <div className="loading-block">正在读取成分股行情…</div> : <table className="constituent-table">
+        <thead><tr>
+          <SortHead label="股票" sortKey="stock_name" sort={displaySort} onSort={onSort} />
+          <SortHead label="代码" sortKey="stock_code" sort={displaySort} onSort={onSort} />
+          {darkReady && <>
+            <SortHead label="暗盘排名" sortKey="dark_rank" sort={displaySort} onSort={onSort} />
+            <SortHead label="暗盘资金" sortKey="dark_money" sort={displaySort} onSort={onSort} />
+            <SortHead label="主力净流入（含暗盘）" sortKey="main_money_inflow" sort={displaySort} onSort={onSort} />
+            <SortHead label="暗盘活跃度" sortKey="dark_activity" sort={displaySort} onSort={onSort} />
+          </>}
+          <SortHead label="最新价" sortKey="latest_price" sort={displaySort} onSort={onSort} />
+          <SortHead label="涨跌幅" sortKey="change_pct" sort={displaySort} onSort={onSort} />
+          <SortHead label="成交额" sortKey="turnover" sort={displaySort} onSort={onSort} />
+        </tr></thead>
+        <tbody>{pageStocks.map((stock) => <tr key={stock.stock_code}>
+          <td><strong>{stock.stock_name || '未命名'}</strong></td>
+          <td className="stock-code">{stock.stock_code}</td>
+          {darkReady && <>
+            <td>{stock.dark_data_available ? stock.dark_rank : '--'}</td>
+            <td className={stock.dark_data_available ? signedClass(stock.dark_money) : 'muted'}>{stock.dark_data_available ? formatMoney(stock.dark_money) : '--'}</td>
+            <td className={stock.dark_data_available ? signedClass(stock.main_money_inflow) : 'muted'}>{stock.dark_data_available ? formatMoney(stock.main_money_inflow) : '--'}</td>
+            <td>{stock.dark_data_available ? `${formatNumber(stock.dark_activity * 100, 2)}%` : '--'}</td>
+          </>}
+          <td>{stock.quote_available ? formatNumber(stock.latest_price, 2) : '--'}</td>
+          <td className={stock.quote_available ? signedClass(stock.change_pct) : 'muted'}>{stock.quote_available ? `${stock.change_pct > 0 ? '+' : ''}${formatNumber(stock.change_pct * 100, 2)}%` : '--'}</td>
+          <td>{stock.quote_available ? formatMoney(stock.turnover) : '--'}</td>
+        </tr>)}</tbody>
+      </table>}
       {!loading && !visibleStocks.length && <EmptyState icon={<Table2 size={19} />} title="暂无成分股" detail={board ? '当前截面日没有可展示的归属关系。' : '选择板块后查看成分股。'} />}
     </div>
     {pages > 1 && <Pagination page={page} pages={pages} setPage={setPage} compact />}
-      <div className="constituent-footer"><span>{visibleStocks.length}{query ? ` / ${stocks.length}` : ''} 只</span><span>{darkReady ? `暗盘榜 ${quoteMeta?.dark_data_count ?? 0} 只 · 暗盘活跃度 = |暗盘资金| / 成交额` : quoteReady ? '行情来自东方财富最新快照' : '行情服务未返回数据'}</span></div>
+    <div className="constituent-footer"><span>{visibleStocks.length}{query ? ` / ${stocks.length}` : ''} 只</span><span>{darkReady ? `暗盘榜 ${quoteMeta?.dark_data_count ?? 0} 只 · 暗盘活跃度 = |暗盘资金| / 成交额` : quoteRefreshing ? '正在查询最新价、涨跌幅和成交额…' : quoteReady ? '行情来自东方财富最新快照' : '行情服务未返回数据'}</span></div>
   </section>
 }
 

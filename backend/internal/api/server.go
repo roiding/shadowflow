@@ -371,15 +371,22 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	darkByCode := make(map[string]graymarket.RankRecord, len(darkRecords))
+	darkCount := 0
 	for _, record := range darkRecords {
 		darkByCode[record.Code] = record
+		// Daily-close rows can contain quotes only. Their zero money fields are
+		// not evidence that the stock money collection has completed.
+		if record.MoneyAvailable {
+			darkCount++
+		}
 	}
 
 	quotes := make(map[string]graymarket.StockQuote, len(relations))
 	meta := map[string]any{
 		"as_of": asOf, "board_type": boardType, "board_code": boardCode,
 		"quote_source": "unavailable", "quote_available": false, "quote_status": "unavailable", "stale": false,
-		"dark_data_available": len(darkRecords) > 0, "dark_data_count": len(darkRecords),
+		"quote_refreshing":    false,
+		"dark_data_available": darkCount > 0, "dark_data_count": darkCount,
 	}
 	if s.quotes != nil && len(relations) > 0 {
 		snapshot, status := s.quotes.Snapshot(boardType, boardCode, relations)
@@ -391,6 +398,7 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		meta["quote_status"] = string(status)
+		meta["quote_refreshing"] = snapshot.Refreshing
 		meta["stale"] = status == quote.StatusStale
 		if !snapshot.FetchedAt.IsZero() {
 			meta["cache_age_ms"] = time.Since(snapshot.FetchedAt).Milliseconds()
@@ -398,7 +406,9 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 		if snapshot.Error != "" {
 			meta["quote_error"] = snapshot.Error
 			meta["quote_source"] = "eastmoney"
-		} else if len(snapshot.Quotes) > 0 {
+		}
+		// A failed refresh must not hide an otherwise usable cached snapshot.
+		if len(snapshot.Quotes) > 0 {
 			meta["quote_source"] = "eastmoney"
 			meta["quote_available"] = availableCount > 0
 			meta["quoted_count"] = availableCount
@@ -407,9 +417,10 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 	result := make([]boardStockQuote, 0, len(relations))
 	for _, relation := range relations {
 		quote := quotes[relation.StockCode]
-		dark, darkAvailable := darkByCode[relation.StockCode]
+		dark := darkByCode[relation.StockCode]
+		darkAvailable := dark.MoneyAvailable
 		turnover := quote.Turnover
-		if turnover == 0 {
+		if !quote.Available {
 			turnover = dark.Turnover
 		}
 		openPrice, highPrice, lowPrice, previousClose := quote.OpenPrice, quote.HighPrice, quote.LowPrice, quote.PreviousClose
@@ -417,6 +428,9 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 		if openPrice == 0 {
 			openPrice, highPrice, lowPrice, previousClose = dark.OpenPrice, dark.HighPrice, dark.LowPrice, dark.PreviousClose
 			turnoverRate, amplitude = dark.TurnoverRate, dark.Amplitude
+		}
+		if !darkAvailable {
+			dark = graymarket.RankRecord{}
 		}
 		result = append(result, boardStockQuote{
 			StockCode: relation.StockCode, StockMarket: relation.StockMarket, StockName: relation.StockName,

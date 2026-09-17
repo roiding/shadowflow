@@ -320,7 +320,7 @@ export interface paths {
         };
         /**
          * 按截面日查询板块成分股及最新行情快照
-         * @description 成分关系按 as_of 还原；行情来自后台缓存快照，HTTP 请求不会同步等待东方财富。首次缓存预热返回归档数据并标记 quote_status=warming。活跃度口径为 abs(暗盘资金) / 成交额。
+         * @description 成分关系按 as_of 还原；行情来自后台缓存快照，HTTP 请求不会同步等待东方财富。quote_refreshing=true 表示后台正在查询最新行情，客户端应短轮询获取结果，完成或失败后停止。暗盘数据只关联同日已采集资金的收盘记录；仅有行情的记录不会标记暗盘可用。活跃度口径为 abs(暗盘资金) / 成交额。
          */
         get: {
             parameters: {
@@ -942,6 +942,26 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        BoardQuoteMeta: {
+            /** Format: date */
+            as_of?: string;
+            /** @enum {string} */
+            board_type?: "industry" | "concept";
+            board_code?: string;
+            /** @enum {string} */
+            quote_status?: "ready" | "warming" | "stale" | "unavailable";
+            /** @description 后台正在查询行情；为 true 时应短轮询直至完成或失败 */
+            quote_refreshing?: boolean;
+            stale?: boolean;
+            cache_age_ms?: number;
+            quote_source?: string;
+            quote_available?: boolean;
+            quoted_count?: number;
+            quote_error?: string;
+            /** @description 存在同日已采集的个股收盘资金数据 */
+            dark_data_available?: boolean;
+            dark_data_count?: number;
+        };
         FocusCondition: {
             /** @enum {string} */
             field: "turnover" | "turnover_rate" | "change_pct" | "control_coefficient" | "dark_money" | "regular_money" | "main_money_inflow" | "dark_activity" | "dark_inflow_ratio" | "rank" | "close_price" | "amplitude" | "volume" | "up_count" | "flat_count" | "down_count";
@@ -1433,15 +1453,7 @@ export interface components {
             content: {
                 "application/json": {
                     data?: components["schemas"]["BoardStockQuote"][];
-                    meta?: {
-                        /** @enum {string} */
-                        quote_status?: "ready" | "warming" | "stale" | "unavailable";
-                        stale?: boolean;
-                        cache_age_ms?: number;
-                        quote_source?: string;
-                        quote_available?: boolean;
-                        quote_error?: string;
-                    };
+                    meta?: components["schemas"]["BoardQuoteMeta"];
                 };
             };
         };

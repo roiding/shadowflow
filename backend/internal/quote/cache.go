@@ -23,9 +23,10 @@ const (
 )
 
 type Snapshot struct {
-	Quotes    []graymarket.StockQuote
-	FetchedAt time.Time
-	Error     string
+	Quotes     []graymarket.StockQuote
+	FetchedAt  time.Time
+	Error      string
+	Refreshing bool
 }
 
 type entry struct {
@@ -90,6 +91,9 @@ func (c *Cache) Snapshot(boardType graymarket.BoardType, boardCode string, relat
 		item.refreshing = true
 		item.lastAttempt = now
 	}
+	// Include a refresh started by this very request. The web client uses this
+	// signal to collect the result promptly, independently of its main timer.
+	snapshot.Refreshing = item.refreshing
 	c.mu.Unlock()
 	if shouldRefresh {
 		go func() {
@@ -101,6 +105,7 @@ func (c *Cache) Snapshot(boardType graymarket.BoardType, boardCode string, relat
 					c.mu.Lock()
 					if item := c.entries[key]; item != nil {
 						item.refreshing = false
+						item.lastError = "quote refresh panicked"
 					}
 					c.mu.Unlock()
 				}
@@ -119,6 +124,9 @@ func (c *Cache) visible(item *entry, now time.Time) (Snapshot, Status) {
 	snapshot := item.snapshot
 	snapshot.Error = item.lastError
 	if item.lastSuccess.IsZero() {
+		if item.lastError != "" && !item.refreshing {
+			return snapshot, StatusUnavailable
+		}
 		if item.lastAttempt.IsZero() || now.Sub(item.lastAttempt) <= c.staleLimit {
 			return snapshot, StatusWarming
 		}
