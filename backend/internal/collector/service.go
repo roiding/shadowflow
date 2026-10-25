@@ -99,10 +99,11 @@ type Service struct {
 	logger         *slog.Logger
 	retries        int
 	retryGap       time.Duration
-	// allowMissingQuotes archives board end-of-day funds without quote
-	// enrichment when the quote upstream is unavailable, instead of failing
-	// the whole archive part. Board archives only; stock archives keep the
-	// strict behaviour because their records are kline-eligibility-filtered.
+	// allowMissingQuotes archives end-of-day funds without quote enrichment
+	// when the quote upstream is unavailable, instead of failing the whole
+	// archive part. Degraded board archives keep the full ranked board set;
+	// degraded stock archives skip the quote-eligibility filter and keep the
+	// full darktrade universe, since without quotes no stock would qualify.
 	allowMissingQuotes bool
 }
 
@@ -226,16 +227,24 @@ func (s *Service) collectMoneyArchiveIncremental(ctx context.Context, rankType g
 				run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
 				return finish(err)
 			}
-			clearBoardQuotes(&snapshot)
+			clearQuoteFields(&snapshot)
 			s.logger.Warn("board quote enrichment failed; archiving funds without quotes",
 				"trade_date", snapshot.TradeDate, "rank_type", rankType, "error", err)
 		}
 	} else {
 		if err = s.enrichStockDailyClose(ctx, &snapshot); err != nil {
-			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
-			return finish(err)
+			if !s.allowMissingQuotes {
+				run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
+				return finish(err)
+			}
+			clearQuoteFields(&snapshot)
+			s.logger.Warn("stock quote enrichment failed; archiving funds without quotes",
+				"trade_date", snapshot.TradeDate, "error", err)
+		} else {
+			// Eligibility is judged on real quotes; a degraded archive keeps
+			// the full darktrade universe or it would always be empty.
+			snapshot.Records = eligibleStockRecords(snapshot.Records)
 		}
-		snapshot.Records = eligibleStockRecords(snapshot.Records)
 	}
 	if len(snapshot.Records) == 0 {
 		err = fmt.Errorf("%s archive has no eligible records", rankType)
@@ -617,7 +626,7 @@ func (s *Service) collectBoardArchive(ctx context.Context, rankType graymarket.R
 				run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
 				return finish(err)
 			}
-			clearBoardQuotes(&snapshot)
+			clearQuoteFields(&snapshot)
 			s.logger.Warn("board quote enrichment failed; archiving funds without quotes",
 				"trade_date", snapshot.TradeDate, "rank_type", rankType, "error", err)
 		}
@@ -695,12 +704,22 @@ func (s *Service) collectStockArchive(ctx context.Context, requestedDate string,
 	}
 	// The stock darktrade response is the authoritative end-of-day universe.
 	// Enrichment below supplies the official daily quote fields; records without
-	// a usable quote are excluded from the quantitative archive.
+	// a usable quote are excluded from the quantitative archive unless the
+	// service is running in degraded funds-only mode.
+	degraded := false
 	if err := s.enrichStockDailyClose(ctx, &snapshot); err != nil {
-		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
-		return finish(err)
+		if !s.allowMissingQuotes {
+			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
+			return finish(err)
+		}
+		degraded = true
+		clearQuoteFields(&snapshot)
+		s.logger.Warn("stock quote enrichment failed; archiving funds without quotes",
+			"trade_date", snapshot.TradeDate, "error", err)
 	}
-	snapshot.Records = eligibleStockRecords(snapshot.Records)
+	if !degraded {
+		snapshot.Records = eligibleStockRecords(snapshot.Records)
+	}
 	snapshot.ExpectedTotal = len(snapshot.Records)
 	if len(snapshot.Records) == 0 {
 		err = errors.New("darktrade stock archive has no eligible daily quotes")
@@ -811,9 +830,9 @@ func (s *Service) enrichStockDailyQuotes(ctx context.Context, snapshot *graymark
 	return nil
 }
 
-// clearBoardQuotes drops any quote data assigned before an enrichment
-// failure so a degraded archive cannot mix enriched and unavailable rows.
-func clearBoardQuotes(snapshot *graymarket.RankSnapshot) {
+// clearQuoteFields drops any quote data assigned before an enrichment failure
+// so a degraded archive cannot mix enriched and unavailable rows.
+func clearQuoteFields(snapshot *graymarket.RankSnapshot) {
 	for index := range snapshot.Records {
 		record := &snapshot.Records[index]
 		record.QuoteTime = ""

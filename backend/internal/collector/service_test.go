@@ -559,3 +559,49 @@ func TestCollectBoardArchiveDegradesWithoutQuotes(t *testing.T) {
 		}
 	})
 }
+
+func TestCollectStockArchiveDegradesWithoutQuotes(t *testing.T) {
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+	runAt := time.Date(2026, 8, 14, 16, 0, 0, 0, location)
+	snapshot := successfulSnapshot(closeAt)
+	snapshot.RankType = graymarket.RankStock
+	snapshot.ExpectedTotal = 2
+	snapshot.Records[0].RankType = graymarket.RankStock
+	snapshot.Records = append(snapshot.Records, graymarket.RankRecord{
+		TradeDate: snapshot.TradeDate, SnapshotAt: closeAt, RankType: graymarket.RankStock,
+		Rank: 2, Market: 1, Code: "600002", Name: "second", DarkMoney: 456,
+	})
+	source := &fakeSource{results: []sourceResult{{snapshot: snapshot}}, quoteErr: errors.New("quote upstream refused")}
+
+	t.Run("strict mode fails the archive", func(t *testing.T) {
+		store := &fakeStore{}
+		err := newTestService(source, store).collectStockArchive(context.Background(), "20260814", closeAt, runAt)
+		if err == nil {
+			t.Fatal("expected quote enrichment failure to fail the stock archive")
+		}
+		if store.savedArchives != 0 {
+			t.Fatalf("stock archive was saved despite enrichment failure: %+v", store.lastStockClose)
+		}
+	})
+
+	t.Run("degraded mode keeps the full darktrade universe", func(t *testing.T) {
+		store := &fakeStore{}
+		service := newTestService(source, store).WithAllowMissingQuotes(true)
+		if err := service.collectStockArchive(context.Background(), "20260814", closeAt, runAt); err != nil {
+			t.Fatal(err)
+		}
+		if len(store.lastStockClose.Records) != 2 {
+			t.Fatalf("degraded stock archive lost records: %+v", store.lastStockClose.Records)
+		}
+		expectedDark := map[string]int64{"BK001": 123, "600002": 456}
+		for _, record := range store.lastStockClose.Records {
+			if record.QuoteAvailable || record.ClosePrice != 0 || record.QuoteTime != "" {
+				t.Fatalf("degraded stock archive kept quote data: %+v", record)
+			}
+			if !record.MoneyAvailable || record.DarkMoney != expectedDark[record.Code] {
+				t.Fatalf("degraded stock archive lost the funds side: %+v", record)
+			}
+		}
+	})
+}
