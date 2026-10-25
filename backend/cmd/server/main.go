@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -68,15 +70,30 @@ func main() {
 	})
 	client := eastmoney.NewClient(cfg.UpstreamBaseURL, upstreamClient, cfg.PageSize).
 		WithQuoteBaseURLs(cfg.QuoteBaseURLs).WithUpstreamGuard(guard)
-	collectorService := collector.New(client, store, logger)
+	collectorService := collector.New(client, store, logger).WithAllowMissingQuotes(cfg.AllowMissingQuotes)
+	disabledKinds := make(map[string]struct{}, len(cfg.SchedulerDisabledKinds))
+	for _, kind := range cfg.SchedulerDisabledKinds {
+		if kind = strings.TrimSpace(kind); kind != "" {
+			disabledKinds[kind] = struct{}{}
+		}
+	}
 	schedulerService, err := scheduler.New(collectorService, calendar, logger, scheduler.Options{
 		SuccessRunRetentionDays: cfg.SuccessRunRetentionDays,
 		FailureRunRetentionDays: cfg.FailureRunRetentionDays,
 		Jobs:                    store,
+		DisabledKinds:           disabledKinds,
 	})
 	if err != nil {
 		logger.Error("create scheduler", "error", err)
 		os.Exit(1)
+	}
+	if len(disabledKinds) > 0 {
+		kinds := make([]string, 0, len(disabledKinds))
+		for kind := range disabledKinds {
+			kinds = append(kinds, kind)
+		}
+		sort.Strings(kinds)
+		logger.Info("scheduler job kinds disabled", "kinds", kinds)
 	}
 	apiServer, err := api.New(store, calendar, logger, api.Options{StaticDir: cfg.StaticDir, QuoteSource: quote.NewCache(client, logger), APIToken: cfg.APIToken, NormalRatePerMinute: cfg.NormalRatePerMinute, ExportRatePerMinute: cfg.ExportRatePerMinute, ScanRatePerMinute: cfg.ScanRatePerMinute, TrustedProxyCIDR: cfg.TrustedProxyCIDR})
 	if err != nil {

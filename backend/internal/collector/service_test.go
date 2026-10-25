@@ -24,6 +24,7 @@ type fakeSource struct {
 	results          []sourceResult
 	calls            int
 	quoteErr         error
+	boardQuoteErr    error
 	unavailableQuote map[string]bool
 	klineErr         error
 	klineLimit       int
@@ -104,6 +105,9 @@ func (s *fakeSource) FetchStockQuotes(_ context.Context, relations []graymarket.
 }
 
 func (s *fakeSource) FetchBoardQuotes(_ context.Context, rankType graymarket.RankType) ([]graymarket.BoardQuote, error) {
+	if s.boardQuoteErr != nil {
+		return nil, s.boardQuoteErr
+	}
 	code := "BK001"
 	return []graymarket.BoardQuote{{BoardCode: code, BoardMarket: 90, BoardName: string(rankType), LatestPrice: 10,
 		OpenPrice: 9.5, HighPrice: 10.5, LowPrice: 9.25, PreviousClose: 9, ChangePct: 0.1111,
@@ -514,4 +518,44 @@ func TestCollectStockKlinesPersistsPartialBatchAndRetriesOnlyMissingStocks(t *te
 	if len(source.klineBatches) != 2 || len(source.klineBatches[1]) != 1 || source.klineBatches[1][0] != "600001" {
 		t.Fatalf("retry fetched already archived stocks: batches=%v", source.klineBatches)
 	}
+}
+
+func TestCollectBoardArchiveDegradesWithoutQuotes(t *testing.T) {
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)
+	runAt := time.Date(2026, 8, 14, 16, 0, 0, 0, location)
+	snapshot := successfulSnapshot(closeAt)
+	snapshot.RankType = graymarket.RankConcept
+	snapshot.Records[0].RankType = graymarket.RankConcept
+	source := &fakeSource{results: []sourceResult{{snapshot: snapshot}},
+		boardQuoteErr: errors.New("quote upstream refused")}
+
+	t.Run("strict mode fails the archive", func(t *testing.T) {
+		store := &fakeStore{}
+		err := newTestService(source, store).collectBoardArchive(context.Background(), graymarket.RankConcept, "20260814", closeAt, runAt)
+		if err == nil {
+			t.Fatal("expected quote enrichment failure to fail the archive")
+		}
+		if store.savedArchives != 0 {
+			t.Fatalf("archive was saved despite enrichment failure: %+v", store.lastBoardClose)
+		}
+	})
+
+	t.Run("degraded mode archives funds without quotes", func(t *testing.T) {
+		store := &fakeStore{}
+		service := newTestService(source, store).WithAllowMissingQuotes(true)
+		if err := service.collectBoardArchive(context.Background(), graymarket.RankConcept, "20260814", closeAt, runAt); err != nil {
+			t.Fatal(err)
+		}
+		if store.savedArchives != 1 || len(store.lastBoardClose.Records) != 1 {
+			t.Fatalf("degraded board archive was not saved: %+v", store.lastBoardClose)
+		}
+		record := store.lastBoardClose.Records[0]
+		if record.QuoteAvailable || record.ClosePrice != 0 || record.QuoteTime != "" || record.OpenPrice != 0 {
+			t.Fatalf("degraded archive kept quote data: %+v", record)
+		}
+		if !record.MoneyAvailable || record.DarkMoney != 123 {
+			t.Fatalf("degraded archive lost the funds side: %+v", record)
+		}
+	})
 }

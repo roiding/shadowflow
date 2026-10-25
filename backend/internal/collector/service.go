@@ -99,6 +99,11 @@ type Service struct {
 	logger         *slog.Logger
 	retries        int
 	retryGap       time.Duration
+	// allowMissingQuotes archives board end-of-day funds without quote
+	// enrichment when the quote upstream is unavailable, instead of failing
+	// the whole archive part. Board archives only; stock archives keep the
+	// strict behaviour because their records are kline-eligibility-filtered.
+	allowMissingQuotes bool
 }
 
 func New(source Source, store store, logger *slog.Logger) *Service {
@@ -106,6 +111,14 @@ func New(source Source, store store, logger *slog.Logger) *Service {
 	relationPersistence, _ := store.(relationStore)
 	return &Service{source: source, store: store, relationSource: relationSource, relationStore: relationPersistence,
 		logger: logger, retries: 2, retryGap: 400 * time.Millisecond}
+}
+
+// WithAllowMissingQuotes toggles degraded board archives: when quote
+// enrichment fails, the funds side is still persisted with
+// quote_available=0 instead of the whole end-of-day part failing.
+func (s *Service) WithAllowMissingQuotes(allow bool) *Service {
+	s.allowMissingQuotes = allow
+	return s
 }
 
 func (s *Service) CollectBoards(ctx context.Context, snapshotAt time.Time) error {
@@ -209,8 +222,13 @@ func (s *Service) collectMoneyArchiveIncremental(ctx context.Context, rankType g
 	}
 	if rankType == graymarket.RankIndustry || rankType == graymarket.RankConcept {
 		if err = s.enrichBoardDailyClose(ctx, &snapshot); err != nil {
-			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
-			return finish(err)
+			if !s.allowMissingQuotes {
+				run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
+				return finish(err)
+			}
+			clearBoardQuotes(&snapshot)
+			s.logger.Warn("board quote enrichment failed; archiving funds without quotes",
+				"trade_date", snapshot.TradeDate, "rank_type", rankType, "error", err)
 		}
 	} else {
 		if err = s.enrichStockDailyClose(ctx, &snapshot); err != nil {
@@ -595,8 +613,13 @@ func (s *Service) collectBoardArchive(ctx context.Context, rankType graymarket.R
 	}
 	if rankType == graymarket.RankIndustry || rankType == graymarket.RankConcept {
 		if err := s.enrichBoardDailyClose(ctx, &snapshot); err != nil {
-			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
-			return finish(err)
+			if !s.allowMissingQuotes {
+				run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "quote_enrichment", err.Error()
+				return finish(err)
+			}
+			clearBoardQuotes(&snapshot)
+			s.logger.Warn("board quote enrichment failed; archiving funds without quotes",
+				"trade_date", snapshot.TradeDate, "rank_type", rankType, "error", err)
 		}
 	}
 	points, moneyErr := moneySource.FetchMoney5m(ctx, snapshot, true)
@@ -786,6 +809,19 @@ func (s *Service) enrichStockDailyQuotes(ctx context.Context, snapshot *graymark
 			"trade_date", snapshot.TradeDate, "rank_type", snapshot.RankType, "count", len(unavailable), "sample_codes", sample)
 	}
 	return nil
+}
+
+// clearBoardQuotes drops any quote data assigned before an enrichment
+// failure so a degraded archive cannot mix enriched and unavailable rows.
+func clearBoardQuotes(snapshot *graymarket.RankSnapshot) {
+	for index := range snapshot.Records {
+		record := &snapshot.Records[index]
+		record.QuoteTime = ""
+		record.OpenPrice, record.HighPrice, record.LowPrice, record.ClosePrice = 0, 0, 0, 0
+		record.PreviousClose, record.ChangeValue, record.ChangePct = 0, 0, 0
+		record.Volume, record.Turnover, record.TurnoverRate, record.Amplitude = 0, 0, 0, 0
+		record.QuoteAvailable = false
+	}
 }
 
 func (s *Service) enrichBoardDailyClose(ctx context.Context, snapshot *graymarket.RankSnapshot) error {

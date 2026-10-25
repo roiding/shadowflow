@@ -431,3 +431,38 @@ func TestCleanupUsesCurrentDateAsExclusiveCutoff(t *testing.T) {
 		t.Fatal("cleanup job did not finish")
 	}
 }
+
+func TestDisabledKindsSuppressJobs(t *testing.T) {
+	calendar, err := tradingcalendar.Load(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := &replayRecordingJobStore{}
+	s, err := New(&schedulerCollector{}, calendar, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{Jobs: jobs,
+		DisabledKinds: map[string]struct{}{"relations": {}, "minute": {}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 7, 9, 30, 0, 0, s.location)
+
+	s.enqueueReplayableJobs(context.Background(), now)
+	for _, job := range jobs.jobs {
+		if job.Kind == "relations" {
+			t.Fatalf("disabled relations job was enqueued: %+v", job)
+		}
+	}
+
+	s.check(context.Background(), now.Add(30*time.Minute))
+	for _, job := range jobs.jobs {
+		if job.Kind == "minute" {
+			t.Fatalf("disabled minute job was started: %+v", job)
+		}
+	}
+
+	if s.claimAndLaunch(context.Background(), ScheduledJob{JobKey: "queued-relations", Kind: "relations", TradeDate: "2026-09-07"}, now) {
+		t.Fatal("queued disabled job was claimed")
+	}
+	if !s.kindEnabled("end-of-day-concept") || s.kindEnabled("minute") {
+		t.Fatal("kind gate does not reflect the configured set")
+	}
+}

@@ -21,6 +21,11 @@ type Config struct {
 	RequestTimeout          time.Duration
 	StaticDir               string
 	SchedulerEnabled        bool
+	// SchedulerDisabledKinds turns individual scheduled job kinds off while
+	// the scheduler itself stays enabled, so a blocked upstream no longer
+	// drags unrelated collection lanes down with it.
+	SchedulerDisabledKinds  []string
+	AllowMissingQuotes      bool
 	SuccessRunRetentionDays int
 	FailureRunRetentionDays int
 	APIToken                string
@@ -43,6 +48,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	schedulerEnabled, err := envBool("SHADOWFLOW_SCHEDULER_ENABLED", true)
+	if err != nil {
+		return Config{}, err
+	}
+	allowMissingQuotes, err := envBool("SHADOWFLOW_ALLOW_MISSING_QUOTES", false)
 	if err != nil {
 		return Config{}, err
 	}
@@ -120,6 +129,8 @@ func Load() (Config, error) {
 		RequestTimeout:          time.Duration(timeoutSeconds) * time.Second,
 		StaticDir:               os.Getenv("SHADOWFLOW_STATIC_DIR"),
 		SchedulerEnabled:        schedulerEnabled,
+		SchedulerDisabledKinds:  envList("SHADOWFLOW_SCHEDULER_DISABLED_KINDS", nil),
+		AllowMissingQuotes:      allowMissingQuotes,
 		SuccessRunRetentionDays: successRetentionDays,
 		FailureRunRetentionDays: failureRetentionDays,
 		APIToken:                strings.TrimSpace(os.Getenv("SHADOWFLOW_API_TOKEN")),

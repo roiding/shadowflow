@@ -42,6 +42,12 @@ type Options struct {
 	FailureRunRetentionDays int
 	Jobs                    JobStore
 	InstanceID              string
+	// DisabledKinds suppresses individual job kinds (minute, relations,
+	// end-of-day-industry, end-of-day-concept, end-of-day-stock,
+	// stock-kline, maintenance, cleanup, startup-recovery). Disabled kinds
+	// are neither enqueued nor claimed, so a lane whose upstream is blocked
+	// cannot interfere with the remaining collection lanes.
+	DisabledKinds map[string]struct{}
 }
 
 type Scheduler struct {
@@ -77,6 +83,9 @@ func New(service collectorService, calendar *tradingcalendar.Calendar, logger *s
 			config.Jobs = provided.Jobs
 		}
 		config.InstanceID = provided.InstanceID
+		if len(provided.DisabledKinds) > 0 {
+			config.DisabledKinds = provided.DisabledKinds
+		}
 	}
 	owner := strings.TrimSpace(config.InstanceID)
 	if owner == "" {
@@ -164,6 +173,9 @@ func (s *Scheduler) enqueueReplayableJobs(ctx context.Context, now time.Time) {
 		{"stock-kline", "16:15"}, {"stock-kline", "17:30"}, {"stock-kline", "20:00"},
 	}
 	for _, plan := range plans {
+		if !s.kindEnabled(plan.kind) {
+			continue
+		}
 		plannedAt, err := time.ParseInLocation("2006-01-02 15:04", tradeDate+" "+plan.at, s.location)
 		if err != nil || plannedAt.After(now) {
 			continue
@@ -192,15 +204,37 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 	if kind == "" || kind != "cleanup" && kind != "maintenance" && !s.calendar.IsTradingDay(current) {
 		return
 	}
+	if !s.kindEnabled(kind) {
+		return
+	}
 	if kind == "end-of-day" {
 		if _, ok := s.collector.(archivePartCollector); ok {
 			for _, partKind := range []string{"end-of-day-industry", "end-of-day-concept", "end-of-day-stock"} {
+				if !s.kindEnabled(partKind) {
+					continue
+				}
 				s.startJob(ctx, partKind, current, current.Format("2006-01-02"))
 			}
 			return
 		}
 	}
 	s.startJob(ctx, kind, current, current.Format("2006-01-02"))
+}
+
+func (s *Scheduler) kindEnabled(kind string) bool {
+	_, disabled := s.options.DisabledKinds[kind]
+	return !disabled
+}
+
+func endOfDayPartKind(rankType graymarket.RankType) string {
+	switch rankType {
+	case graymarket.RankIndustry:
+		return "end-of-day-industry"
+	case graymarket.RankConcept:
+		return "end-of-day-concept"
+	default:
+		return "end-of-day-stock"
+	}
 }
 
 func (s *Scheduler) startJob(ctx context.Context, kind string, current time.Time, tradeDate string) bool {
@@ -261,6 +295,9 @@ func (s *Scheduler) startJob(ctx context.Context, kind string, current time.Time
 }
 
 func (s *Scheduler) claimAndLaunch(ctx context.Context, candidate ScheduledJob, now time.Time) bool {
+	if !s.kindEnabled(candidate.Kind) {
+		return false
+	}
 	lane := jobLane(candidate.Kind)
 	key := candidate.JobKey
 	s.mu.Lock()
@@ -389,6 +426,9 @@ func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current ti
 	case "end-of-day":
 		if part, ok := s.collector.(archivePartCollector); ok {
 			for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept, graymarket.RankStock} {
+				if !s.kindEnabled(endOfDayPartKind(rankType)) {
+					continue
+				}
 				exists, partErr := part.HasEndOfDayPart(ctx, tradeDate, rankType)
 				if partErr != nil {
 					return partErr
@@ -470,6 +510,9 @@ func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current ti
 }
 
 func (s *Scheduler) recoverLatestArchive(ctx context.Context, current time.Time) {
+	if !s.kindEnabled("startup-recovery") {
+		return
+	}
 	tradeDate, ok := recoveryTradeDate(s.calendar, current)
 	if !ok {
 		return
@@ -481,6 +524,9 @@ func (s *Scheduler) recoverArchive(ctx context.Context, tradeDate string, curren
 	var combined error
 	if part, ok := s.collector.(archivePartCollector); ok {
 		for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept, graymarket.RankStock} {
+			if !s.kindEnabled(endOfDayPartKind(rankType)) {
+				continue
+			}
 			exists, err := part.HasEndOfDayPart(ctx, tradeDate, rankType)
 			if err != nil {
 				combined = errors.Join(combined, fmt.Errorf("check %s archive: %w", rankType, err))
@@ -510,7 +556,7 @@ func (s *Scheduler) recoverArchive(ctx context.Context, tradeDate string, curren
 	if klineErr != nil {
 		return errors.Join(combined, klineErr)
 	}
-	if !klineExists {
+	if !klineExists && s.kindEnabled("stock-kline") {
 		// K-lines depend on the complete money archive. Do not launch them
 		// after a failed part and create a misleading second failure.
 		endExists, endErr := s.collector.HasEndOfDayArchive(ctx, tradeDate)
