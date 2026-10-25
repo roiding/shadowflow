@@ -15,7 +15,7 @@ ARG VULN_DB_REFRESH=manual
 RUN printf 'Vulnerability database refresh: %s\n' "$VULN_DB_REFRESH" \
     && npm audit --audit-level=low --registry=https://registry.npmjs.org
 
-FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine3.24 AS backend-build
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine3.24 AS backend-build
 ARG TARGETOS
 ARG TARGETARCH
 ENV GOTOOLCHAIN=local
