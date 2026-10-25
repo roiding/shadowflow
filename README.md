@@ -47,6 +47,41 @@ curl -H "Authorization: Bearer $SHADOWFLOW_API_TOKEN" \
 
 ## 数据修补
 
+### 从保留的盘中数据救援
+
+**资源安全约定：不在软路由上运行跨日期汇总、整批 JSON/gzip 组装或主恢复脚本。`recover_intraday.py` 只在本机读取离线副本；不得因读取超时增加并发或重叠重试。**
+
+服务器读取入口为 `scripts/extract_intraday_snapshot.py`，每次只允许一个交易日、一个板块类型、一个五分钟时间点。Linux worker 强制 128 MiB 地址空间、5 秒 CPU、10 秒总运行时间、2 MiB SQLite 页缓存和最多 500 行；未能安装资源限制时拒绝运行。查询只使用精确日期/时间/类型的索引条件，不做跨日扫描、备份或 gzip 压缩。该入口尚未接入自动批量控制器；恢复重启前的故障原因不能确认时，需先取得单次读取授权，保持串行并在首个异常后停止。
+
+worker 在 stderr 输出 `SNAPSHOT_WORKER_LIMITS_INSTALLED` 后才进入数据读取，完成后输出 `SNAPSHOT_READ_DONE`。SSH 登录等待与远端 worker 的运行限制应分别计时；没有收到 worker 启动标记的 SSH 超时不能归类为数据库查询超时，也不得据此自动重试。
+
+`scripts/recover_intraday.py` 仅从本地 SQLite 副本导出独立救援包，不修改生产库、不删除盘中数据、不覆盖已有日终，也不执行原来的 `CompactResearch` 清理路径。
+
+```bash
+python3 scripts/recover_intraday.py \
+  --database /path/to/database-copy.db \
+  --from-date 2026-09-21 --to-date 2026-10-22 \
+  --output data/recovery-funds
+```
+
+每个缺失的行业/概念分项必须同时具备真实的 `15:00` 代码全集及 `09:35–11:30`、`13:05–15:00` 的 48 个五分钟资金点。逐时点校验代码集合、资金可用标记以及对应成功采集记录的预期/实际数量；缺少 `15:00` 时不使用 `14:55` 代替，缺点不插值。已有日终分项一律保留，即使原分项不完整也不会自动替换。
+
+可恢复资金单独写入 `recovered_board_close.csv`、`recovered_board_money_5m.csv`。清单记录来源、原始完整性状态、失败原因、代码集合摘要及文件 SHA-256。资金只代表盘中实际观察值，不包含盘后修订；成交额等缺失行情字段不会用估算值填充。缺失个股五分钟 K 线不能从板块资金重建，救援包不自动封存为完整研究归档。
+
+可以附加历史日 K 补全，先限制到少数板块验证：
+
+```bash
+python3 scripts/recover_intraday.py \
+  --database /path/to/database-copy.db \
+  --from-date 2026-09-21 --to-date 2026-10-22 \
+  --output data/recovery-with-ohlc \
+  --ohlc --codes BK0448 BK1650
+```
+
+日 K 使用 `klt=101,fqt=0`，每板块一次拉取目标多日范围，校验代码、市场、日期、重复行、OHLC 关系、量额及前收/涨跌幅一致性。前收由上游收盘减涨跌额计算；保留原始 JSON 和摘要。合并结果单独写入 `recovered_board_close_with_ohlc.csv`，盘中涨跌幅另存为 `intraday_change_pct`，资金来源不改变。请求间隔默认 3 秒，连续两次失败停止，不无限重试，失败不影响资金包导出。间隔是工程退避措施，不代表东方财富公开限流规则。
+
+离线验证可以使用 `--raw-directory /path/to/raw`，文件名为 `90.BK0448.json` 等；调用者需确认原始请求使用了未复权日 K。输出目录必须不存在。导出先用 SQLite online backup 固定数据库版本，需要容纳一份未压缩副本的额外磁盘空间；最终以目录重命名发布，失败不会留下半成品目标目录。脚本不接入生产 API/动态筛选，是否将救援数据用于筛选和分析需另行明确口径。
+
 - **整日资金重采**：`./collect -task end-of-day -date YYYY-MM-DD`（生产同路径，含限速/熔断/质量核算；上游仅保留约 5 个交易日）。成功后还需运行 `./collect -task stock-kline -date YYYY-MM-DD` 补齐行情并封存；资金任务成功不等于整个归档已完成。
 - **个别盘中分钟缺失**：`backend/cmd/backfill_minutes`（`--trade-date`/`--clocks` 参数化；collect → insert → verify 三步，payload 有错误时 insert 会拒绝执行）。
 - 历史上的 `backfill_stock` / `backfill_concept` 已删除，资金修补统一走 `collect -task end-of-day`，个股行情及封存走 `collect -task stock-kline`。
