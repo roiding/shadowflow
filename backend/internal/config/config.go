@@ -11,6 +11,7 @@ import (
 type Config struct {
 	ListenAddr              string
 	DatabasePath            string
+	ColdDatabasePath        string
 	CalendarPath            string
 	CalendarAutoUpdate      bool
 	CalendarSourceURL       string
@@ -119,6 +120,7 @@ func Load() (Config, error) {
 	return Config{
 		ListenAddr:              env("SHADOWFLOW_LISTEN_ADDR", "127.0.0.1:8080"),
 		DatabasePath:            env("SHADOWFLOW_DATABASE_PATH", "./data/shadowflow.db"),
+		ColdDatabasePath:        strings.TrimSpace(os.Getenv("SHADOWFLOW_COLD_DATABASE_PATH")),
 		CalendarPath:            env("SHADOWFLOW_CALENDAR_PATH", "./config/trading_calendar.json"),
 		CalendarAutoUpdate:      calendarAutoUpdate,
 		CalendarSourceURL:       env("SHADOWFLOW_CALENDAR_SOURCE_URL", "https://www.sse.com.cn/disclosure/dealinstruc/closed/"),

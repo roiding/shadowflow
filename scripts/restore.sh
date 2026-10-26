@@ -3,6 +3,13 @@ set -eu
 umask 077
 
 script_dir="$(CDPATH= cd "$(dirname "$0")" && pwd)"
+case "${1:-}" in
+  (*.bundle.tar) exec python3 "$script_dir/backup_pair.py" restore "$@" ;;
+esac
+if [ -n "${SHADOWFLOW_COLD_DATABASE_PATH:-}" ]; then
+  echo "cold storage is enabled: restore a verified hot/cold .bundle.tar, not a main-only backup" >&2
+  exit 1
+fi
 . "$script_dir/backup-common.sh"
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then

@@ -6,11 +6,13 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(ROOT/'scripts'))
 spec=importlib.util.spec_from_file_location('recover_intraday',ROOT/'scripts/recover_intraday.py')
 r=importlib.util.module_from_spec(spec);spec.loader.exec_module(r)
 
@@ -37,6 +39,19 @@ class RecoveryTests(unittest.TestCase):
   self.assertEqual(report['recoverable_components'],2);self.assertEqual(before,self.database.read_bytes())
   self.assertEqual([f['rows'] for f in report['files']],[4,192])
   with (self.args.output/'recovered_board_close.csv').open() as f:row=next(csv.DictReader(f));self.assertNotIn('turnover',row);self.assertEqual(row['funds_postclose_revised'],'False')
+ def test_cold_only_recovery_preserves_both_sources(self):
+  cold=self.root/'cold.db'
+  with closing(sqlite3.connect(self.database)) as source,closing(sqlite3.connect(cold)) as target:
+   source.backup(target)
+  self.change('DELETE FROM rank_intraday_work')
+  self.change('DELETE FROM collection_run')
+  self.args.cold_database=cold
+  before_hot=self.database.read_bytes();before_cold=cold.read_bytes()
+  report=r.export(self.args)
+  self.assertEqual(report['recoverable_components'],2)
+  self.assertEqual(self.database.read_bytes(),before_hot)
+  self.assertEqual(cold.read_bytes(),before_cold)
+  self.assertEqual([f['rows'] for f in report['files']],[4,192])
  def test_missing_one_code_rejected(self):
   self.change("DELETE FROM rank_intraday_work WHERE rank_type='industry' AND code='BK002' AND snapshot_at LIKE '%09:35%'")
   self.assertEqual(r.export(self.args)['recoverable_components'],1)

@@ -45,7 +45,7 @@ func main() {
 		logger.Error("invalid static directory", "error", err)
 		os.Exit(1)
 	}
-	store, err := sqlite.OpenWithReadConns(cfg.DatabasePath, cfg.SQLiteReadConns)
+	store, err := sqlite.OpenWithCold(cfg.DatabasePath, cfg.ColdDatabasePath, cfg.SQLiteReadConns)
 	if err != nil {
 		logger.Error("open database", "error", err)
 		os.Exit(1)

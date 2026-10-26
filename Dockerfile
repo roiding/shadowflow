@@ -49,7 +49,7 @@ FROM alpine:3.24.1
 ARG VULN_DB_REFRESH=manual
 RUN printf 'Runtime package refresh: %s\n' "$VULN_DB_REFRESH" \
     && apk upgrade --no-cache \
-    && apk add --no-cache ca-certificates sqlite tzdata \
+    && apk add --no-cache ca-certificates sqlite tzdata python3 \
     && addgroup -g 10001 -S shadowflow \
     && adduser -u 10001 -S -G shadowflow shadowflow
 WORKDIR /app

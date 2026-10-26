@@ -18,6 +18,10 @@ services:
     environment:
       # Count completed compressed database backups, not calendar days.
       SHADOWFLOW_BACKUP_RETENTION_DAYS: ${SHADOWFLOW_BACKUP_RETENTION_DAYS:-3}
+      # Enable only after upgrading/verifying the cold schema. Both API reads
+      # and backup/restore scripts use the same explicit path.
+      SHADOWFLOW_COLD_DATABASE_PATH: ${SHADOWFLOW_COLD_DATABASE_PATH:-}
+      SHADOWFLOW_HOT_TRADING_DAYS: ${SHADOWFLOW_HOT_TRADING_DAYS:-10}
     # End-of-day archives hold ~250k rows of batch state plus SQLite page
     # cache in the Go heap; 256m caused OOM headroom concerns on archive days.
     mem_limit: 768m

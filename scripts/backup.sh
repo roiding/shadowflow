@@ -3,6 +3,9 @@ set -eu
 umask 077
 
 script_dir="$(CDPATH= cd "$(dirname "$0")" && pwd)"
+if [ -n "${SHADOWFLOW_COLD_DATABASE_PATH:-}" ]; then
+  exec python3 "$script_dir/backup_pair.py" backup
+fi
 . "$script_dir/backup-common.sh"
 
 database_path="${SHADOWFLOW_DATABASE_PATH:-/data/shadowflow.db}"

@@ -3,6 +3,7 @@ set -eu
 
 # Run inside the already-started CI smoke container, never against a deployment.
 script_dir="$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
+live_database="${SHADOWFLOW_DATABASE_PATH:-/data/shadowflow.db}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 export SHADOWFLOW_BACKUP_DIR="$work/backups"
@@ -27,6 +28,30 @@ if /bin/sh "$script_dir/restore.sh" "$work/moved.db.gz" --dry-run; then
   exit 1
 fi
 
+# Exercise the paired runtime path as well as the legacy sqlite3 CLI path.
+# These are isolated targets, not the running smoke service's database.
+PYTHONPATH="$script_dir" python3 - "$live_database" "$work/pair-main.db" "$work/pair-cold.db" <<'PY'
+from contextlib import closing
+import sqlite3
+import sys
+from archive_intraday import initialize
+from storage_common import snapshot
+snapshot(sys.argv[1], sys.argv[2])
+with closing(sqlite3.connect(sys.argv[2])) as main, closing(sqlite3.connect(sys.argv[3])) as cold:
+    initialize(cold, main)
+    cold.commit()
+PY
+export SHADOWFLOW_DATABASE_PATH="$work/pair-main.db"
+export SHADOWFLOW_COLD_DATABASE_PATH="$work/pair-cold.db"
+pair="$(/bin/sh "$script_dir/backup.sh")"
+/bin/sh "$script_dir/restore.sh" "$pair" --dry-run
+printf corrupted >> "$pair"
+if /bin/sh "$script_dir/restore.sh" "$pair" --dry-run; then
+  echo 'corrupted paired archive was accepted' >&2
+  exit 1
+fi
+unset SHADOWFLOW_COLD_DATABASE_PATH
+
 export SHADOWFLOW_CALENDAR_PATH="$work/calendar.json"
 printf '%s\n' '{"workdays":["2026-09-06"],"holidays":["2026-09-07"]}' > "$SHADOWFLOW_CALENDAR_PATH"
 test "$(/app/collect -task is-trading-day -date 2026-09-07)" = false
@@ -39,4 +64,4 @@ if /bin/sh "$script_dir/auto-backup.sh"; then
   echo 'malformed calendar was accepted' >&2
   exit 1
 fi
-echo 'Alpine backup and calendar smoke tests passed'
+echo 'Alpine single/paired backup and calendar smoke tests passed'

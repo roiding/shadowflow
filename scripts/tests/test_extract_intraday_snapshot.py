@@ -56,6 +56,18 @@ class SingleSnapshotTests(unittest.TestCase):
         self.assertEqual(before, self.database.read_bytes())
         self.assertEqual(result["limits"]["memory_bytes"], 128 << 20)
 
+    def test_cold_snapshot_and_provenance_read_only(self):
+        cold = self.database.with_name("cold.db")
+        with closing(sqlite3.connect(self.database)) as source, closing(sqlite3.connect(cold)) as target:
+            source.backup(target)
+        self.change("DELETE FROM rank_intraday_work")
+        self.change("DELETE FROM collection_run")
+        before = cold.read_bytes()
+        result = worker.extract(self.database, "2026-10-22", "concept", "15:00", cold)
+        self.assertTrue(result["verified"])
+        self.assertEqual(len(result["rows"]), 2)
+        self.assertEqual(cold.read_bytes(), before)
+
     def test_invalid_scope_refused(self):
         for kind, clock in (("stock", "15:00"), ("concept", "all"), ("concept", "14:56")):
             with self.subTest(kind=kind, clock=clock), self.assertRaises(ValueError):

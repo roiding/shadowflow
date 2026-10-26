@@ -57,7 +57,8 @@ WHERE status IN ('failed','partial') AND coalesce(finished_at,started_at)<?`, fa
 		return result, err
 	}
 	if result.TransientRawDeleted, err = execDeleted(ctx, tx, `DELETE FROM raw_response
-WHERE snapshot_kind!='daily_close' AND fetched_at<?`, successCutoff); err != nil {
+WHERE snapshot_kind!='daily_close' AND fetched_at<?
+AND (snapshot_kind!='research_5m' OR ?=0)`, successCutoff, s.cold != nil); err != nil {
 		return result, err
 	}
 	if result.RelationRunsDeleted, err = execDeleted(ctx, tx, `DELETE FROM relation_sync_run

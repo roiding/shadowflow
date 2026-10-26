@@ -53,6 +53,11 @@ WHERE trade_date=? AND rank_type=? AND snapshot_at=? ORDER BY rank`, tradeDate, 
 		return nil, err
 	}
 	result, err := scanRecords(rows)
+	if err == nil {
+		result, err = s.withColdRecords(ctx, result, `trade_date=? AND rank_type=? AND snapshot_at=?`,
+			tradeDate, string(rankType), formatTimestamp(at))
+		sort.Slice(result, func(i, j int) bool { return result[i].Rank < result[j].Rank })
+	}
 	if err != nil || len(result) > 0 {
 		return result, err
 	}
@@ -80,6 +85,10 @@ WHERE trade_date=? AND rank_type=? AND code=? ORDER BY snapshot_at`, tradeDate, 
 		return nil, err
 	}
 	result, err := scanRecords(rows)
+	if err == nil {
+		result, err = s.withColdRecords(ctx, result, `trade_date=? AND rank_type=? AND code=?`,
+			tradeDate, string(rankType), code)
+	}
 	if err != nil || len(result) > 0 {
 		return result, err
 	}
@@ -107,6 +116,41 @@ ORDER BY snapshot_at`, tradeDate, string(rankType), code)
 		return nil, err
 	}
 	return scanRecords(rows)
+}
+
+func (s *Store) withColdRecords(ctx context.Context, hot []graymarket.RankRecord, predicate string, args ...any) ([]graymarket.RankRecord, error) {
+	if s.cold == nil {
+		return hot, nil
+	}
+	rows, err := s.cold.QueryContext(ctx, `SELECT `+recordColumns+` FROM rank_intraday_work WHERE `+predicate+` ORDER BY snapshot_at,rank`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read historical intraday: %w", err)
+	}
+	cold, err := scanRecords(rows)
+	if err != nil {
+		return nil, err
+	}
+	// Copy/verify/delete archiving can temporarily leave rows in both files.
+	// Merge by the original primary key; corrections in hot storage win.
+	type key struct{ date, stamp, rankType, code string }
+	seen := make(map[key]struct{}, len(hot))
+	for _, row := range hot {
+		seen[key{row.TradeDate, formatTimestamp(row.SnapshotAt), string(row.RankType), row.Code}] = struct{}{}
+	}
+	for _, row := range cold {
+		k := key{row.TradeDate, formatTimestamp(row.SnapshotAt), string(row.RankType), row.Code}
+		if _, exists := seen[k]; !exists {
+			hot = append(hot, row)
+			seen[k] = struct{}{}
+		}
+	}
+	sort.Slice(hot, func(i, j int) bool {
+		if !hot[i].SnapshotAt.Equal(hot[j].SnapshotAt) {
+			return hot[i].SnapshotAt.Before(hot[j].SnapshotAt)
+		}
+		return hot[i].Rank < hot[j].Rank
+	})
+	return hot, nil
 }
 
 func (s *Store) ResearchSeries(ctx context.Context, rankType graymarket.RankType, code string, from, to time.Time) ([]graymarket.RankRecord, error) {

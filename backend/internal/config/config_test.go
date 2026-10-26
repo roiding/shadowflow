@@ -2,6 +2,19 @@ package config
 
 import "testing"
 
+func TestLoadColdDatabasePath(t *testing.T) {
+	t.Setenv("SHADOWFLOW_COLD_DATABASE_PATH", " /data/history.db ")
+	cfg, err := Load()
+	if err != nil || cfg.ColdDatabasePath != "/data/history.db" {
+		t.Fatalf("cold path=%q, error=%v", cfg.ColdDatabasePath, err)
+	}
+	t.Setenv("SHADOWFLOW_COLD_DATABASE_PATH", "")
+	cfg, err = Load()
+	if err != nil || cfg.ColdDatabasePath != "" {
+		t.Fatalf("cold storage should be opt-in: %+v, %v", cfg, err)
+	}
+}
+
 func TestLoadSchedulerEnabledByDefault(t *testing.T) {
 	t.Setenv("SHADOWFLOW_SCHEDULER_ENABLED", "")
 

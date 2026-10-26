@@ -3,7 +3,7 @@
 
 import argparse
 from collections import defaultdict
-from contextlib import closing
+from contextlib import closing, nullcontext
 import csv
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -15,6 +15,8 @@ import sqlite3
 import tempfile
 import time
 from urllib.parse import parse_qs, urlencode, urlsplit
+
+from storage_common import distinct_paths, merge_cold_snapshot, snapshot, storage_lock
 
 
 VERSION = "intraday-recovery-v1"
@@ -333,6 +335,11 @@ def export(args):
     if args.interval < 1 or args.max_failures < 1:
         raise ValueError("interval and max-failures must be positive")
     wants_ohlc = (args.ohlc or args.raw_directory or args.cache_directory or args.browser_fallback)
+    cold_path = getattr(args, "cold_database", None)
+    if cold_path:
+        distinct_paths(args.database, cold_path)
+        if not cold_path.is_file():
+            raise ValueError("cold database must exist")
     report = {"schema_version": VERSION, "source_database": str(args.database.resolve()),
               "from_date": args.from_date, "to_date": args.to_date, "source_modified": False,
               "snapshot_method": "SQLite online backup from mode=ro source",
@@ -341,19 +348,26 @@ def export(args):
               "limitations": ["Recovered funds are not post-close revised.",
                               "Missing stock five-minute K-lines are not reconstructed.",
                               "This bundle does not seal or update production archives."]}
+    if cold_path:
+        report["source_cold_database"] = str(cold_path.resolve())
     with tempfile.TemporaryDirectory(prefix=".intraday-recovery-", dir=args.output.parent) as temporary:
         temporary = Path(temporary)
         stage = temporary / "bundle"
         stage.mkdir()
         counts, all_closes = {}, []
         with closing(sqlite3.connect(temporary / "snapshot.db")) as db:
-            with closing(sqlite3.connect(args.database.resolve().as_uri() + "?mode=ro", uri=True)) as source:
-                source.execute("PRAGMA query_only=ON")
-                deadline = time.monotonic() + 120
-                def progress(status, remaining, total):
-                    if time.monotonic() > deadline:
-                        raise ValueError("snapshot exceeded 120 seconds; retry using a stable copy")
-                source.backup(db, pages=1024, progress=progress, sleep=.01)
+            with storage_lock(args.database) if cold_path else nullcontext():
+                with closing(sqlite3.connect(args.database.resolve().as_uri() + "?mode=ro", uri=True)) as source:
+                    source.execute("PRAGMA query_only=ON")
+                    deadline = time.monotonic() + 120
+                    def progress(status, remaining, total):
+                        if time.monotonic() > deadline:
+                            raise ValueError("snapshot exceeded 120 seconds; retry using a stable copy")
+                    source.backup(db, pages=1024, progress=progress, sleep=.01)
+                if cold_path:
+                    snapshot(cold_path, temporary / "cold-snapshot.db", timeout=120)
+            if cold_path:
+                merge_cold_snapshot(db, temporary / "cold-snapshot.db", args.from_date, args.to_date)
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA query_only=ON")
             dates = [r[0] for r in db.execute("""SELECT trade_date FROM daily_archive_manifest
@@ -389,6 +403,7 @@ def export(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument("--cold-database", type=Path, help="include archived minute work and provenance in an isolated snapshot")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--from-date", required=True)
     parser.add_argument("--to-date", required=True)

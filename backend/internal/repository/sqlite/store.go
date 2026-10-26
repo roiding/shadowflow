@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
 	_ "modernc.org/sqlite"
 
 	"github.com/roiding/shadowflow/internal/graymarket"
@@ -46,6 +47,8 @@ func quoteAvailableRecords(records []graymarket.RankRecord) []graymarket.RankRec
 type Store struct {
 	db     *sql.DB
 	reader *sql.DB
+	cold   *sql.DB
+	lease  *os.File
 }
 
 func Open(path string) (*Store, error) {
@@ -53,6 +56,11 @@ func Open(path string) (*Store, error) {
 }
 
 func OpenWithReadConns(path string, readConns int) (*Store, error) {
+	if _, err := os.Stat(path + ".restore-in-progress"); err == nil {
+		return nil, fmt.Errorf("paired restore is incomplete; recover using the preserved safety copies before starting")
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("check restore marker: %w", err)
+	}
 	if readConns <= 0 {
 		// Keep in sync with Open() and the SHADOWFLOW_SQLITE_READ_CONNS
 		// default in config.Load: a single reader connection.
@@ -67,17 +75,36 @@ func OpenWithReadConns(path string, readConns int) (*Store, error) {
 		}
 	}
 	writerDSN := path
+	var lease *os.File
 	if path != ":memory:" {
+		var err error
+		lease, err = os.OpenFile(path+".service.lock", os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("open database service lease: %w", err)
+		}
+		if err := unix.Flock(int(lease.Fd()), unix.LOCK_SH|unix.LOCK_NB); err != nil {
+			_ = lease.Close()
+			return nil, fmt.Errorf("database restore is in progress: %w", err)
+		}
+		// Recheck after acquiring the shared lease to close the race with a
+		// restore that published its crash marker during startup.
+		if _, err := os.Stat(path + ".restore-in-progress"); !os.IsNotExist(err) {
+			_ = lease.Close()
+			return nil, fmt.Errorf("paired restore marker is present or inaccessible")
+		}
 		writerDSN = sqliteDSN(path, "_pragma=busy_timeout(30000)", "_pragma=foreign_keys(ON)",
 			"_pragma=synchronous(NORMAL)", "_pragma=journal_mode(WAL)")
 	}
 	db, err := sql.Open("sqlite", writerDSN)
 	if err != nil {
+		if lease != nil {
+			_ = lease.Close()
+		}
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	store := &Store{db: db}
+	store := &Store{db: db, lease: lease}
 	success := false
 	defer func() {
 		if !success {
@@ -163,6 +190,50 @@ WHERE run_id NOT IN (SELECT run_id FROM relation_sync_run WHERE status='running'
 	}
 	success = true
 	return store, nil
+}
+
+// OpenWithCold keeps historical work in a separate, read-only connection pool.
+// A configured but missing cold file is an error, not an empty new database.
+func OpenWithCold(path, coldPath string, readConns int) (*Store, error) {
+	store, err := OpenWithReadConns(path, readConns)
+	if err != nil {
+		return nil, err
+	}
+	if coldPath != "" {
+		if err := store.openCold(path, coldPath); err != nil {
+			_ = store.Close()
+			return nil, err
+		}
+	}
+	return store, nil
+}
+
+func (s *Store) openCold(mainPath, coldPath string) error {
+	info, err := os.Stat(coldPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("cold database must be an existing regular file: %s", coldPath)
+	}
+	if mainInfo, err := os.Stat(mainPath); err == nil && os.SameFile(mainInfo, info) {
+		return fmt.Errorf("main and cold databases must be different files")
+	}
+	cold, err := sql.Open("sqlite", sqliteDSN(coldPath, "mode=ro", "_pragma=busy_timeout(5000)",
+		"_pragma=query_only(ON)", "_pragma=cache_size(-8192)"))
+	if err != nil {
+		return fmt.Errorf("open cold database: %w", err)
+	}
+	cold.SetMaxOpenConns(1)
+	cold.SetMaxIdleConns(1)
+	rows, err := cold.Query(`SELECT ` + recordColumns + ` FROM rank_intraday_work LIMIT 0`)
+	if err != nil {
+		_ = cold.Close()
+		return fmt.Errorf("validate cold database columns: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		_ = cold.Close()
+		return err
+	}
+	s.cold = cold
+	return nil
 }
 
 // configureSQLite applies connection-local pragmas explicitly. The schema also
@@ -361,13 +432,19 @@ ON CONFLICT(version) DO UPDATE SET checksum=excluded.checksum`,
 
 func (s *Store) Close() error {
 	var closeErr error
+	if s.cold != nil {
+		closeErr = s.cold.Close()
+	}
 	if s.reader != nil && s.reader != s.db {
 		if err := s.reader.Close(); err != nil {
-			closeErr = err
+			closeErr = errors.Join(closeErr, err)
 		}
 	}
 	if err := s.db.Close(); err != nil {
 		closeErr = errors.Join(closeErr, err)
+	}
+	if s.lease != nil {
+		closeErr = errors.Join(closeErr, s.lease.Close())
 	}
 	return closeErr
 }
@@ -1485,6 +1562,11 @@ func boardArchiveCompleteSQL(rankType string) string {
 }
 
 func (s *Store) CleanupArchivedIntraday(ctx context.Context, beforeDate string) error {
+	if s.cold != nil {
+		// The offline archiver owns copy/verify/delete retention. The former
+		// completeness cleanup would discard minute detail without copying it.
+		return nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

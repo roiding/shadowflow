@@ -109,8 +109,11 @@ class SSHSnapshots:
 
     def fetch(self, day, kind, clock, output):
         program = "import base64;exec(base64.b64decode(" + repr(base64.b64encode(self.source).decode()) + "))"
-        command = " ".join(shlex.quote(x) for x in ["python3", "-c", program,
-            "--database", self.args.database, "--trade-date", day, "--type", kind, "--at", clock])
+        arguments = ["python3", "-c", program,
+            "--database", self.args.database, "--trade-date", day, "--type", kind, "--at", clock]
+        if getattr(self.args, "cold_database", None):
+            arguments.extend(["--cold-database", self.args.cold_database])
+        command = " ".join(shlex.quote(x) for x in arguments)
         with output.open("wb") as handle:
             result = subprocess.run(self.base() + ["-S", self.socket, "-o", "ControlMaster=no",
                 "-o", "BatchMode=yes", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1",
@@ -212,6 +215,7 @@ def main():
     parser.add_argument("--port", type=int, default=2233)
     parser.add_argument("--user", default="root")
     parser.add_argument("--database", default="/mnt/data/shadowflow/data/shadowflow.db")
+    parser.add_argument("--cold-database")
     parser.add_argument("--interval", type=float, default=2)
     try:
         report = collect(parser.parse_args())

@@ -52,6 +52,10 @@ CREATE INDEX IF NOT EXISTS idx_intraday_latest
     ON rank_intraday_work (trade_date, rank_type, snapshot_at DESC, rank);
 CREATE INDEX IF NOT EXISTS idx_intraday_series
     ON rank_intraday_work (trade_date, rank_type, code, snapshot_at);
+-- LatestRank has no trade_date predicate. Leading with rank_type makes
+-- max(snapshot_at) a bounded lookup instead of scanning retained history.
+CREATE INDEX IF NOT EXISTS idx_intraday_type_latest
+    ON rank_intraday_work (rank_type, snapshot_at DESC, rank);
 
 CREATE TABLE IF NOT EXISTS rank_snapshot (
     run_id TEXT NOT NULL,

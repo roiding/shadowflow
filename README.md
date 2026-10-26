@@ -232,6 +232,19 @@ docker compose run --rm --entrypoint /app/scripts/restore.sh shadowflow /backups
 docker compose start shadowflow
 ```
 
+## 热冷分钟存储
+
+完整实施与验收见 [热冷存储运行手册](docs/database-hot-cold-implementation.md)。启用
+`SHADOWFLOW_COLD_DATABASE_PATH=/data/shadowflow-cold.db` 前，先升级并验证旧冷库表结构。
+后端以只读连接合并历史分钟数据，热库修正优先；冷库异常不再表现为空结果。
+
+启用后，`backup.sh` 改为生成带两库清单与摘要的 `.bundle.tar`；`restore.sh` 对两库一起
+验证/恢复，并在中断时阻止服务打开半恢复状态。旧单库备份不能在冷库模式下单独恢复。
+默认保留十个已完成交易日加当日工作数据；盘后 `auto-archive.sh` 逐日复制、全字段校验并
+持久提交冷副本后才删除热副本。部署验证通过后再安装归档任务，不在盘中做搬迁或 VACUUM。
+
+恢复工具可通过 `--cold-database` 纳入旧分钟和尚存的采集运行凭据；缺少凭据仍不宣称完整。
+
 ## 手工补采
 
 服务停机或错过盘后任务后，可以使用管理命令补采。补采板块时必须提供真实采样时间，不应把历史收盘数据伪装成盘中分钟序列：
