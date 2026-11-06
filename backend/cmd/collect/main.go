@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"time"
 
@@ -28,10 +27,11 @@ func main() {
 }
 
 func run() error {
-	var task, date, at string
-	flag.StringVar(&task, "task", "", "task: boards, end-of-day, stock-kline, daily-close, relations, cleanup, maintenance, analytics, or is-trading-day")
+	var task, date, at, scope string
+	flag.StringVar(&task, "task", "", "task: boards, end-of-day, stock-kline, daily-close, relations, limit-up, cleanup, maintenance, analytics, or is-trading-day")
 	flag.StringVar(&date, "date", "", "trade date in YYYY-MM-DD")
 	flag.StringVar(&at, "at", "15:00", "snapshot time in HH:MM for boards")
+	flag.StringVar(&scope, "scope", "HS,GEM2STAR", "market scope for limit-up: HS,GEM2STAR or HS,GEM2STAR,ST,NEW")
 	flag.Parse()
 	if task == "" || date == "" {
 		flag.Usage()
@@ -66,21 +66,28 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if task == "limit-up" {
+		return collectLimitUp(cfg, date, scope)
+	}
 	store, err := sqlite.OpenWithReadConns(cfg.DatabasePath, cfg.SQLiteReadConns)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConns = cfg.UpstreamMaxConcurrency * 4
-	transport.MaxIdleConnsPerHost = cfg.UpstreamMaxConcurrency
-	upstreamClient := &http.Client{Transport: transport, Timeout: cfg.RequestTimeout}
+	bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), cfg.ProxyPoolRequestTimeout)
+	upstreamResult, err := upstream.NewClient(bootstrapCtx, cfg, logger)
+	bootstrapCancel()
+	if err != nil {
+		return err
+	}
+	if upstreamResult.Pool != nil {
+		defer upstreamResult.Pool.Stop()
+	}
+	upstreamClient := upstreamResult.Client
 	client := eastmoney.NewClient(cfg.UpstreamBaseURL, upstreamClient, cfg.PageSize).
 		WithQuoteBaseURLs(cfg.QuoteBaseURLs).
-		WithUpstreamGuard(upstream.New(upstreamClient, upstream.Options{
-			MaxConcurrency: cfg.UpstreamMaxConcurrency, RatePerSecond: cfg.UpstreamRatePerSecond,
-		}))
+		WithUpstreamGuard(upstreamResult.Guard)
 	service := collector.New(client, store, logger)
 	timeout := 10 * time.Minute
 	// A full industry/concept relationship scan visits roughly a thousand

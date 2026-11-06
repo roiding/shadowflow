@@ -22,6 +22,8 @@ type Config struct {
 	RequestTimeout          time.Duration
 	StaticDir               string
 	SchedulerEnabled        bool
+	LimitUpArchiveEnabled   bool
+	LimitUpScope            string
 	// SchedulerDisabledKinds turns individual scheduled job kinds off while
 	// the scheduler itself stays enabled, so a blocked upstream no longer
 	// drags unrelated collection lanes down with it.
@@ -36,6 +38,22 @@ type Config struct {
 	TrustedProxyCIDR        string
 	UpstreamMaxConcurrency  int
 	UpstreamRatePerSecond   float64
+	ProxyPoolURL            string
+	ProxyPoolToken          string
+	ProxyPoolRefreshEvery   time.Duration
+	ProxyPoolRequestTimeout time.Duration
+	ProxyPoolMaxAttempts    int
+	ProxyPoolFailureLimit   int
+	ProxyPoolCooldown       time.Duration
+	ProxyPoolDirectFallback bool
+	ProxyPoolProtocols      []string
+	ProxyPoolStrategy       string
+	ProxyPoolMaxProxies     int
+	ProxyPoolPrewarmCount   int
+	ProxyPoolPrewarmTimeout time.Duration
+	ProxyPoolPollEvery      time.Duration
+	ProxyPoolAcquireTimeout time.Duration
+	ProxyPoolSourceIDs      []string
 	SQLiteReadConns         int
 }
 
@@ -51,6 +69,14 @@ func Load() (Config, error) {
 	schedulerEnabled, err := envBool("SHADOWFLOW_SCHEDULER_ENABLED", true)
 	if err != nil {
 		return Config{}, err
+	}
+	limitUpArchiveEnabled, err := envBool("SHADOWFLOW_LIMIT_UP_ARCHIVE_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	limitUpScope := env("SHADOWFLOW_LIMIT_UP_SCOPE", "HS,GEM2STAR")
+	if limitUpScope != "HS,GEM2STAR" && limitUpScope != "HS,GEM2STAR,ST,NEW" {
+		return Config{}, fmt.Errorf("SHADOWFLOW_LIMIT_UP_SCOPE must be HS,GEM2STAR or HS,GEM2STAR,ST,NEW")
 	}
 	allowMissingQuotes, err := envBool("SHADOWFLOW_ALLOW_MISSING_QUOTES", false)
 	if err != nil {
@@ -92,6 +118,56 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	proxyPoolRefreshSeconds, err := envInt("SHADOWFLOW_PROXY_POOL_REFRESH_SECONDS", 300)
+	if err != nil {
+		return Config{}, err
+	}
+	proxyPoolRequestTimeoutSeconds, err := envInt("SHADOWFLOW_PROXY_POOL_REQUEST_TIMEOUT_SECONDS", 5)
+	if err != nil {
+		return Config{}, err
+	}
+	proxyPoolMaxAttempts, err := envInt("SHADOWFLOW_PROXY_POOL_MAX_ATTEMPTS", 3)
+	if err != nil {
+		return Config{}, err
+	}
+	proxyPoolFailureLimit, err := envInt("SHADOWFLOW_PROXY_POOL_FAILURE_LIMIT", 2)
+	if err != nil {
+		return Config{}, err
+	}
+	proxyPoolCooldownSeconds, err := envInt("SHADOWFLOW_PROXY_POOL_COOLDOWN_SECONDS", 300)
+	if err != nil {
+		return Config{}, err
+	}
+	proxyPoolDirectFallback, err := envBool("SHADOWFLOW_PROXY_POOL_DIRECT_FALLBACK", false)
+	if err != nil {
+		return Config{}, err
+	}
+	proxyPoolMaxProxies, err := envInt("SHADOWFLOW_PROXY_POOL_MAX_PROXIES", 500)
+	if err != nil {
+		return Config{}, err
+	}
+	proxyPoolStrategy := env("SHADOWFLOW_PROXY_POOL_STRATEGY", "round_robin")
+	proxyPoolProtocols := envList("SHADOWFLOW_PROXY_POOL_PROTOCOLS", []string{"http", "socks5"})
+	prewarmCount, err := envInt("SHADOWFLOW_PROXY_POOL_PREWARM_COUNT", 8)
+	if err != nil {
+		return Config{}, err
+	}
+	prewarmSeconds, err := envInt("SHADOWFLOW_PROXY_POOL_PREWARM_TIMEOUT_SECONDS", 120)
+	if err != nil {
+		return Config{}, err
+	}
+	pollSeconds, err := envInt("SHADOWFLOW_PROXY_POOL_POLL_SECONDS", 2)
+	if err != nil {
+		return Config{}, err
+	}
+	acquireSeconds, err := envInt("SHADOWFLOW_PROXY_POOL_ACQUIRE_TIMEOUT_SECONDS", 30)
+	if err != nil {
+		return Config{}, err
+	}
+	if prewarmCount < 1 || prewarmCount > 100 || prewarmSeconds < 1 || prewarmSeconds > 600 ||
+		pollSeconds < 1 || pollSeconds > 30 || acquireSeconds < 1 || acquireSeconds > 120 {
+		return Config{}, fmt.Errorf("proxy prewarm count, timeout, polling, or acquire timeout is out of range")
+	}
 	// SQLite has one writer and this service does not need a reader fan-out;
 	// keep a single read connection by default to avoid cache/IO contention.
 	readConns, err := envInt("SHADOWFLOW_SQLITE_READ_CONNS", 1)
@@ -113,6 +189,17 @@ func Load() (Config, error) {
 	if upstreamConcurrency < 1 || upstreamRate <= 0 || readConns < 1 || readConns > 32 {
 		return Config{}, fmt.Errorf("upstream and SQLite concurrency settings are out of range")
 	}
+	if proxyPoolRefreshSeconds < 30 || proxyPoolRefreshSeconds > 86400 ||
+		proxyPoolRequestTimeoutSeconds < 1 || proxyPoolRequestTimeoutSeconds > 60 ||
+		proxyPoolMaxAttempts < 1 || proxyPoolMaxAttempts > 10 ||
+		proxyPoolFailureLimit < 1 || proxyPoolFailureLimit > 20 ||
+		proxyPoolCooldownSeconds < 1 || proxyPoolCooldownSeconds > 86400 ||
+		proxyPoolMaxProxies < 1 || proxyPoolMaxProxies > 10000 {
+		return Config{}, fmt.Errorf("proxy pool refresh, timeout, retry, cooldown, or size setting is out of range")
+	}
+	if proxyPoolStrategy != "round_robin" && proxyPoolStrategy != "random" {
+		return Config{}, fmt.Errorf("SHADOWFLOW_PROXY_POOL_STRATEGY must be round_robin or random")
+	}
 	if calendarRefreshLeadDays < 1 || calendarRefreshLeadDays > 180 {
 		return Config{}, fmt.Errorf("SHADOWFLOW_CALENDAR_REFRESH_LEAD_DAYS must be between 1 and 180")
 	}
@@ -131,6 +218,8 @@ func Load() (Config, error) {
 		RequestTimeout:          time.Duration(timeoutSeconds) * time.Second,
 		StaticDir:               os.Getenv("SHADOWFLOW_STATIC_DIR"),
 		SchedulerEnabled:        schedulerEnabled,
+		LimitUpArchiveEnabled:   limitUpArchiveEnabled,
+		LimitUpScope:            limitUpScope,
 		SchedulerDisabledKinds:  envList("SHADOWFLOW_SCHEDULER_DISABLED_KINDS", nil),
 		AllowMissingQuotes:      allowMissingQuotes,
 		SuccessRunRetentionDays: successRetentionDays,
@@ -142,6 +231,22 @@ func Load() (Config, error) {
 		TrustedProxyCIDR:        strings.TrimSpace(os.Getenv("SHADOWFLOW_TRUSTED_PROXY_CIDR")),
 		UpstreamMaxConcurrency:  upstreamConcurrency,
 		UpstreamRatePerSecond:   upstreamRate,
+		ProxyPoolURL:            strings.TrimSpace(os.Getenv("SHADOWFLOW_PROXY_POOL_URL")),
+		ProxyPoolToken:          strings.TrimSpace(os.Getenv("SHADOWFLOW_PROXY_POOL_TOKEN")),
+		ProxyPoolRefreshEvery:   time.Duration(proxyPoolRefreshSeconds) * time.Second,
+		ProxyPoolRequestTimeout: time.Duration(proxyPoolRequestTimeoutSeconds) * time.Second,
+		ProxyPoolMaxAttempts:    proxyPoolMaxAttempts,
+		ProxyPoolFailureLimit:   proxyPoolFailureLimit,
+		ProxyPoolCooldown:       time.Duration(proxyPoolCooldownSeconds) * time.Second,
+		ProxyPoolDirectFallback: proxyPoolDirectFallback,
+		ProxyPoolProtocols:      proxyPoolProtocols,
+		ProxyPoolStrategy:       proxyPoolStrategy,
+		ProxyPoolMaxProxies:     proxyPoolMaxProxies,
+		ProxyPoolPrewarmCount:   prewarmCount,
+		ProxyPoolPrewarmTimeout: time.Duration(prewarmSeconds) * time.Second,
+		ProxyPoolPollEvery:      time.Duration(pollSeconds) * time.Second,
+		ProxyPoolAcquireTimeout: time.Duration(acquireSeconds) * time.Second,
+		ProxyPoolSourceIDs:      envList("SHADOWFLOW_PROXY_POOL_SOURCE_IDS", nil),
 		SQLiteReadConns:         readConns,
 	}, nil
 }

@@ -1,0 +1,64 @@
+{
+  "status_code": 0,
+  "status_msg": "success",
+  "data": {
+    "date": 20261105,
+    "limit_down_count": {
+      "today": {
+        "num": 2,
+        "open_num": 8,
+        "history_num": 10,
+        "rate": 0.2
+      },
+      "yesterday": {
+        "num": 1,
+        "open_num": 0,
+        "history_num": 1,
+        "rate": 1.0
+      }
+    },
+    "trade_status": {
+      "id": "closed",
+      "name": "已收盘",
+      "start_time": "15:30",
+      "end_time": "23:59:59.999999999"
+    },
+    "limit_up_count": {
+      "today": {
+        "num": 3,
+        "open_num": 2,
+        "history_num": 5,
+        "rate": 0.6
+      },
+      "yesterday": {
+        "num": 4,
+        "open_num": 1,
+        "history_num": 5,
+        "rate": 0.8
+      }
+    },
+    "page": {
+      "limit": 2,
+      "total": 3,
+      "count": 2,
+      "page": 2
+    },
+    "info": [
+      {
+        "code": "603313",
+        "name": "梦百合",
+        "market_id": 17,
+        "market_type": "HS",
+        "open_num": null,
+        "first_limit_up_time": "1793843205",
+        "last_limit_up_time": "1793843205",
+        "limit_up_type": "一字板",
+        "high_days": "首板",
+        "reason_type": "家居",
+        "limit_up_suc_rate": 0.8,
+        "change_rate": 9.99,
+        "turnover_rate": 2.1
+      }
+    ]
+  }
+}

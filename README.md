@@ -118,6 +118,18 @@ curl 'http://localhost:8080/api/v1/relations/changes?trade_date=2026-08-13'
 
 今日监控榜单和收盘个股榜的字段按钮支持勾选显示列，默认全部展示，至少保留一列，可恢复默认。两个表格分别保存到浏览器 `localStorage` 的 `shadowflow.monitor.columns.v1` 和 `shadowflow.stocks.columns.v1`，移动端也遵循勾选结果。收盘个股的“控盘度”使用 `main_money_inflow / turnover × 100`，保留两位小数、不带 `%`；资金或成交额不可用时显示 `--`。
 
+## 股票联动与股性
+
+“股票联动”页面以同花顺涨停聚焦的完整涨停池、炸板池、跌停池为独立事件数据源，不依赖日 K、五分钟行情或成份归档。按 30/90/180/365 自然日回看，分别研究涨停、触涨停、跌停的共现网络，展示条件共现率、Jaccard、提升倍数与共同日期，以及封板/炸板/回封、开板次数、首次触板时段、跌停频率和触涨停后跌停记录。缺失日期不补零、未知开板次数不当成零，小样本明确提示。
+
+日常事件采集由独立 `end-of-day-events` 盘后子任务执行，在交易日 `16:00`、`16:05`、`16:10` 发出邀请；单次预算 10 分钟，最多 3 次尝试。服务启动时在非盘中窗口恢复最近交易日，交易日 `09:30–16:00` 不恢复。开关 `SHADOWFLOW_LIMIT_UP_ARCHIVE_ENABLED` 默认 `false`，既有实时、盘后行情及成份开关保持原状。
+
+今日监控的板块成分股、动态筛选的个股结果和收盘个股均提供“联动/股性”快查，可选择 Top 5/Top 10，并进入完整股票联动页。快查与完整页显示实际事件样本截止日；完整页 URL 保存研究上下文和返回来源（`monitor`、`focus` 或 `stocks`），支持候选股票搜索和六位代码手输。事件明细与共同日期可查看；点击事件日期跳回收盘个股尚未实现。
+
+采集质量页已接通只读事件分项 quality API，区分 `disabled`、`not_collected`、`running`、`failed`、`complete`，并显示涨停、炸板、跌停三池数量、完整零事件日、最近采集时间和失败原因。首次历史回补仍由用户手动执行，不自动采全年，也不伪造行情。
+
+手工回补/修复入口为在 `backend` 中运行 `go run ./cmd/collect -task limit-up -date YYYY-MM-DD`。命令先向 `SHADOWFLOW_DATABASE_PATH` 指定的数据库写入运行记录，再低频串行抓取并验证三池，全部通过后原子发布；失败保留旧完整版本与失败运行记录。研究页面和 quality 接口只读本地数据，不触发采集。模块职责、跨页协作、指标口径与 URL 参数见 [股票联动与股性](docs/STOCK_LINKAGE_AND_BEHAVIOR.md)。
+
 ## 动态连续筛选
 
 前端“动态筛选”页允许分别为概念和个股添加或删除任意条件，选择“全部满足”或“任一满足”，并配置连续交易日数、是否仅主板、是否排除 ST、个股是否必须属于命中概念。内置初始模板就是原始策略：连续 3 日，概念成交额大于 500 亿元、个股成交额大于 2 亿元，换手率大于 3%，涨幅 1%–6%，控盘度 1.5–6。控盘度按 `(主力明盘 + 主力暗盘) / 成交额 × 100` 即时计算，前端统一显示为两位小数、不带 `%`；API 字段继续使用 `control_coefficient`。
@@ -162,7 +174,7 @@ docker compose up -d
 
 GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go race 测试/`go vet`、脚本回归和 React lint/test/build，再构建 `linux/arm64` 镜像。Docker 构建阶段也运行后端测试/vet、前端 lint/test/build；只有 npm 漏洞检查及 `govulncheck` 对实际目标架构的 `shadowflow`、`collect` 两个二进制扫描都成功，才可生成最终镜像。发布前另以 Trivy 检查最终镜像的操作系统和库，HIGH/CRITICAL 告警（包括尚无补丁的告警）会阻止发布；再经 QEMU 验证就绪、鉴权、静态页面和 Alpine 备份/日历脚本。所有门槛通过后，`main` 分支推送、`v*` 标签或手工触发才发布 GHCR，Pull Request 不发布。
 
-容器基线固定为 `golang:1.26.8-alpine3.24`、`node:22.23.2-alpine3.24` 和 `alpine:3.24.1`；`golang.org/x/text` 更新为 v0.39.0。Go 构建设置 `GOTOOLCHAIN=local`，避免自动改用未核验版本；`go.mod` 的 1.25.0 仅是语言最低要求，不是生产安全补丁要求。本机 Go/Node 无需为部署改装。运行时不包含 Go/Node 工具链，只含服务、采集器、静态前端和 SQLite 等系统包；Compose 内存限制为 768 MiB。
+容器基线固定为 `golang:1.26.10-alpine3.24`、`node:22.23.2-alpine3.24` 和 `alpine:3.24.1`；`golang.org/x/text` 使用 v0.43.0。Go 构建设置 `GOTOOLCHAIN=local`，避免自动改用未核验版本；`go.mod` 的 1.26.0 仅是语言最低要求，不是生产安全补丁要求。本机 Go/Node 无需为部署改装。运行时不包含 Go/Node 工具链，只含服务、采集器、静态前端和 SQLite 等系统包；Compose 内存限制为 768 MiB。前端仅为 TypeScript ESLint 的间接依赖固定 `minimatch` 11.0.1，修复 GHSA-g3hv-75wg-m249；不豁免 npm 漏洞门槛。
 
 CI 每轮设置不同的 `VULN_DB_REFRESH`，重新更新运行时 Alpine 包并执行漏洞扫描，不复用旧安全结果。手动源码构建也应刷新该参数：
 
@@ -187,13 +199,31 @@ docker buildx build --platform linux/arm64 --load \
 | `SHADOWFLOW_PAGE_SIZE` | `100` | 上游分页大小 |
 | `SHADOWFLOW_REQUEST_TIMEOUT_SECONDS` | `5` | 单次上游请求超时 |
 | `SHADOWFLOW_QUOTE_BASE_URLS` | `https://push2.eastmoney.com,https://push2delay.eastmoney.com` | 行情接口候选域名；主域空响应、网络错误或临时服务错误时切换 delay 域 |
+| `SHADOWFLOW_PROXY_POOL_URL` | 空 | 新版代理池服务根地址或 `/api/v1`；为空时上游直连，配置后严格走代理 |
+| `SHADOWFLOW_PROXY_POOL_TOKEN` | 空 | 本项目的项目 API Key，不使用管理 Token |
+| `SHADOWFLOW_PROXY_POOL_SOURCE_IDS` | 空 | 允许的来源 ID，逗号分隔；空值继承项目授权范围 |
+| `SHADOWFLOW_PROXY_POOL_PREWARM_COUNT` | `8` | 每轮预热目标上限，范围 1..100（默认 8）；根据请求数与并发动态小批预热，不再固定预热 100 |
+| `SHADOWFLOW_PROXY_POOL_PREWARM_TIMEOUT_SECONDS` | `120` | 单目标预热预算，最多 600 秒 |
+| `SHADOWFLOW_PROXY_POOL_POLL_SECONDS` | `2` | 预热任务状态轮询间隔 |
+| `SHADOWFLOW_PROXY_POOL_ACQUIRE_TIMEOUT_SECONDS` | `30` | 单次领取/续租的服务端预算，不挤占业务 HTTP 的单次超时 |
+| `SHADOWFLOW_PROXY_POOL_REQUEST_TIMEOUT_SECONDS` | `5` | 预热创建、查询、反馈及释放的控制请求超时 |
+| `SHADOWFLOW_PROXY_POOL_COOLDOWN_SECONDS` | `300` | 新分配的项目 CD，健康 sticky 续租不清空或绕过 CD |
+| `SHADOWFLOW_PROXY_POOL_MAX_ATTEMPTS` | `3` | 单个上游请求最多尝试的代理数 |
+| `SHADOWFLOW_PROXY_POOL_PROTOCOLS` | `http,socks5` | 允许使用的代理协议 |
+| `SHADOWFLOW_PROXY_POOL_DIRECT_FALLBACK` | `false` | 新版接入必须保持 false，不允许绕过预热或代理供应不足 |
 | `SHADOWFLOW_SCHEDULER_ENABLED` | `true` | 是否运行盘中和盘后采集调度；健康检查或只读 API 模式可设为 `false` |
+| `SHADOWFLOW_LIMIT_UP_ARCHIVE_ENABLED` | `false` | 是否启用独立 `end-of-day-events` 涨跌停事件盘后归档；不改变行情与成份任务开关 |
+| `SHADOWFLOW_LIMIT_UP_SCOPE` | `HS,GEM2STAR` | 事件归档范围，可选 `HS,GEM2STAR` 或 `HS,GEM2STAR,ST,NEW` |
 | `SHADOWFLOW_SUCCESS_RUN_RETENTION_DAYS` | `30` | 成功/跳过的采集运行记录保留天数 |
 | `SHADOWFLOW_FAILURE_RUN_RETENTION_DAYS` | `180` | 失败/部分成功的采集运行记录保留天数，必须不少于成功记录保留天数 |
 | `SHADOWFLOW_BACKUP_RETENTION_DAYS` | `3` | 有效压缩备份保留数量，必须为正整数，不是自然日；只清理自动命名且校验通过的备份及其 sidecar |
 | `SHADOWFLOW_API_TOKEN` | 空 | 非空时开启 `/api/v1/*` 和 `/metrics` 的 Bearer Token 鉴权，至少 16 个字符；为空时关闭 |
 
 其余运行参数已固定在 `compose.yaml` 中，通常不需要额外配置。
+
+代理池接口格式和运行策略见 [docs/PROXY_POOL_API.md](docs/PROXY_POOL_API.md)。代理池只作用于东方财富上游请求，代理控制 API 和交易日历请求保持独立。服务启动不访问代理池，启用调度后在采集前发起异步预热并等待真实完成；供应不足不阻止只读 Web 服务启动。
+
+交易日成份同步的原时间仍为 `07:00/07:30/08:00`，新增 `06:55/07:25/07:55` 提前预热；盘后归档 `15:55` 预热，五分钟 K `16:10/17:25/19:55` 预热。提前预热不是预约存活代理，业务启动时过旧的完成结果会重新检查/预热，领取时仍由代理池验证当前资格。所有 Go 上游采集共用最多四个代理 worker，健康会话续租、失败反馈并释放后换代理，五分钟正式主路径直接请求 `klt=5,fqt=0`，不再合成一分钟数据。Compose 为代理业务请求采用 12 秒超时，可通过环境变量调整。
 
 `backend/config/trading_calendar.json` 已内置 2026 年 A 股休市日期和 `valid_through`。服务每天检查覆盖期，距离到期不足阈值时读取交易所年度休市安排；只有年度标题、日期范围和最少假日数全部校验通过才原子替换，失败时保留旧文件。覆盖状态同时出现在 `/api/v1/system/status` 和 Prometheus 指标中。
 

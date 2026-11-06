@@ -18,6 +18,7 @@ import (
 
 var errDependencyUnavailable = errors.New("scheduled job dependency is unavailable")
 var errRelationWindowClosed = errors.New("automatic relation synchronization must finish before 09:15 Asia/Shanghai on its trade date")
+var errPrewarmWindowClosed = errors.New("scheduled proxy prewarm task is outside its valid execution window")
 
 type collectorService interface {
 	CollectBoards(context.Context, time.Time) error
@@ -37,6 +38,15 @@ type archivePartCollector interface {
 	HasEndOfDayPart(context.Context, string, graymarket.RankType) (bool, error)
 }
 
+type limitUpCollector interface {
+	CollectLimitUpEvents(context.Context, time.Time) error
+	HasLimitUpArchive(context.Context, string) (bool, error)
+}
+
+type proxyPrewarmer interface {
+	PrepareUpstream(context.Context, string) error
+}
+
 type Options struct {
 	SuccessRunRetentionDays int
 	FailureRunRetentionDays int
@@ -47,7 +57,9 @@ type Options struct {
 	// stock-kline, maintenance, cleanup, startup-recovery). Disabled kinds
 	// are neither enqueued nor claimed, so a lane whose upstream is blocked
 	// cannot interfere with the remaining collection lanes.
-	DisabledKinds map[string]struct{}
+	DisabledKinds         map[string]struct{}
+	ProxyPrewarmEnabled   bool
+	LimitUpArchiveEnabled bool
 }
 
 type Scheduler struct {
@@ -86,6 +98,8 @@ func New(service collectorService, calendar *tradingcalendar.Calendar, logger *s
 		if len(provided.DisabledKinds) > 0 {
 			config.DisabledKinds = provided.DisabledKinds
 		}
+		config.ProxyPrewarmEnabled = provided.ProxyPrewarmEnabled
+		config.LimitUpArchiveEnabled = provided.LimitUpArchiveEnabled
 	}
 	owner := strings.TrimSpace(config.InstanceID)
 	if owner == "" {
@@ -111,6 +125,7 @@ func New(service collectorService, calendar *tradingcalendar.Calendar, logger *s
 func (s *Scheduler) Run(ctx context.Context) {
 	current := time.Now().In(s.location)
 	s.recoverLatestArchive(ctx, current)
+	s.recoverLatestEvents(ctx, current)
 	s.enqueueReplayableJobs(ctx, current)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -170,6 +185,7 @@ func (s *Scheduler) enqueueReplayableJobs(ctx context.Context, now time.Time) {
 		{"end-of-day-industry", "16:00"}, {"end-of-day-industry", "16:05"}, {"end-of-day-industry", "16:10"},
 		{"end-of-day-concept", "16:00"}, {"end-of-day-concept", "16:05"}, {"end-of-day-concept", "16:10"},
 		{"end-of-day-stock", "16:00"}, {"end-of-day-stock", "16:05"}, {"end-of-day-stock", "16:10"},
+		{"end-of-day-events", "16:00"}, {"end-of-day-events", "16:05"}, {"end-of-day-events", "16:10"},
 		{"stock-kline", "16:15"}, {"stock-kline", "17:30"}, {"stock-kline", "20:00"},
 	}
 	for _, plan := range plans {
@@ -186,6 +202,38 @@ func (s *Scheduler) enqueueReplayableJobs(ctx context.Context, now time.Time) {
 			s.logger.Error("enqueue replayable scheduled job", "kind", plan.kind, "trade_date", tradeDate, "error", err)
 		}
 	}
+	if s.options.ProxyPrewarmEnabled {
+		prewarmPlans := []struct {
+			kind  string
+			clock string
+		}{
+			{"proxy-prewarm-relations", "06:55"},
+			{"proxy-prewarm-relations", "07:25"},
+			{"proxy-prewarm-relations", "07:55"},
+			{"proxy-prewarm-boards", "09:26"},
+			{"proxy-prewarm-boards", "12:56"},
+			{"proxy-prewarm-end-of-day", "15:55"},
+			{"proxy-prewarm-stock-kline", "16:10"},
+			{"proxy-prewarm-stock-kline", "17:25"},
+			{"proxy-prewarm-stock-kline", "19:55"},
+		}
+		for _, prewarmPlan := range prewarmPlans {
+			if !s.kindEnabled(prewarmPlan.kind) {
+				continue
+			}
+			plannedAt, parseErr := time.ParseInLocation("2006-01-02 15:04", tradeDate+" "+prewarmPlan.clock, s.location)
+			if parseErr != nil || plannedAt.After(now) {
+				continue
+			}
+			prewarmJob := newScheduledJob(prewarmPlan.kind, plannedAt, tradeDate)
+			if s.isPrewarmExpired(prewarmJob, now) {
+				continue
+			}
+			if ensureErr := s.jobs.EnsureScheduledJob(ctx, prewarmJob); ensureErr != nil {
+				s.logger.Error("enqueue replayable prewarm job", "kind", prewarmPlan.kind, "trade_date", tradeDate, "error", ensureErr)
+			}
+		}
+	}
 }
 
 func newScheduledJob(kind string, plannedAt time.Time, tradeDate string) ScheduledJob {
@@ -200,6 +248,8 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 	if current.Second() < 5 {
 		return
 	}
+	s.startEvents(ctx, current)
+	s.checkPrewarm(ctx, current)
 	kind := jobKind(current)
 	if kind == "" || kind != "cleanup" && kind != "maintenance" && !s.calendar.IsTradingDay(current) {
 		return
@@ -221,9 +271,69 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 	s.startJob(ctx, kind, current, current.Format("2006-01-02"))
 }
 
+func (s *Scheduler) startEvents(ctx context.Context, current time.Time) {
+	if current.Hour() != 16 || current.Minute() != 0 && current.Minute() != 5 && current.Minute() != 10 {
+		return
+	}
+	if !s.calendar.IsTradingDay(current) || !s.kindEnabled("end-of-day-events") {
+		return
+	}
+	s.startJob(ctx, "end-of-day-events", current, current.Format("2006-01-02"))
+}
+
+func (scheduler *Scheduler) checkPrewarm(ctx context.Context, current time.Time) {
+	if !scheduler.options.ProxyPrewarmEnabled {
+		return
+	}
+	if !scheduler.calendar.IsTradingDay(current) {
+		return
+	}
+	prewarmKind := prewarmJobKind(current)
+	if prewarmKind == "" || !scheduler.kindEnabled(prewarmKind) {
+		return
+	}
+	scheduler.startJob(ctx, prewarmKind, current, current.Format("2006-01-02"))
+}
+
 func (s *Scheduler) kindEnabled(kind string) bool {
-	_, disabled := s.options.DisabledKinds[kind]
-	return !disabled
+	if _, disabled := s.options.DisabledKinds[kind]; disabled {
+		return false
+	}
+	if kind == "end-of-day-events" {
+		if !s.options.LimitUpArchiveEnabled {
+			return false
+		}
+		if _, disabled := s.options.DisabledKinds["end-of-day"]; disabled {
+			return false
+		}
+	}
+	if strings.HasPrefix(kind, "proxy-prewarm-") {
+		if !s.options.ProxyPrewarmEnabled {
+			return false
+		}
+		switch kind {
+		case "proxy-prewarm-relations":
+			return s.kindEnabled("relations")
+		case "proxy-prewarm-boards":
+			return s.kindEnabled("minute")
+		case "proxy-prewarm-stock-kline":
+			return s.kindEnabled("stock-kline")
+		case "proxy-prewarm-end-of-day":
+			if _, disabled := s.options.DisabledKinds["end-of-day"]; disabled {
+				return false
+			}
+			allPartsDisabled := !s.kindEnabled("end-of-day-industry") &&
+				!s.kindEnabled("end-of-day-concept") &&
+				!s.kindEnabled("end-of-day-stock")
+			if allPartsDisabled {
+				return false
+			}
+			return true
+		default:
+			return true
+		}
+	}
+	return true
 }
 
 func endOfDayPartKind(rankType graymarket.RankType) string {
@@ -238,6 +348,9 @@ func endOfDayPartKind(rankType graymarket.RankType) string {
 }
 
 func (s *Scheduler) startJob(ctx context.Context, kind string, current time.Time, tradeDate string) bool {
+	if !s.kindEnabled(kind) {
+		return false
+	}
 	lane := jobLane(kind)
 	key := jobKey(current, kind, tradeDate)
 
@@ -366,6 +479,10 @@ func (s *Scheduler) runJob(parent context.Context, job ScheduledJob, current tim
 		job.Status = JobSkipped
 		job.LastErrorCode, job.LastError = "outside_relation_window", err.Error()
 		job.RetryAt = nil
+	case errors.Is(err, errPrewarmWindowClosed):
+		job.Status = JobSkipped
+		job.LastErrorCode, job.LastError = "outside_prewarm_window", err.Error()
+		job.RetryAt = nil
 	case ctx.Err() != nil && parent.Err() == nil:
 		job.Status = JobFailed
 		job.LastErrorCode, job.LastError = "timeout", ctx.Err().Error()
@@ -399,18 +516,21 @@ func (s *Scheduler) runJob(parent context.Context, job ScheduledJob, current tim
 
 func (s *Scheduler) executionDeadline(job ScheduledJob, startedAt time.Time) (time.Time, error) {
 	deadline := startedAt.Add(policyFor(job.Kind).timeout)
-	if job.Kind != "relations" {
+	if strings.HasPrefix(job.Kind, "proxy-prewarm-") && s.isPrewarmExpired(job, startedAt) {
+		return deadline, errPrewarmWindowClosed
+	}
+	if job.Kind == "relations" || job.Kind == "proxy-prewarm-relations" {
+		cutoff, parseErr := time.ParseInLocation("2006-01-02 15:04", job.TradeDate+" 09:15", s.location)
+		if parseErr != nil {
+			return deadline, fmt.Errorf("invalid relation trade date: %w", parseErr)
+		}
+		if !startedAt.Before(cutoff) {
+			return deadline, errRelationWindowClosed
+		}
+		if cutoff.Before(deadline) {
+			deadline = cutoff
+		}
 		return deadline, nil
-	}
-	cutoff, err := time.ParseInLocation("2006-01-02 15:04", job.TradeDate+" 09:15", s.location)
-	if err != nil {
-		return deadline, fmt.Errorf("invalid relation trade date: %w", err)
-	}
-	if !startedAt.Before(cutoff) {
-		return deadline, errRelationWindowClosed
-	}
-	if cutoff.Before(deadline) {
-		deadline = cutoff
 	}
 	return deadline, nil
 }
@@ -470,6 +590,20 @@ func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current ti
 			return nil
 		}
 		return part.CollectEndOfDayPart(ctx, parseShanghaiTime(tradeDate, "16:00", current), rankType)
+	case "end-of-day-events":
+		events, ok := s.collector.(limitUpCollector)
+		if !ok {
+			return fmt.Errorf("limit-up event collector is unavailable")
+		}
+		exists, err := events.HasLimitUpArchive(ctx, tradeDate)
+		if err != nil {
+			return err
+		}
+		if exists {
+			s.logger.Info("limit-up event archive already available; skipping retry", "trade_date", tradeDate, "at", current)
+			return nil
+		}
+		return events.CollectLimitUpEvents(ctx, parseShanghaiTime(tradeDate, "16:00", current))
 	case "cleanup":
 		return s.collector.CleanupArchivedIntraday(ctx, tradeDate)
 	case "maintenance":
@@ -502,6 +636,23 @@ func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current ti
 			return nil
 		}
 		return s.collector.CollectStockBoardRelations(ctx, tradeDate)
+	case "proxy-prewarm-relations", "proxy-prewarm-boards", "proxy-prewarm-end-of-day", "proxy-prewarm-stock-kline":
+		completed, checkErr := s.isPrewarmTargetCompleted(ctx, job.Kind, tradeDate, current)
+		if checkErr != nil {
+			return checkErr
+		}
+		if completed {
+			return nil
+		}
+		purpose, found := prewarmPurpose(job.Kind)
+		if !found {
+			return fmt.Errorf("unknown prewarm job kind %q", job.Kind)
+		}
+		prewarmer, okService := s.collector.(proxyPrewarmer)
+		if !okService {
+			return fmt.Errorf("proxy prewarmer is unavailable")
+		}
+		return prewarmer.PrepareUpstream(ctx, purpose)
 	case "startup-recovery":
 		return s.recoverArchive(ctx, tradeDate, current)
 	default:
@@ -518,6 +669,17 @@ func (s *Scheduler) recoverLatestArchive(ctx context.Context, current time.Time)
 		return
 	}
 	s.startJob(ctx, "startup-recovery", current, tradeDate)
+}
+
+func (s *Scheduler) recoverLatestEvents(ctx context.Context, current time.Time) {
+	if !s.kindEnabled("end-of-day-events") {
+		return
+	}
+	tradeDate, ok := recoveryTradeDate(s.calendar, current)
+	if !ok {
+		return
+	}
+	s.startJob(ctx, "end-of-day-events", current, tradeDate)
 }
 
 func (s *Scheduler) recoverArchive(ctx context.Context, tradeDate string, current time.Time) error {
@@ -605,6 +767,9 @@ func parseShanghaiTime(tradeDate, clock string, fallback time.Time) time.Time {
 }
 
 func jobLane(kind string) string {
+	if strings.HasPrefix(kind, "proxy-prewarm-") {
+		return "proxy-prewarm"
+	}
 	switch kind {
 	case "minute":
 		return "intraday"
@@ -614,6 +779,8 @@ func jobLane(kind string) string {
 		return "maintenance"
 	case "end-of-day-industry", "end-of-day-concept", "end-of-day-stock":
 		return "archive"
+	case "end-of-day-events":
+		return "event-archive"
 	default:
 		return "archive"
 	}
@@ -644,6 +811,119 @@ func jobKind(current time.Time) string {
 func isTradingMinute(value time.Time) bool {
 	timeOfDay := value.Format("15:04")
 	return timeOfDay >= "09:31" && timeOfDay <= "11:30" || timeOfDay >= "13:01" && timeOfDay <= "15:00"
+}
+
+const prewarmExpiryWindow = 10 * time.Minute
+
+func prewarmJobKind(current time.Time) string {
+	currentHour, currentMinute := current.Hour(), current.Minute()
+	switch {
+	case currentHour == 6 && currentMinute == 55,
+		currentHour == 7 && currentMinute == 25,
+		currentHour == 7 && currentMinute == 55:
+		return "proxy-prewarm-relations"
+	case currentHour == 9 && currentMinute == 26,
+		currentHour == 12 && currentMinute == 56:
+		return "proxy-prewarm-boards"
+	case currentHour == 15 && currentMinute == 55:
+		return "proxy-prewarm-end-of-day"
+	case currentHour == 16 && currentMinute == 10,
+		currentHour == 17 && currentMinute == 25,
+		currentHour == 19 && currentMinute == 55:
+		return "proxy-prewarm-stock-kline"
+	default:
+		return ""
+	}
+}
+
+func prewarmPurpose(kind string) (string, bool) {
+	switch kind {
+	case "proxy-prewarm-relations":
+		return "relations", true
+	case "proxy-prewarm-boards":
+		return "boards", true
+	case "proxy-prewarm-end-of-day":
+		return "end-of-day", true
+	case "proxy-prewarm-stock-kline":
+		return "stock-kline", true
+	default:
+		return "", false
+	}
+}
+
+func (scheduler *Scheduler) isPrewarmExpired(job ScheduledJob, targetTime time.Time) bool {
+	plannedInLocation := job.PlannedAt.In(scheduler.location)
+	targetInLocation := targetTime.In(scheduler.location)
+	if plannedInLocation.Format("2006-01-02") != targetInLocation.Format("2006-01-02") {
+		return true
+	}
+	if plannedInLocation.Hour() < 12 && targetInLocation.Hour() >= 12 {
+		return true
+	}
+	if targetTime.Sub(job.PlannedAt) > prewarmExpiryWindow {
+		return true
+	}
+	return false
+}
+
+func (scheduler *Scheduler) isPrewarmTargetCompleted(ctx context.Context, kind, tradeDate string, current time.Time) (bool, error) {
+	switch kind {
+	case "proxy-prewarm-relations":
+		exists, queryErr := scheduler.collector.HasStockBoardRelations(ctx, tradeDate)
+		if queryErr != nil {
+			return false, queryErr
+		}
+		if exists {
+			scheduler.logger.Info("stock-board relations already synchronized; skipping proxy prewarm", "trade_date", tradeDate, "at", current)
+			return true, nil
+		}
+		return false, nil
+	case "proxy-prewarm-stock-kline":
+		exists, queryErr := scheduler.collector.HasStockKlineArchive(ctx, tradeDate)
+		if queryErr != nil {
+			return false, queryErr
+		}
+		if exists {
+			scheduler.logger.Info("stock-kline archive already available; skipping proxy prewarm", "trade_date", tradeDate, "at", current)
+			return true, nil
+		}
+		return false, nil
+	case "proxy-prewarm-end-of-day":
+		if partCollector, okCollector := scheduler.collector.(archivePartCollector); okCollector {
+			hasAnyEnabled := false
+			allEnabledExist := true
+			for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept, graymarket.RankStock} {
+				if !scheduler.kindEnabled(endOfDayPartKind(rankType)) {
+					continue
+				}
+				hasAnyEnabled = true
+				exists, partErr := partCollector.HasEndOfDayPart(ctx, tradeDate, rankType)
+				if partErr != nil {
+					return false, partErr
+				}
+				if !exists {
+					allEnabledExist = false
+					break
+				}
+			}
+			if hasAnyEnabled && allEnabledExist {
+				scheduler.logger.Info("end-of-day archive already available; skipping proxy prewarm", "trade_date", tradeDate, "at", current)
+				return true, nil
+			}
+			return false, nil
+		}
+		exists, queryErr := scheduler.collector.HasEndOfDayArchive(ctx, tradeDate)
+		if queryErr != nil {
+			return false, queryErr
+		}
+		if exists {
+			scheduler.logger.Info("end-of-day archive already available; skipping proxy prewarm", "trade_date", tradeDate, "at", current)
+			return true, nil
+		}
+		return false, nil
+	default:
+		return false, nil
+	}
 }
 
 func jobKey(current time.Time, kind, tradeDate string) string {

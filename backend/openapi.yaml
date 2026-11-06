@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: ShadowFlow API
-  version: 0.5.0
-  description: 行业、概念分钟榜单、按交易日累积的盘后研究归档、日级特征、未来收益标签，以及可按截面日还原的个股行业/概念归属接口。
+  version: 0.6.0
+  description: 行业、概念分钟榜单、盘后研究归档、个股行业/概念归属，以及独立的涨停事件共现和股性研究接口。
 servers:
   - url: http://127.0.0.1:8080
 security:
@@ -380,6 +380,85 @@ paths:
                   data: { $ref: "#/components/schemas/FocusResult" }
         "400": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/limit-up/quality:
+    get:
+      summary: 涨跌停事件归档的独立质量状态
+      description: 区分未启用、未采集、运行中、失败和完整零事件日；重采失败时保留已发布的完整版本，并单列最近运行结果。
+      parameters:
+        - $ref: "#/components/parameters/TradeDate"
+        - $ref: "#/components/parameters/LimitUpScope"
+      responses:
+        "200":
+          description: 当前日期的事件归档状态
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/LimitUpArchiveQuality" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/limit-up/overview:
+    get:
+      summary: 完整涨跌停事件日和候选股票
+      description: 只读本地同花顺事件库；自然日回看范围内仅涨停、炸板、跌停三池完整日参与统计，空库返回空数组。打开页面不会采集上游数据。
+      parameters:
+        - $ref: "#/components/parameters/AsOf"
+        - $ref: "#/components/parameters/LimitUpDays"
+        - $ref: "#/components/parameters/LimitUpScope"
+      responses:
+        "200":
+          description: 样本覆盖、每日三池总数和窗口内出现过的股票
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/LimitUpOverview" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/limit-up/stocks/{code}:
+    get:
+      summary: 个股涨跌停共现网络和股性
+      description: 不按板块过滤，以完整采集日为共同分母。排序依据为热度折算共现，再按共同次数、代码。缺档不补零，常量序列的 phi 为 null。该结果是描述统计，不代表因果、收益相关或统计显著性。
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[0-9]{6}$' }
+        - $ref: "#/components/parameters/AsOf"
+        - $ref: "#/components/parameters/LimitUpDays"
+        - $ref: "#/components/parameters/LimitUpScope"
+        - name: event
+          in: query
+          schema: { type: string, enum: [seal, touch, down], default: seal }
+          description: seal 为同日收盘涨停，touch 为同日曾触涨停（涨停池与炸板池并集），down 为同日收盘跌停。
+        - name: min_overlap
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 20, default: 3 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 30 }
+      responses:
+        "200":
+          description: 个股画像、共同事件日期、邻居与中心股票事件记录
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/LimitUpAnalysis" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/system/status:
     get:
       summary: 系统和市场状态
@@ -395,6 +474,16 @@ paths:
                     $ref: "#/components/schemas/SystemStatus"
 components:
   parameters:
+    LimitUpDays:
+      name: days
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 366, default: 90 }
+      description: 含截止日在内的自然日回看长度；未采集日不纳入分母。
+    LimitUpScope:
+      name: scope
+      in: query
+      schema: { type: string, enum: ["HS,GEM2STAR", "HS,GEM2STAR,ST,NEW"], default: "HS,GEM2STAR" }
+      description: 市场范围独立存储，不混合不同筛选口径；不保证北交所覆盖。
     BoardType:
       name: type
       in: query
@@ -493,6 +582,171 @@ components:
               meta:
                 $ref: "#/components/schemas/BoardQuoteMeta"
   schemas:
+    LimitUpArchiveRun:
+      type: object
+      required: [run_id, status, started_at, finished_at, fetched_total, page_count, error_code, error_message]
+      properties:
+        run_id: { type: string }
+        status: { type: string, enum: [running, success, partial, failed, skipped] }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        fetched_total: { type: integer }
+        page_count: { type: integer }
+        error_code: { type: string }
+        error_message: { type: string }
+    LimitUpArchiveQuality:
+      type: object
+      required: [trade_date, source, scope, status, scheduled, complete, day, last_run, latest_trade_date]
+      properties:
+        trade_date: { type: string, format: date }
+        source: { type: string, const: ths_limit_up }
+        scope: { type: string }
+        status: { type: string, enum: [disabled, not_collected, running, failed, complete] }
+        scheduled: { type: boolean, description: 此范围的自动盘后事件归档是否已启用。 }
+        complete: { type: boolean }
+        day:
+          oneOf:
+            - $ref: "#/components/schemas/LimitUpDay"
+            - type: "null"
+        last_run:
+          oneOf:
+            - $ref: "#/components/schemas/LimitUpArchiveRun"
+            - type: "null"
+        latest_trade_date: { type: string, description: 该范围不晚于所选日期的最近完整事件日期，无数据时为空。 }
+    LimitUpCoverage:
+      type: object
+      required: [source, scope, from_date, as_of, lookback_days, observed_days, first_date, latest_date, sample_sufficient, minimum_samples]
+      properties:
+        source: { type: string, const: ths_limit_up }
+        scope: { type: string, enum: ["HS,GEM2STAR", "HS,GEM2STAR,ST,NEW"] }
+        from_date: { type: string, format: date }
+        as_of: { type: string, format: date }
+        lookback_days: { type: integer }
+        observed_days: { type: integer, description: 完整采集的交易日数量，包含经确认的空榜单日。 }
+        first_date: { type: string, description: 最早样本日期，空库为空字符串。 }
+        latest_date: { type: string, description: 最近样本日期，空库为空字符串。 }
+        sample_sufficient: { type: boolean, description: 仅表示样本日不少于20，非显著性检验。 }
+        minimum_samples: { type: integer, const: 20 }
+    LimitUpDay:
+      type: object
+      required: [trade_date, fetched_at, sealed_count, broken_count, down_count, touched_count, content_hash]
+      properties:
+        trade_date: { type: string, format: date }
+        fetched_at: { type: string, format: date-time }
+        sealed_count: { type: integer }
+        broken_count: { type: integer }
+        down_count: { type: integer, description: 收盘跌停数，不代表盘中所有触及跌停的股票数。 }
+        touched_count: { type: integer }
+        content_hash: { type: string, description: 规范化事件内容的 SHA-256。 }
+    LimitUpStock:
+      type: object
+      required: [code, name, market_type, touch_days, seal_days, broken_days, down_days, last_seen]
+      properties:
+        code: { type: string, pattern: '^[0-9]{6}$' }
+        name: { type: string }
+        market_type: { type: string }
+        touch_days: { type: integer }
+        seal_days: { type: integer }
+        broken_days: { type: integer }
+        down_days: { type: integer }
+        last_seen: { type: string, format: date }
+    LimitUpOverview:
+      type: object
+      required: [coverage, days, stocks]
+      properties:
+        coverage: { $ref: "#/components/schemas/LimitUpCoverage" }
+        days:
+          type: array
+          items: { $ref: "#/components/schemas/LimitUpDay" }
+        stocks:
+          type: array
+          items: { $ref: "#/components/schemas/LimitUpStock" }
+    LimitUpCategory:
+      type: object
+      required: [label, count]
+      properties:
+        label: { type: string }
+        count: { type: integer }
+    LimitUpProfile:
+      allOf:
+        - $ref: "#/components/schemas/LimitUpStock"
+        - type: object
+          required: [seal_rate, broken_rate, event_frequency, down_frequency, up_to_down_days, open_count_known_days, open_count_unknown_days, opened_days, recovered_days, recovery_rate, mean_open_count, median_first_time, first_time_samples, limit_types, first_time_buckets]
+          properties:
+            seal_rate: { type: [number, "null"], description: 收盘涨停日/触板日，本地重算。 }
+            broken_rate: { type: [number, "null"], description: 炸板池日/触板日。 }
+            event_frequency: { type: [number, "null"], description: 触板日/完整样本日，不是经过上市及停牌校正的概率。 }
+            down_frequency: { type: [number, "null"], description: 收盘跌停日/完整样本日。 }
+            up_to_down_days: { type: integer, description: 同时在炸板池及跌停池的交易日数，曾触涨停后最终跌停。 }
+            open_count_known_days: { type: integer }
+            open_count_unknown_days: { type: integer }
+            opened_days: { type: integer, description: 炸板池日加上收盘涨停且明确正开板次数的日数。 }
+            recovered_days: { type: integer }
+            recovery_rate: { type: [number, "null"], description: 回封日/已知曾开板日。 }
+            mean_open_count: { type: [number, "null"], description: 仅在开板次数非空的记录中求平均。 }
+            median_first_time: { type: string, description: 首次触板上海时间中位数，缺失时为空字符串。 }
+            first_time_samples: { type: integer }
+            limit_types:
+              type: array
+              items: { $ref: "#/components/schemas/LimitUpCategory" }
+            first_time_buckets:
+              type: array
+              items: { $ref: "#/components/schemas/LimitUpCategory" }
+    LimitUpEvent:
+      type: object
+      required: [trade_date, code, name, market_id, market_type, pool, open_count, first_limit_at, last_limit_at, limit_type, high_days, reason, source_seal_rate, change_percent, turnover_rate]
+      properties:
+        trade_date: { type: string, format: date }
+        code: { type: string, pattern: '^[0-9]{6}$' }
+        name: { type: string }
+        market_id: { type: integer, description: 同花顺源市场ID，不是东财市场ID。 }
+        market_type: { type: string }
+        pool: { type: string, enum: [limit_up, open_limit, limit_down] }
+        open_count: { type: [integer, "null"], description: 未知保持null，不补0。 }
+        first_limit_at: { type: [string, "null"], format: date-time }
+        last_limit_at: { type: [string, "null"], format: date-time }
+        limit_type: { type: string }
+        high_days: { type: string, description: 原始几天几板标签，不直接换算成连板数。 }
+        reason: { type: string }
+        source_seal_rate: { type: [number, "null"], description: 源端近一年封板率，仅保留核对，不参与本地指标。 }
+        change_percent: { type: [number, "null"], description: 源端百分数数值，10代表10%。 }
+        turnover_rate: { type: [number, "null"], description: 源端百分数数值，10代表10%。 }
+    LimitUpLink:
+      type: object
+      required: [code, name, market_type, anchor_days, peer_days, overlap_days, jaccard, conditional_probability, reverse_probability, baseline_probability, lift, phi, heat_adjusted_overlap, shared_dates, sample_sufficient]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        market_type: { type: string }
+        anchor_days: { type: integer }
+        peer_days: { type: integer }
+        overlap_days: { type: integer }
+        jaccard: { type: number }
+        conditional_probability: { type: number, description: P(邻居同日事件|中心股票事件)。 }
+        reverse_probability: { type: number, description: P(中心同日事件|邻居事件)。 }
+        baseline_probability: { type: number, description: 邻居事件日数/完整样本日数。 }
+        lift: { type: number, description: 条件共现率除以样本基准频率。 }
+        phi: { type: [number, "null"], description: 二元事件phi系数，常量序列无定义。 }
+        heat_adjusted_overlap: { type: number, description: 共同日累加1/max(1,当天同范围事件池规模减1)。 }
+        shared_dates:
+          type: array
+          items: { type: string, format: date }
+        sample_sufficient: { type: boolean, description: 至少20个完整日且共同事件至少3次，不代表显著或稳定。 }
+    LimitUpAnalysis:
+      type: object
+      required: [coverage, event, min_overlap, total_links, profile, links, events]
+      properties:
+        coverage: { $ref: "#/components/schemas/LimitUpCoverage" }
+        event: { type: string, enum: [seal, touch, down] }
+        min_overlap: { type: integer }
+        total_links: { type: integer, description: 截断前符合最低共现次数的邻居数。 }
+        profile: { $ref: "#/components/schemas/LimitUpProfile" }
+        links:
+          type: array
+          items: { $ref: "#/components/schemas/LimitUpLink" }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/LimitUpEvent" }
     BoardQuoteMeta:
       type: object
       properties:
@@ -693,6 +947,7 @@ components:
         market_status: { type: string, enum: [pre_open, open, lunch_break, closed] }
         trading_day: { type: boolean }
         latest_trading_day: { type: string, format: date }
+        event_research_as_of: { type: string, format: date, description: 盘中股票事件研究的安全截止日，交易日15:30前取前一交易日。 }
         uptime_seconds: { type: integer, format: int64 }
         trading_calendar:
           type: object
@@ -702,6 +957,57 @@ components:
             source: { type: string }
             days_remaining: { type: integer }
             expired: { type: boolean }
+        proxy_pool:
+          $ref: "#/components/schemas/ProxyPoolStatus"
+    ProxyPoolStatus:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        proxy_count: { type: integer }
+        available_count: { type: integer }
+        cooling_count: { type: integer }
+        expired_count: { type: integer }
+        by_protocol:
+          type: object
+          additionalProperties: { type: integer }
+        refreshing: { type: boolean }
+        last_refresh_at: { type: string, format: date-time }
+        last_refresh_error: { type: string }
+        refresh_successes: { type: integer, format: int64 }
+        refresh_errors: { type: integer, format: int64 }
+        requests: { type: integer, format: int64 }
+        proxy_failures: { type: integer, format: int64 }
+        direct_fallbacks: { type: integer, format: int64 }
+        direct_fallback: { type: boolean }
+        strategy: { type: string, enum: [round_robin, random, sticky] }
+        max_attempts: { type: integer }
+        cooling_until: { type: string, format: date-time }
+        workers: { type: integer }
+        busy_workers: { type: integer }
+        lease_acquires: { type: integer, format: int64 }
+        lease_renewals: { type: integer, format: int64 }
+        session_changes: { type: integer, format: int64 }
+        cleanup_errors: { type: integer, format: int64 }
+        prewarms:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProxyPrewarmStatus"
+    ProxyPrewarmStatus:
+      type: object
+      properties:
+        target: { type: string }
+        mode: { type: string, enum: [basic, tls] }
+        job_id: { type: string }
+        state: { type: string }
+        requested: { type: integer }
+        minimum: { type: integer }
+        ready:
+          type: integer
+          description: Last job observation, not a live or reserved proxy count.
+        probed: { type: integer }
+        failed: { type: integer }
+        reason: { type: string }
+        completed_at: { type: string, format: date-time }
     StockResearchPoint:
       type: object
       properties:

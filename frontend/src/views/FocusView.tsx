@@ -13,6 +13,7 @@ import type {
   FocusScanRequest,
   FocusStockCandidate,
 } from '../api/types'
+import { matchesSearchText } from '../pinyinSearch'
 
 const FOCUS_TEMPLATE_KEY = 'shadowflow.focus.templates.v1'
 
@@ -82,12 +83,14 @@ function signedClass(value: number) {
   return value > 0 ? 'positive' : value < 0 ? 'negative' : 'neutral'
 }
 
-export function FocusView({ request, onScan, result, loading, error }: {
+export function FocusView({ request, onScan, result, loading, error, linkageAsOf, onQuickLinkage }: {
   request: FocusScanRequest
   onScan: (value: FocusScanRequest) => void
   result?: FocusResult
   loading: boolean
   error: Error | null
+  linkageAsOf: string
+  onQuickLinkage: (stock: { code: string; name: string }, event: React.MouseEvent<HTMLButtonElement>) => void
 }) {
   const [draft, setDraft] = useState<FocusScanRequest>(request)
   const [mode, setMode] = useState<'concepts' | 'stocks'>('concepts')
@@ -106,7 +109,7 @@ export function FocusView({ request, onScan, result, loading, error }: {
   }, [templates])
   const normalized = query.trim().toLowerCase()
   const records: Array<FocusConceptCandidate | FocusStockCandidate> = mode === 'concepts' ? (result?.concepts ?? []) : (result?.stocks ?? [])
-  const visible = records.filter((record) => !normalized || record.name.toLowerCase().includes(normalized) || record.code.toLowerCase().includes(normalized) || (isFocusStock(record) && record.concepts.some((concept) => concept.name.toLowerCase().includes(normalized))))
+  const visible = records.filter((record) => matchesSearchText(record.name, normalized) || matchesSearchText(record.code, normalized) || (isFocusStock(record) && record.concepts.some((concept) => matchesSearchText(concept.name, normalized))))
   const applied = result?.request ?? request
   const activeConditions = mode === 'concepts' ? applied.concept_conditions : applied.stock_conditions
   const displayFields = Array.from(new Set(activeConditions.map((condition) => condition.field)))
@@ -169,8 +172,8 @@ export function FocusView({ request, onScan, result, loading, error }: {
     {!loading && result && !result.ready && <div className="focus-not-ready"><Crosshair size={28} /><strong>日终数据尚不足 {result.required_days} 个完整交易日</strong><span>当前已累积 {result.trade_dates.length} / {result.required_days} 日{result.trade_dates.length ? `：${result.trade_dates.join('、')}` : ''}</span></div>}
     {result?.ready && <>
       <div className="focus-summary"><span><b>{result.concepts.length}</b>入选概念</span><span><b>{result.stocks.length}</b>入选个股</span><span><b>{result.stats.non_main_board_excluded}</b>非主板剔除</span><span><b>{result.stats.st_excluded}</b>ST 剔除</span></div>
-      <div className="focus-toolbar"><div className="segmented"><button className={mode === 'concepts' ? 'active' : ''} onClick={() => setMode('concepts')}>概念 {result.concepts.length}</button><button className={mode === 'stocks' ? 'active' : ''} onClick={() => setMode('stocks')}>个股 {result.stocks.length}</button></div><label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、代码或概念" /></label></div>
-      <div className="focus-table-wrap"><table className="focus-table"><thead><tr><th>{mode === 'concepts' ? '概念板块' : applied.stock_scope.main_board_only ? '主板个股' : '个股'}</th>{mode === 'stocks' && <th>入选概念</th>}{displayFields.map((field) => <th key={field}>{focusField(field).label}</th>)}</tr></thead><tbody>{visible.map((record) => <tr key={isFocusStock(record) ? `${record.market}-${record.code}` : record.code}><td><strong>{record.name}</strong><small>{record.code}</small></td>{mode === 'stocks' && <td className="focus-concepts">{isFocusStock(record) ? record.concepts.map((concept) => concept.name).join(' · ') || '--' : ''}</td>}{displayFields.map((field) => <FocusValues key={field} days={record.days} field={field} />)}</tr>)}</tbody></table>{!visible.length && <EmptyState icon={<Crosshair size={22} />} title="没有符合条件的记录" detail={`连续 ${applied.consecutive_days} 个交易日需逐日符合当前规则。`} />}</div>
+      <div className="focus-toolbar"><div className="segmented"><button className={mode === 'concepts' ? 'active' : ''} onClick={() => setMode('concepts')}>概念 {result.concepts.length}</button><button className={mode === 'stocks' ? 'active' : ''} onClick={() => setMode('stocks')}>个股 {result.stocks.length}</button></div><label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、代码、概念或拼音" /></label></div>
+      <div className="focus-table-wrap"><table className="focus-table"><thead><tr><th>{mode === 'concepts' ? '概念板块' : applied.stock_scope.main_board_only ? '主板个股' : '个股'}</th>{mode === 'stocks' && <th>入选概念</th>}{displayFields.map((field) => <th key={field}>{focusField(field).label}</th>)}{mode === 'stocks' && <th>联动</th>}</tr></thead><tbody>{visible.map((record) => <tr key={isFocusStock(record) ? `${record.market}-${record.code}` : record.code}><td><strong>{record.name}</strong><small>{record.code}</small></td>{mode === 'stocks' && <td className="focus-concepts">{isFocusStock(record) ? record.concepts.map((concept) => concept.name).join(' · ') || '--' : ''}</td>}{displayFields.map((field) => <FocusValues key={field} days={record.days} field={field} />)}{mode === 'stocks' && <td className="linkage-entry-cell">{isFocusStock(record) && <button type="button" className="linkage-entry-button" disabled={!linkageAsOf} title={linkageAsOf ? `查看 ${record.name} 历史强联动（样本截止 ${linkageAsOf}）` : '筛选结果尚未确定截止日'} onClick={(pointerEvent) => { pointerEvent.stopPropagation(); onQuickLinkage({ code: record.code, name: record.name }, pointerEvent) }}>联动/股性</button>}</td>}</tr>)}</tbody></table>{!visible.length && <EmptyState icon={<Crosshair size={22} />} title="没有符合条件的记录" detail={`连续 ${applied.consecutive_days} 个交易日需逐日符合当前规则。`} />}</div>
       <FocusRejections rejections={result.rejections ?? []} truncated={result.rejections_truncated} />
     </>}
   </section>

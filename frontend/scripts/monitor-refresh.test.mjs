@@ -36,6 +36,10 @@ test('a monitor tick publishes new ranks for both board types and refreshes acti
     await register(['board-quotes', 'concept', 'BK101', '2026-09-15'], false)
     await register(['monitor-previous-close', 'industry', '2026-09-14'], true, true)
     await register(['quality', '2026-09-15'])
+    await register(['runs', '2026-09-15'])
+    await register(['limit-up-overview', '2026-09-15'])
+    await register(['limit-up-stock', '600519', '2026-09-15'])
+    await register(['limit-up-quality', '2026-09-15'])
     version = 2
     await refreshMonitorQueries(client)
     for (const key of [['latest', 'industry'], ['latest', 'concept'], ['system-status'],
@@ -47,6 +51,10 @@ test('a monitor tick publishes new ranks for both board types and refreshes acti
     assert.equal(client.getQueryState(['board-quotes', 'concept', 'BK101', '2026-09-15']).isInvalidated, true)
     assert.equal(calls.get('monitor-previous-close/industry/2026-09-14'), 1)
     assert.equal(calls.get('quality/2026-09-15'), 1)
+    assert.equal(calls.get('runs/2026-09-15'), 1)
+    assert.equal(calls.get('limit-up-overview/2026-09-15'), 1)
+    assert.equal(calls.get('limit-up-stock/600519/2026-09-15'), 1)
+    assert.equal(calls.get('limit-up-quality/2026-09-15'), 1)
     await refreshMonitorQueries(client, true)
     assert.equal(calls.get('monitor-previous-close/industry/2026-09-14'), 2, 'manual refresh reloads the baseline')
   } finally {

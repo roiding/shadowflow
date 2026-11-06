@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/go-chi/chi/v5 v5.5.0
+	github.com/mozillazg/go-pinyin v0.21.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.43.0
 	modernc.org/sqlite v1.56.0

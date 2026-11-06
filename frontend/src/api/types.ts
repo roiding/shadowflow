@@ -66,6 +66,7 @@ export interface SystemStatus {
   market_status: 'pre_open' | 'open' | 'lunch_break' | 'closed'
   trading_day: boolean
   latest_trading_day: string
+  event_research_as_of?: string
   uptime_seconds: number
   trading_calendar: {
     valid_through?: string
@@ -73,6 +74,45 @@ export interface SystemStatus {
     source?: string
     days_remaining: number
     expired: boolean
+  }
+  proxy_pool: {
+    enabled: boolean
+    proxy_count: number
+    available_count: number
+    cooling_count: number
+    expired_count: number
+    by_protocol: Record<string, number>
+    refreshing: boolean
+    last_refresh_at?: string
+    last_refresh_error?: string
+    refresh_successes: number
+    refresh_errors: number
+    requests: number
+    proxy_failures: number
+    direct_fallbacks: number
+    direct_fallback: boolean
+    strategy: 'round_robin' | 'random' | 'sticky'
+    max_attempts: number
+    cooling_until?: string
+    workers?: number
+    busy_workers?: number
+    lease_acquires?: number
+    lease_renewals?: number
+    session_changes?: number
+    cleanup_errors?: number
+    prewarms?: {
+      target: string
+      mode: 'basic' | 'tls'
+      job_id?: string
+      state: string
+      requested: number
+      minimum: number
+      ready: number
+      probed: number
+      failed: number
+      reason?: string
+      completed_at?: string
+    }[]
   }
 }
 

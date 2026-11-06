@@ -1,0 +1,79 @@
+{
+  "status_code": 0,
+  "status_msg": "success",
+  "data": {
+    "date": 20261105,
+    "limit_down_count": {
+      "today": {
+        "num": 2,
+        "open_num": 8,
+        "history_num": 10,
+        "rate": 0.2
+      },
+      "yesterday": {
+        "num": 1,
+        "open_num": 0,
+        "history_num": 1,
+        "rate": 1.0
+      }
+    },
+    "trade_status": {
+      "id": "closed",
+      "name": "已收盘",
+      "start_time": "15:30",
+      "end_time": "23:59:59.999999999"
+    },
+    "limit_up_count": {
+      "today": {
+        "num": 3,
+        "open_num": 2,
+        "history_num": 5,
+        "rate": 0.6
+      },
+      "yesterday": {
+        "num": 4,
+        "open_num": 1,
+        "history_num": 5,
+        "rate": 0.8
+      }
+    },
+    "page": {
+      "limit": 2,
+      "total": 2,
+      "count": 1,
+      "page": 1
+    },
+    "info": [
+      {
+        "code": "001337",
+        "name": "四川黄金",
+        "market_id": 33,
+        "market_type": "HS",
+        "open_num": null,
+        "first_limit_up_time": "1793860707",
+        "last_limit_up_time": "1793861400",
+        "limit_up_type": null,
+        "high_days": null,
+        "reason_type": null,
+        "limit_up_suc_rate": 0.857,
+        "change_rate": 9.55,
+        "turnover_rate": 6.57
+      },
+      {
+        "code": "600519",
+        "name": "贵州茅台",
+        "market_id": 17,
+        "market_type": "HS",
+        "open_num": null,
+        "first_limit_up_time": "1793860707",
+        "last_limit_up_time": "1793861400",
+        "limit_up_type": null,
+        "high_days": null,
+        "reason_type": null,
+        "limit_up_suc_rate": 0.9,
+        "change_rate": 8.5,
+        "turnover_rate": 1.2
+      }
+    ]
+  }
+}

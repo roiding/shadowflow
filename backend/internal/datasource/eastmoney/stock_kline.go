@@ -68,13 +68,12 @@ func (c *Client) FetchStockKlines5m(ctx context.Context, snapshot graymarket.Ran
 	return points, nil
 }
 
-// FetchStockKlines5mIncremental fetches the 241-point one-minute curve for each
-// stock, aggregates it into one complete 48-point five-minute curve, and
-// invokes persist immediately. The callback is called serially, so callers
-// can safely write each batch in its own transaction.
 func (c *Client) FetchStockKlines5mIncremental(ctx context.Context, snapshot graymarket.RankSnapshot, persist func([]graymarket.StockKlinePoint) error) (int, error) {
 	if snapshot.RankType != graymarket.RankStock || snapshot.TradeDate == "" || len(snapshot.Records) == 0 {
 		return 0, fmt.Errorf("invalid stock kline snapshot")
+	}
+	if err := c.PrepareUpstreamRequests(ctx, "stock-kline", len(snapshot.Records), min(4, len(snapshot.Records))); err != nil {
+		return 0, err
 	}
 	parentCtx := ctx
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -165,7 +164,7 @@ func (c *Client) FetchStockKlines5mIncremental(ctx context.Context, snapshot gra
 func (c *Client) fetchStockKlineWithRetry(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
 	var lastErr error
 	for attempt := 1; attempt <= 4; attempt++ {
-		points, err := c.fetchStockKlineWithFallback(ctx, tradeDate, stock)
+		points, err := c.fetchStockKlineFromHistory(ctx, tradeDate, stock)
 		if err == nil {
 			return points, nil
 		}

@@ -900,6 +900,165 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/limit-up/quality": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 涨跌停事件归档的独立质量状态
+         * @description 区分未启用、未采集、运行中、失败和完整零事件日；重采失败时保留已发布的完整版本，并单列最近运行结果。
+         */
+        get: {
+            parameters: {
+                query: {
+                    trade_date: components["parameters"]["TradeDate"];
+                    /** @description 市场范围独立存储，不混合不同筛选口径；不保证北交所覆盖。 */
+                    scope?: components["parameters"]["LimitUpScope"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 当前日期的事件归档状态 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["LimitUpArchiveQuality"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/limit-up/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 完整涨跌停事件日和候选股票
+         * @description 只读本地同花顺事件库；自然日回看范围内仅涨停、炸板、跌停三池完整日参与统计，空库返回空数组。打开页面不会采集上游数据。
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description 截面日期；省略时使用服务当前的 Asia/Shanghai 日期 */
+                    as_of?: components["parameters"]["AsOf"];
+                    /** @description 含截止日在内的自然日回看长度；未采集日不纳入分母。 */
+                    days?: components["parameters"]["LimitUpDays"];
+                    /** @description 市场范围独立存储，不混合不同筛选口径；不保证北交所覆盖。 */
+                    scope?: components["parameters"]["LimitUpScope"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 样本覆盖、每日三池总数和窗口内出现过的股票 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["LimitUpOverview"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                429: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/limit-up/stocks/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 个股涨跌停共现网络和股性
+         * @description 不按板块过滤，以完整采集日为共同分母。排序依据为热度折算共现，再按共同次数、代码。缺档不补零，常量序列的 phi 为 null。该结果是描述统计，不代表因果、收益相关或统计显著性。
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description 截面日期；省略时使用服务当前的 Asia/Shanghai 日期 */
+                    as_of?: components["parameters"]["AsOf"];
+                    /** @description 含截止日在内的自然日回看长度；未采集日不纳入分母。 */
+                    days?: components["parameters"]["LimitUpDays"];
+                    /** @description 市场范围独立存储，不混合不同筛选口径；不保证北交所覆盖。 */
+                    scope?: components["parameters"]["LimitUpScope"];
+                    /** @description seal 为同日收盘涨停，touch 为同日曾触涨停（涨停池与炸板池并集），down 为同日收盘跌停。 */
+                    event?: "seal" | "touch" | "down";
+                    min_overlap?: number;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    code: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 个股画像、共同事件日期、邻居与中心股票事件记录 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["LimitUpAnalysis"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                429: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/status": {
         parameters: {
             query?: never;
@@ -942,6 +1101,177 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        LimitUpArchiveRun: {
+            run_id: string;
+            /** @enum {string} */
+            status: "running" | "success" | "partial" | "failed" | "skipped";
+            /** Format: date-time */
+            started_at: string;
+            /** Format: date-time */
+            finished_at: string | null;
+            fetched_total: number;
+            page_count: number;
+            error_code: string;
+            error_message: string;
+        };
+        LimitUpArchiveQuality: {
+            /** Format: date */
+            trade_date: string;
+            /** @constant */
+            source: "ths_limit_up";
+            scope: string;
+            /** @enum {string} */
+            status: "disabled" | "not_collected" | "running" | "failed" | "complete";
+            /** @description 此范围的自动盘后事件归档是否已启用。 */
+            scheduled: boolean;
+            complete: boolean;
+            day: components["schemas"]["LimitUpDay"] | null;
+            last_run: components["schemas"]["LimitUpArchiveRun"] | null;
+            /** @description 该范围不晚于所选日期的最近完整事件日期，无数据时为空。 */
+            latest_trade_date: string;
+        };
+        LimitUpCoverage: {
+            /** @constant */
+            source: "ths_limit_up";
+            /** @enum {string} */
+            scope: "HS,GEM2STAR" | "HS,GEM2STAR,ST,NEW";
+            /** Format: date */
+            from_date: string;
+            /** Format: date */
+            as_of: string;
+            lookback_days: number;
+            /** @description 完整采集的交易日数量，包含经确认的空榜单日。 */
+            observed_days: number;
+            /** @description 最早样本日期，空库为空字符串。 */
+            first_date: string;
+            /** @description 最近样本日期，空库为空字符串。 */
+            latest_date: string;
+            /** @description 仅表示样本日不少于20，非显著性检验。 */
+            sample_sufficient: boolean;
+            /** @constant */
+            minimum_samples: 20;
+        };
+        LimitUpDay: {
+            /** Format: date */
+            trade_date: string;
+            /** Format: date-time */
+            fetched_at: string;
+            sealed_count: number;
+            broken_count: number;
+            /** @description 收盘跌停数，不代表盘中所有触及跌停的股票数。 */
+            down_count: number;
+            touched_count: number;
+            /** @description 规范化事件内容的 SHA-256。 */
+            content_hash: string;
+        };
+        LimitUpStock: {
+            code: string;
+            name: string;
+            market_type: string;
+            touch_days: number;
+            seal_days: number;
+            broken_days: number;
+            down_days: number;
+            /** Format: date */
+            last_seen: string;
+        };
+        LimitUpOverview: {
+            coverage: components["schemas"]["LimitUpCoverage"];
+            days: components["schemas"]["LimitUpDay"][];
+            stocks: components["schemas"]["LimitUpStock"][];
+        };
+        LimitUpCategory: {
+            label: string;
+            count: number;
+        };
+        LimitUpProfile: components["schemas"]["LimitUpStock"] & {
+            /** @description 收盘涨停日/触板日，本地重算。 */
+            seal_rate: number | null;
+            /** @description 炸板池日/触板日。 */
+            broken_rate: number | null;
+            /** @description 触板日/完整样本日，不是经过上市及停牌校正的概率。 */
+            event_frequency: number | null;
+            /** @description 收盘跌停日/完整样本日。 */
+            down_frequency: number | null;
+            /** @description 同时在炸板池及跌停池的交易日数，曾触涨停后最终跌停。 */
+            up_to_down_days: number;
+            open_count_known_days: number;
+            open_count_unknown_days: number;
+            /** @description 炸板池日加上收盘涨停且明确正开板次数的日数。 */
+            opened_days: number;
+            recovered_days: number;
+            /** @description 回封日/已知曾开板日。 */
+            recovery_rate: number | null;
+            /** @description 仅在开板次数非空的记录中求平均。 */
+            mean_open_count: number | null;
+            /** @description 首次触板上海时间中位数，缺失时为空字符串。 */
+            median_first_time: string;
+            first_time_samples: number;
+            limit_types: components["schemas"]["LimitUpCategory"][];
+            first_time_buckets: components["schemas"]["LimitUpCategory"][];
+        };
+        LimitUpEvent: {
+            /** Format: date */
+            trade_date: string;
+            code: string;
+            name: string;
+            /** @description 同花顺源市场ID，不是东财市场ID。 */
+            market_id: number;
+            market_type: string;
+            /** @enum {string} */
+            pool: "limit_up" | "open_limit" | "limit_down";
+            /** @description 未知保持null，不补0。 */
+            open_count: number | null;
+            /** Format: date-time */
+            first_limit_at: string | null;
+            /** Format: date-time */
+            last_limit_at: string | null;
+            limit_type: string;
+            /** @description 原始几天几板标签，不直接换算成连板数。 */
+            high_days: string;
+            reason: string;
+            /** @description 源端近一年封板率，仅保留核对，不参与本地指标。 */
+            source_seal_rate: number | null;
+            /** @description 源端百分数数值，10代表10%。 */
+            change_percent: number | null;
+            /** @description 源端百分数数值，10代表10%。 */
+            turnover_rate: number | null;
+        };
+        LimitUpLink: {
+            code: string;
+            name: string;
+            market_type: string;
+            anchor_days: number;
+            peer_days: number;
+            overlap_days: number;
+            jaccard: number;
+            /** @description P(邻居同日事件|中心股票事件)。 */
+            conditional_probability: number;
+            /** @description P(中心同日事件|邻居事件)。 */
+            reverse_probability: number;
+            /** @description 邻居事件日数/完整样本日数。 */
+            baseline_probability: number;
+            /** @description 条件共现率除以样本基准频率。 */
+            lift: number;
+            /** @description 二元事件phi系数，常量序列无定义。 */
+            phi: number | null;
+            /** @description 共同日累加1/max(1 */
+            heat_adjusted_overlap: number;
+            shared_dates: string[];
+            /** @description 至少20个完整日且共同事件至少3次，不代表显著或稳定。 */
+            sample_sufficient: boolean;
+        };
+        LimitUpAnalysis: {
+            coverage: components["schemas"]["LimitUpCoverage"];
+            /** @enum {string} */
+            event: "seal" | "touch" | "down";
+            min_overlap: number;
+            /** @description 截断前符合最低共现次数的邻居数。 */
+            total_links: number;
+            profile: components["schemas"]["LimitUpProfile"];
+            links: components["schemas"]["LimitUpLink"][];
+            events: components["schemas"]["LimitUpEvent"][];
+        };
         BoardQuoteMeta: {
             /** Format: date */
             as_of?: string;
@@ -1196,6 +1526,11 @@ export interface components {
             trading_day?: boolean;
             /** Format: date */
             latest_trading_day?: string;
+            /**
+             * Format: date
+             * @description 盘中股票事件研究的安全截止日，交易日15:30前取前一交易日。
+             */
+            event_research_as_of?: string;
             /** Format: int64 */
             uptime_seconds?: number;
             trading_calendar?: {
@@ -1207,6 +1542,64 @@ export interface components {
                 days_remaining?: number;
                 expired?: boolean;
             };
+            proxy_pool?: components["schemas"]["ProxyPoolStatus"];
+        };
+        ProxyPoolStatus: {
+            enabled?: boolean;
+            proxy_count?: number;
+            available_count?: number;
+            cooling_count?: number;
+            expired_count?: number;
+            by_protocol?: {
+                [key: string]: number;
+            };
+            refreshing?: boolean;
+            /** Format: date-time */
+            last_refresh_at?: string;
+            last_refresh_error?: string;
+            /** Format: int64 */
+            refresh_successes?: number;
+            /** Format: int64 */
+            refresh_errors?: number;
+            /** Format: int64 */
+            requests?: number;
+            /** Format: int64 */
+            proxy_failures?: number;
+            /** Format: int64 */
+            direct_fallbacks?: number;
+            direct_fallback?: boolean;
+            /** @enum {string} */
+            strategy?: "round_robin" | "random" | "sticky";
+            max_attempts?: number;
+            /** Format: date-time */
+            cooling_until?: string;
+            workers?: number;
+            busy_workers?: number;
+            /** Format: int64 */
+            lease_acquires?: number;
+            /** Format: int64 */
+            lease_renewals?: number;
+            /** Format: int64 */
+            session_changes?: number;
+            /** Format: int64 */
+            cleanup_errors?: number;
+            prewarms?: components["schemas"]["ProxyPrewarmStatus"][];
+        };
+        ProxyPrewarmStatus: {
+            target?: string;
+            /** @enum {string} */
+            mode?: "basic" | "tls";
+            job_id?: string;
+            state?: string;
+            requested?: number;
+            minimum?: number;
+            /** @description Last job observation, not a live or reserved proxy count. */
+            ready?: number;
+            probed?: number;
+            failed?: number;
+            reason?: string;
+            /** Format: date-time */
+            completed_at?: string;
         };
         StockResearchPoint: {
             /** Format: date */
@@ -1459,6 +1852,10 @@ export interface components {
         };
     };
     parameters: {
+        /** @description 含截止日在内的自然日回看长度；未采集日不纳入分母。 */
+        LimitUpDays: number;
+        /** @description 市场范围独立存储，不混合不同筛选口径；不保证北交所覆盖。 */
+        LimitUpScope: "HS,GEM2STAR" | "HS,GEM2STAR,ST,NEW";
         BoardType: "industry" | "concept";
         BoardTypePath: "industry" | "concept";
         Code: string;

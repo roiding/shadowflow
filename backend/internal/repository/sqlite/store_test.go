@@ -1472,6 +1472,22 @@ func TestDailyClosePaginationSearchAndSort(t *testing.T) {
 	if total != 0 || len(page) != 0 {
 		t.Fatalf("LIKE wildcard was not escaped: total=%d records=%+v", total, page)
 	}
+	for _, search := range []string{"payh", "pinganyinhang", "000001"} {
+		page, total, err = store.DailyClosePage(ctx, graymarket.RankStock, "2026-08-12", search, "rank", false, 10, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if total != 1 || len(page) != 1 || page[0].Code != "000001" {
+			t.Fatalf("pinyin search %q failed: total=%d records=%+v", search, total, page)
+		}
+	}
+	page, total, err = store.DailyClosePage(ctx, graymarket.RankStock, "2026-08-12", "wka", "rank", false, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(page) != 1 || page[0].Code != "000002" {
+		t.Fatalf("latin suffix pinyin search failed: total=%d records=%+v", total, page)
+	}
 	selected, err := store.DailyCloseStocks(ctx, "2026-08-12", []string{"000002", "000001", "000001", "999999"})
 	if err != nil {
 		t.Fatal(err)

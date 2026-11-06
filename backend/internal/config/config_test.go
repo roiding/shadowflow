@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoadColdDatabasePath(t *testing.T) {
 	t.Setenv("SHADOWFLOW_COLD_DATABASE_PATH", " /data/history.db ")
@@ -24,6 +27,26 @@ func TestLoadSchedulerEnabledByDefault(t *testing.T) {
 	}
 	if !cfg.SchedulerEnabled {
 		t.Fatal("SchedulerEnabled = false, want true")
+	}
+}
+
+func TestLoadLimitUpArchiveDisabledByDefault(t *testing.T) {
+	t.Setenv("SHADOWFLOW_LIMIT_UP_ARCHIVE_ENABLED", "")
+	t.Setenv("SHADOWFLOW_LIMIT_UP_SCOPE", "")
+	t.Setenv("SHADOWFLOW_SCHEDULER_DISABLED_KINDS", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.LimitUpArchiveEnabled {
+		t.Fatal("LimitUpArchiveEnabled = true, want false")
+	}
+	if cfg.LimitUpScope != "HS,GEM2STAR" {
+		t.Fatalf("LimitUpScope = %q, want default scope", cfg.LimitUpScope)
+	}
+	if len(cfg.SchedulerDisabledKinds) != 0 {
+		t.Fatalf("existing scheduler disabled kinds changed: %#v", cfg.SchedulerDisabledKinds)
 	}
 }
 
@@ -124,6 +147,42 @@ func TestLoadPropagatesSecurityAndConcurrencyOptions(t *testing.T) {
 	}
 }
 
+func TestLoadProxyPoolOptions(t *testing.T) {
+	t.Setenv("SHADOWFLOW_PROXY_POOL_URL", " https://pool.example/proxies ")
+	t.Setenv("SHADOWFLOW_PROXY_POOL_TOKEN", " token ")
+	t.Setenv("SHADOWFLOW_PROXY_POOL_REFRESH_SECONDS", "120")
+	t.Setenv("SHADOWFLOW_PROXY_POOL_REQUEST_TIMEOUT_SECONDS", "4")
+	t.Setenv("SHADOWFLOW_PROXY_POOL_MAX_ATTEMPTS", "5")
+	t.Setenv("SHADOWFLOW_PROXY_POOL_FAILURE_LIMIT", "3")
+	t.Setenv("SHADOWFLOW_PROXY_POOL_COOLDOWN_SECONDS", "45")
+	t.Setenv("SHADOWFLOW_PROXY_POOL_DIRECT_FALLBACK", "true")
+	t.Setenv("SHADOWFLOW_PROXY_POOL_PROTOCOLS", " http,socks5 ")
+	t.Setenv("SHADOWFLOW_PROXY_POOL_STRATEGY", "random")
+	t.Setenv("SHADOWFLOW_PROXY_POOL_MAX_PROXIES", "20")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProxyPoolURL != "https://pool.example/proxies" || cfg.ProxyPoolToken != "token" ||
+		cfg.ProxyPoolRefreshEvery != 2*time.Minute || cfg.ProxyPoolRequestTimeout != 4*time.Second ||
+		cfg.ProxyPoolMaxAttempts != 5 || cfg.ProxyPoolFailureLimit != 3 ||
+		cfg.ProxyPoolCooldown != 45*time.Second || !cfg.ProxyPoolDirectFallback ||
+		len(cfg.ProxyPoolProtocols) != 2 || cfg.ProxyPoolStrategy != "random" || cfg.ProxyPoolMaxProxies != 20 {
+		t.Fatalf("unexpected proxy options: %+v", cfg)
+	}
+
+	t.Setenv("SHADOWFLOW_PROXY_POOL_REFRESH_SECONDS", "1")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid refresh interval to be rejected")
+	}
+	t.Setenv("SHADOWFLOW_PROXY_POOL_REFRESH_SECONDS", "120")
+	t.Setenv("SHADOWFLOW_PROXY_POOL_STRATEGY", "least-recently-used")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected unsupported strategy to be rejected")
+	}
+}
+
 func TestLoadAllowsEmptyTokenByDefault(t *testing.T) {
 	t.Setenv("SHADOWFLOW_API_TOKEN", "")
 	cfg, err := Load()
@@ -132,6 +191,36 @@ func TestLoadAllowsEmptyTokenByDefault(t *testing.T) {
 	}
 	if cfg.APIToken != "" {
 		t.Fatalf("unexpected API token: %q", cfg.APIToken)
+	}
+}
+
+func TestLoadProxyPrewarmDefaultsAndValidation(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProxyPoolPrewarmCount != 8 || cfg.ProxyPoolPrewarmTimeout != 120*time.Second ||
+		cfg.ProxyPoolAcquireTimeout != 30*time.Second || cfg.ProxyPoolPollEvery != 2*time.Second || cfg.ProxyPoolCooldown != 300*time.Second {
+		t.Fatal("unexpected managed proxy defaults")
+	}
+	t.Setenv("SHADOWFLOW_PROXY_POOL_SOURCE_IDS", "public-one, public-two")
+	cfg, err = Load()
+	if err != nil || len(cfg.ProxyPoolSourceIDs) != 2 || cfg.ProxyPoolSourceIDs[1] != "public-two" {
+		t.Fatalf("source scope was not loaded: %v", err)
+	}
+	for _, entry := range []struct{ key, value string }{
+		{"SHADOWFLOW_PROXY_POOL_PREWARM_COUNT", "0"},
+		{"SHADOWFLOW_PROXY_POOL_PREWARM_COUNT", "101"},
+		{"SHADOWFLOW_PROXY_POOL_PREWARM_TIMEOUT_SECONDS", "601"},
+		{"SHADOWFLOW_PROXY_POOL_POLL_SECONDS", "0"},
+		{"SHADOWFLOW_PROXY_POOL_ACQUIRE_TIMEOUT_SECONDS", "121"},
+	} {
+		t.Run(entry.key+entry.value, func(test *testing.T) {
+			test.Setenv(entry.key, entry.value)
+			if _, err := Load(); err == nil {
+				test.Fatal("invalid prewarm configuration accepted")
+			}
+		})
 	}
 }
 

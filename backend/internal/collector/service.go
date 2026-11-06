@@ -105,6 +105,8 @@ type Service struct {
 	// degraded stock archives skip the quote-eligibility filter and keep the
 	// full darktrade universe, since without quotes no stock would qualify.
 	allowMissingQuotes bool
+	limitUpSource      LimitUpSource
+	limitUpScope       string
 }
 
 func New(source Source, store store, logger *slog.Logger) *Service {
@@ -137,10 +139,16 @@ func (s *Service) CollectBoards(ctx context.Context, snapshotAt time.Time) error
 }
 
 func (s *Service) CollectDailyClose(ctx context.Context, snapshotAt time.Time) error {
+	if err := s.PrepareUpstream(ctx, "daily-close"); err != nil {
+		return err
+	}
 	return s.collect(ctx, graymarket.RankStock, graymarket.SnapshotDailyClose, snapshotAt.Format("20060102"), snapshotAt)
 }
 
 func (s *Service) CollectEndOfDay(ctx context.Context, runAt time.Time) error {
+	if err := s.PrepareUpstream(ctx, "end-of-day"); err != nil {
+		return err
+	}
 	closeAt := time.Date(runAt.Year(), runAt.Month(), runAt.Day(), 15, 0, 0, 0, runAt.Location())
 	date := runAt.Format("20060102")
 	tradeDate := runAt.Format("2006-01-02")
@@ -166,6 +174,9 @@ func (s *Service) CollectEndOfDay(ctx context.Context, runAt time.Time) error {
 }
 
 func (s *Service) CollectEndOfDayPart(ctx context.Context, runAt time.Time, rankType graymarket.RankType) error {
+	if err := s.PrepareUpstream(ctx, "end-of-day"); err != nil {
+		return err
+	}
 	closeAt := time.Date(runAt.Year(), runAt.Month(), runAt.Day(), 15, 0, 0, 0, runAt.Location())
 	return s.collectMoneyArchive(ctx, rankType, runAt.Format("20060102"), closeAt, runAt)
 }
@@ -369,6 +380,10 @@ func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error
 			run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "storage_error", err.Error()
 			return finish(err)
 		}
+	}
+	if err := s.PrepareUpstreamRequests(ctx, "stock-kline", len(records), min(4, len(records))); err != nil {
+		run.Status, run.ErrorCode, run.ErrorMessage = repository.RunFailed, "proxy_prewarm_failed", err.Error()
+		return finish(err)
 	}
 	snapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: graymarket.RankStock,
 		SnapshotAt: time.Date(runAt.Year(), runAt.Month(), runAt.Day(), 15, 0, 0, 0, runAt.Location()), Records: records}

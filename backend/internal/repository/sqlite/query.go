@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/roiding/shadowflow/internal/graymarket"
 	"github.com/roiding/shadowflow/internal/repository"
@@ -233,6 +234,27 @@ func scanStockResearchRows(rows *sql.Rows, tradeDate string) ([]graymarket.Stock
 	return result, rows.Err()
 }
 
+// dailyCloseSearchWhere matches name/code substrings; ASCII queries also match
+// the name's full pinyin and initials, so "payh" finds 平安银行.
+func dailyCloseSearchWhere(search string) (string, []any) {
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(search)
+	pattern := "%" + escaped + "%"
+	if isASCII(search) {
+		return ` AND (name LIKE ? ESCAPE '\' OR code LIKE ? ESCAPE '\' OR pinyin_full(name) LIKE ? ESCAPE '\' OR pinyin_initials(name) LIKE ? ESCAPE '\')`,
+			[]any{pattern, pattern, pattern, pattern}
+	}
+	return ` AND (name LIKE ? ESCAPE '\' OR code LIKE ? ESCAPE '\')`, []any{pattern, pattern}
+}
+
+func isASCII(text string) bool {
+	for index := 0; index < len(text); index++ {
+		if text[index] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Store) boardMoneyRecords(ctx context.Context, where string, args ...any) ([]graymarket.RankRecord, error) {
 	rows, err := s.readDB().QueryContext(ctx, `SELECT snapshot_at,trade_date,rank_type,rank,market,code,name,
 dark_money,regular_money,main_money_inflow,money_available,source_time,fetched_at
@@ -288,10 +310,9 @@ func (s *Store) DailyClosePage(ctx context.Context, rankType graymarket.RankType
 	where := `trade_date=? AND snapshot_kind='daily_close' AND rank_type=?`
 	args := []any{tradeDate, string(rankType)}
 	if search != "" {
-		where += ` AND (name LIKE ? ESCAPE '\' OR code LIKE ? ESCAPE '\')`
-		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(search)
-		pattern := "%" + escaped + "%"
-		args = append(args, pattern, pattern)
+		clause, searchArgs := dailyCloseSearchWhere(search)
+		where += clause
+		args = append(args, searchArgs...)
 	}
 	var total int
 	if err := s.readDB().QueryRowContext(ctx, `SELECT count(*) FROM rank_snapshot WHERE `+where, args...).Scan(&total); err != nil {
@@ -329,10 +350,9 @@ func (s *Store) DailyCloseRevisionPage(ctx context.Context, revisionID string, r
 	where := `trade_date=? AND snapshot_kind='daily_close' AND rank_type=?`
 	args := []any{tradeDate, string(rankType)}
 	if search != "" {
-		where += ` AND (name LIKE ? ESCAPE '\' OR code LIKE ? ESCAPE '\')`
-		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(search)
-		pattern := "%" + escaped + "%"
-		args = append(args, pattern, pattern)
+		clause, searchArgs := dailyCloseSearchWhere(search)
+		where += clause
+		args = append(args, searchArgs...)
 	}
 	var total int
 	if err := s.readDB().QueryRowContext(ctx, `SELECT count(*) FROM rank_snapshot WHERE `+where, args...).Scan(&total); err != nil {

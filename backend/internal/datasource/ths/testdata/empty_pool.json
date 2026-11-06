@@ -1,0 +1,48 @@
+{
+  "status_code": 0,
+  "status_msg": "success",
+  "data": {
+    "date": 20261105,
+    "trade_status": {
+      "id": "closed",
+      "name": "已收盘",
+      "start_time": "15:30",
+      "end_time": "23:59:59.999999999"
+    },
+    "limit_up_count": {
+      "today": {
+        "num": 0,
+        "open_num": 0,
+        "history_num": 0,
+        "rate": 0.0
+      },
+      "yesterday": {
+        "num": 0,
+        "open_num": 0,
+        "history_num": 0,
+        "rate": 0.0
+      }
+    },
+    "limit_down_count": {
+      "today": {
+        "num": 0,
+        "open_num": 4,
+        "history_num": 4,
+        "rate": 0.0
+      },
+      "yesterday": {
+        "num": 0,
+        "open_num": 0,
+        "history_num": 0,
+        "rate": 0.0
+      }
+    },
+    "page": {
+      "limit": 100,
+      "total": 0,
+      "count": 0,
+      "page": 0
+    },
+    "info": []
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "status_code": 0,
+  "status_msg": "success",
+  "data": {
+    "code": 0,
+    "msg": "请求成功",
+    "trade_day": false,
+    "prev_dates": [
+      "20261030"
+    ],
+    "next_dates": [
+      "20261102"
+    ]
+  }
+}

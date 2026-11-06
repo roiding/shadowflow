@@ -393,7 +393,8 @@ func TestLatestTradingDayUsesPreviousWeekdayOnWeekend(t *testing.T) {
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/system/status", nil))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"latest_trading_day":`) ||
-		!strings.Contains(response.Body.String(), `"trading_calendar":`) {
+		!strings.Contains(response.Body.String(), `"trading_calendar":`) ||
+		!strings.Contains(response.Body.String(), `"proxy_pool":{"enabled":false`) {
 		t.Fatalf("status response did not expose latest trading day: status=%d body=%s", response.Code, response.Body.String())
 	}
 }

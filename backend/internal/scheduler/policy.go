@@ -1,6 +1,9 @@
 package scheduler
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type jobPolicy struct {
 	timeout     time.Duration
@@ -9,6 +12,9 @@ type jobPolicy struct {
 }
 
 func policyFor(kind string) jobPolicy {
+	if strings.HasPrefix(kind, "proxy-prewarm-") {
+		return jobPolicy{timeout: 8 * time.Minute, maxAttempts: 2, retryAfter: time.Minute}
+	}
 	switch kind {
 	case "minute":
 		return jobPolicy{timeout: 50 * time.Second, maxAttempts: 2, retryAfter: 15 * time.Second}
@@ -22,6 +28,8 @@ func policyFor(kind string) jobPolicy {
 		return jobPolicy{timeout: 15 * time.Minute, maxAttempts: 5, retryAfter: time.Minute}
 	case "end-of-day-stock":
 		return jobPolicy{timeout: 30 * time.Minute, maxAttempts: 5, retryAfter: time.Minute}
+	case "end-of-day-events":
+		return jobPolicy{timeout: 10 * time.Minute, maxAttempts: 3, retryAfter: time.Minute}
 	case "stock-kline":
 		return jobPolicy{timeout: 90 * time.Minute, maxAttempts: 4, retryAfter: 5 * time.Minute}
 	case "relations":

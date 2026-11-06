@@ -1,0 +1,81 @@
+{
+  "status_code": 0,
+  "status_msg": "success",
+  "data": {
+    "date": 20261105,
+    "trade_status": {
+      "id": "closed",
+      "name": "已收盘",
+      "start_time": "15:30",
+      "end_time": "23:59:59.999999999"
+    },
+    "limit_up_count": {
+      "today": {
+        "num": 3,
+        "open_num": 2,
+        "history_num": 5,
+        "rate": 0.6
+      },
+      "yesterday": {
+        "num": 4,
+        "open_num": 1,
+        "history_num": 5,
+        "rate": 0.8
+      }
+    },
+    "limit_down_count": {
+      "today": {
+        "num": 2,
+        "open_num": 8,
+        "history_num": 10,
+        "rate": 0.2
+      },
+      "yesterday": {
+        "num": 1,
+        "open_num": 0,
+        "history_num": 1,
+        "rate": 1.0
+      }
+    },
+    "page": {
+      "limit": 2,
+      "total": 2,
+      "count": 1,
+      "page": 1
+    },
+    "info": [
+      {
+        "code": "600001",
+        "name": "邯郸钢铁",
+        "market_id": 17,
+        "market_type": "HS",
+        "open_num": null,
+        "first_limit_up_time": null,
+        "last_limit_up_time": null,
+        "limit_up_type": null,
+        "high_days": null,
+        "reason_type": null,
+        "limit_up_suc_rate": 0.75,
+        "change_rate": -10.0,
+        "turnover_rate": 3.2,
+        "change_tag": "LIMIT_DOWN"
+      },
+      {
+        "code": "002002",
+        "name": "鸿达兴业",
+        "market_id": 33,
+        "market_type": "HS",
+        "open_num": 2,
+        "first_limit_up_time": null,
+        "last_limit_up_time": null,
+        "limit_up_type": null,
+        "high_days": null,
+        "reason_type": null,
+        "limit_up_suc_rate": 0.5,
+        "change_rate": -9.97,
+        "turnover_rate": 8.1,
+        "change_tag": "LIMIT_DOWN"
+      }
+    ]
+  }
+}

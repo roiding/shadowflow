@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Activity, AlertTriangle, BarChart3, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Columns3, Crosshair, Download, Gauge, Info, LineChart, RefreshCw, RotateCcw, Search, Server, Table2, Wifi, WifiOff } from 'lucide-react'
 import { api } from './api/client'
 import { UNAUTHORIZED_EVENT } from './auth'
 import { TokenGate } from './TokenGate'
+import { BoardCombobox } from './BoardCombobox'
 import type { BoardQuoteMeta, BoardStockQuote, FocusResult, FocusScanRequest, RankRecord, RankType, SystemStatus } from './api/types'
 import { continuousMetricValues } from './continuousSeries'
 import { chartMetricValue, metricAvailable } from './chartMetrics'
@@ -12,11 +13,27 @@ import type { ControlRankChange, MonitorSortKey } from './monitorRankings'
 import { quoteRefreshInterval, refreshMonitorQueries } from './monitorRefresh'
 import { compareConstituents, constituentSort, showConstituentDarkData } from './constituents'
 import type { ConstituentSortKey } from './constituents'
+import { matchesSearchText } from './pinyinSearch'
 import { FocusView } from './views/FocusView'
 import { QualityView } from './views/QualityView'
+import { LinkageView } from './views/LinkageView'
+import { LinkageQuickPanel } from './LinkageQuickPanel'
+import {
+  applyLinkageURL,
+  buildViewSearchParams,
+  createLinkageContext,
+  isLinkageSourceView,
+  readLinkageContext,
+  resolveMonitorResearchAsOf,
+  resolveHistoricalLinkageAsOf,
+  sourceLinkageAsOf,
+  type LinkageContext,
+  type LinkageQuickTarget,
+  type LinkageSourceView,
+} from './linkageNavigation'
 
 type BoardType = Exclude<RankType, 'stock'>
-type View = 'monitor' | 'focus' | 'history' | 'stocks' | 'quality'
+type View = 'monitor' | 'focus' | 'linkage' | 'history' | 'stocks' | 'quality'
 type Metric = 'dark_money' | 'regular_money' | 'main_money_inflow' | 'dark_activity' | 'dark_inflow_ratio' | 'change_pct' | 'rank' | 'up_count'
 type SortDirection = 'asc' | 'desc'
 type SortState<Key extends string> = { key: Key; direction: SortDirection }
@@ -196,6 +213,19 @@ function ColumnPicker<Key extends string>({ label, columns, visible, onChange }:
   </div>
 }
 
+function initialAppState() {
+  const searchParams = new URLSearchParams(window.location.search)
+  const requestedView = searchParams.get('view')
+  const view: View = requestedView === 'focus' || requestedView === 'linkage' || requestedView === 'history' || requestedView === 'stocks' || requestedView === 'quality'
+    ? requestedView
+    : 'monitor'
+  const linkageContext = readLinkageContext(searchParams) ?? createLinkageContext()
+  const sourceView = view === 'linkage' && isLinkageSourceView(searchParams.get('source'))
+    ? searchParams.get('source') as LinkageSourceView
+    : null
+  return { view, linkageContext, sourceView }
+}
+
 function App() {
   const [authRequired, setAuthRequired] = useState(false)
   const queryClient = useQueryClient()
@@ -205,7 +235,17 @@ function App() {
     window.addEventListener(UNAUTHORIZED_EVENT, listener)
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, listener)
   }, [])
-  const [view, setView] = useState<View>('monitor')
+  const [initialState] = useState(initialAppState)
+  const [view, setView] = useState<View>(initialState.view)
+  const [linkageContext, setLinkageContext] = useState<LinkageContext>(initialState.linkageContext)
+  const [linkageSourceView, setLinkageSourceView] = useState<LinkageSourceView | null>(initialState.sourceView)
+  const [quickTarget, setQuickTarget] = useState<LinkageQuickTarget | null>(null)
+  const [monitorMounted, setMonitorMounted] = useState(initialState.view === 'monitor')
+  const [focusMounted, setFocusMounted] = useState(initialState.view === 'focus')
+  const quickReturnFocusRef = useRef<HTMLElement | null>(null)
+  const [sourcePages, setSourcePages] = useState({ monitor: 1, constituent: 1 })
+  const sourcePagesRef = useRef(sourcePages)
+  const focusScrollRef = useRef(0)
   const [boardType, setBoardType] = useState<BoardType>('industry')
   const [selectedCodes, setSelectedCodes] = useState<Record<BoardType, string>>({ industry: '', concept: '' })
   const selectedCode = selectedCodes[boardType]
@@ -217,6 +257,7 @@ function App() {
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshSeconds, setRefreshSeconds] = useState(60)
   const [qualityDate, setQualityDate] = useState('')
+  const [qualityScope, setQualityScope] = useState('')
   const [focusRequest, setFocusRequest] = useState<FocusScanRequest>(DEFAULT_FOCUS_REQUEST)
   const [historyFrom, setHistoryFrom] = useState(localDate(new Date(Date.now() - 30 * 86400000)))
   const [historyTo, setHistoryTo] = useState(localDate())
@@ -228,6 +269,28 @@ function App() {
   const [stockSort, setStockSort] = useState<SortState<keyof RankRecord>>({ key: 'rank', direction: 'asc' })
   const [stockPage, setStockPage] = useState(1)
   const [debouncedStockQuery, setDebouncedStockQuery] = useState('')
+
+  useEffect(() => {
+    sourcePagesRef.current = sourcePages
+  }, [sourcePages])
+
+  useEffect(() => {
+    if (view === 'monitor') {
+      setMonitorMounted(true)
+    }
+    if (view === 'focus') {
+      setFocusMounted(true)
+    }
+  }, [view])
+
+  const handleSourcePagesChange = useCallback((pages: { monitor: number; constituent: number }) => {
+    sourcePagesRef.current = pages
+    setSourcePages((current) =>
+      current.monitor === pages.monitor && current.constituent === pages.constituent
+        ? current
+        : pages,
+    )
+  }, [])
 
   const refreshInterval = useMemo(() => autoRefresh ? jitterInterval(refreshSeconds * 1000) : false, [autoRefresh, refreshSeconds])
   // While the Token Gate is shown every query keeps polling into 401s (and
@@ -296,22 +359,25 @@ function App() {
   const focusScan = useMutation({
     mutationFn: async (request: FocusScanRequest) => (await api.focusScan(request)).data as FocusResult,
   })
+  const monitorLinkageAsOf = resolveMonitorResearchAsOf(statusQuery.data, previousDate)
+  const focusLinkageAsOf = resolveHistoricalLinkageAsOf(focusScan.data?.as_of ?? focusRequest.as_of)
+  const stockLinkageAsOf = resolveHistoricalLinkageAsOf(stockDate)
 
   useEffect(() => {
-    if (authRequired || refreshInterval === false) return
+    if (authRequired || refreshInterval === false || view !== 'monitor') return
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') void refreshMonitorQueries(queryClient)
     }, refreshInterval)
     return () => window.clearInterval(timer)
-  }, [authRequired, refreshInterval, queryClient])
+  }, [authRequired, refreshInterval, queryClient, view])
 
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === 'visible' && !authRequired) void queryClient.invalidateQueries()
+      if (document.visibilityState === 'visible' && !authRequired && view === 'monitor') void refreshMonitorQueries(queryClient)
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => document.removeEventListener('visibilitychange', onVisible)
-  }, [queryClient, authRequired])
+  }, [queryClient, authRequired, view])
 
   useEffect(() => {
     if (!latestTradingDay) return
@@ -320,6 +386,151 @@ function App() {
     setHistoryDate((current) => current || latestTradingDay)
     setFocusRequest((current) => current.as_of ? current : { ...current, as_of: latestTradingDay })
   }, [latestTradingDay])
+
+  useEffect(() => {
+    if (initialState.linkageContext.asOf) {
+      return
+    }
+    const preferredDate = resolveMonitorResearchAsOf(statusQuery.data, previousDate)
+    if (!preferredDate) {
+      return
+    }
+    setLinkageContext((current) => current.asOf ? current : { ...current, asOf: preferredDate })
+  }, [initialState.linkageContext.asOf, previousDate, statusQuery.data])
+
+  const syncURL = useCallback((nextView: View, nextContext: LinkageContext, nextSource: LinkageSourceView | null, mode: 'push' | 'replace') => {
+    if (nextView === 'linkage' && !nextContext.asOf) {
+      return
+    }
+    const params = buildViewSearchParams(nextView, nextContext, nextSource)
+    const nextSearch = params.toString()
+    const currentSearch = window.location.search.replace(/^\?/, '')
+    if (nextSearch === currentSearch) {
+      return
+    }
+    const nextURL = nextView === 'linkage'
+      ? applyLinkageURL(window.location.href, nextContext, nextSource ?? undefined)
+      : `${window.location.pathname}?${nextSearch}`
+    if (mode === 'push') {
+      window.history.pushState(window.history.state, '', nextURL)
+    } else {
+      window.history.replaceState(window.history.state, '', nextURL)
+    }
+  }, [])
+
+  useEffect(() => {
+    syncURL(view, linkageContext, linkageSourceView, 'replace')
+  }, [view, linkageContext, linkageSourceView, syncURL])
+
+  useEffect(() => {
+    const restoreFromHistory = () => {
+      const params = new URLSearchParams(window.location.search)
+      const requestedView = params.get('view')
+      const nextView: View = requestedView === 'focus' || requestedView === 'linkage' || requestedView === 'history' || requestedView === 'stocks' || requestedView === 'quality'
+        ? requestedView
+        : 'monitor'
+      const nextContext = readLinkageContext(params)
+      const source = nextView === 'linkage' ? params.get('source') : null
+      setView(nextView)
+      if (nextView === 'monitor') {
+        setMonitorMounted(true)
+      }
+      if (nextView === 'focus') {
+        setFocusMounted(true)
+      }
+      if (nextContext) {
+        setLinkageContext(nextContext)
+      }
+      setLinkageSourceView(isLinkageSourceView(source) ? source : null)
+      setQuickTarget(null)
+      const appScroll = window.history.state?.appScroll
+      if (appScroll) {
+        if (nextView === 'monitor') {
+          setSourcePages({
+            monitor: appScroll.monitorPage ?? 1,
+            constituent: appScroll.constituentPage ?? 1,
+          })
+          window.requestAnimationFrame(() => {
+            document.querySelector('.constituent-panel')?.scrollIntoView({ block: 'start' })
+          })
+        } else if (nextView === 'focus') {
+          window.requestAnimationFrame(() => window.scrollTo({ top: appScroll.focusScrollY ?? 0 }))
+        }
+      }
+    }
+    window.addEventListener('popstate', restoreFromHistory)
+    return () => window.removeEventListener('popstate', restoreFromHistory)
+  }, [])
+
+  const navigateToView = (
+    nextView: View,
+    options?: {
+      context?: LinkageContext
+      source?: LinkageSourceView | null
+      replace?: boolean
+      appScroll?: { monitorPage?: number; constituentPage?: number; focusScrollY?: number }
+    },
+  ) => {
+    if (view === 'focus') {
+      focusScrollRef.current = window.scrollY
+    }
+    const nextContext = options?.context ?? linkageContext
+    const nextSource = options?.source === undefined
+      ? (nextView === 'linkage' && linkageContext.stockCode ? linkageSourceView : null)
+      : options.source
+    const params = buildViewSearchParams(nextView, nextContext, nextSource)
+    const method = options?.replace ? 'replaceState' : 'pushState'
+    const currentScroll = {
+      monitorPage: sourcePagesRef.current.monitor,
+      constituentPage: sourcePagesRef.current.constituent,
+      focusScrollY: view === 'focus' ? window.scrollY : focusScrollRef.current,
+    }
+    if (nextView !== view) {
+      window.history.replaceState(
+        { ...window.history.state, appScroll: currentScroll },
+        '',
+        window.location.href,
+      )
+    }
+    window.history[method](
+      { view: nextView, appScroll: options?.appScroll ?? currentScroll },
+      '',
+      `${window.location.pathname}?${params.toString()}`,
+    )
+    setView(nextView)
+    if (nextView === 'monitor') {
+      setMonitorMounted(true)
+    }
+    if (nextView === 'focus') {
+      setFocusMounted(true)
+    }
+    setLinkageContext(nextContext)
+    setLinkageSourceView(nextSource)
+  }
+
+  const returnToSourcePage = () => {
+    const sourceView = linkageSourceView
+    if (!sourceView) {
+      navigateToView('monitor')
+      return
+    }
+    const appScroll = {
+      monitorPage: sourcePagesRef.current.monitor,
+      constituentPage: sourcePagesRef.current.constituent,
+      focusScrollY: focusScrollRef.current,
+    }
+    navigateToView(sourceView, {
+      source: null,
+      appScroll,
+    })
+    if (sourceView === 'monitor') {
+      window.requestAnimationFrame(() => {
+        document.querySelector('.constituent-panel')?.scrollIntoView({ block: 'start' })
+      })
+    } else if (sourceView === 'focus') {
+      window.requestAnimationFrame(() => window.scrollTo({ top: appScroll.focusScrollY }))
+    }
+  }
 
   useEffect(() => {
     if (records.length && !records.some((item) => item.code === selectedCode)) {
@@ -343,7 +554,7 @@ function App() {
 
   const visibleRecords = useMemo(() => {
     const normalized = query.trim().toLowerCase()
-    return records.filter((item) => !normalized || item.name.toLowerCase().includes(normalized) || item.code.toLowerCase().includes(normalized))
+    return records.filter((item) => matchesSearchText(item.name, normalized) || matchesSearchText(item.code, normalized))
       .sort((a, b) => compareMonitorRecords(a, b, sort, rankChanges))
   }, [records, query, sort, rankChanges])
 
@@ -359,6 +570,43 @@ function App() {
   const stockRecords = stocksQuery.data?.data ?? []
   const stockMeta = stocksQuery.data?.meta
   const onStockSort = (key: keyof RankRecord) => { setStockSort((current) => ({ key, direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc' })); setStockPage(1) }
+  const openQuickLinkage = (
+    target: { code: string; name: string },
+    source: LinkageSourceView,
+    event: React.MouseEvent<HTMLButtonElement>,
+  ) => {
+    event.stopPropagation()
+    quickReturnFocusRef.current = event.currentTarget
+    sourcePagesRef.current = sourcePages
+    if (source === 'focus') {
+      focusScrollRef.current = window.scrollY
+    }
+    setQuickTarget({
+      ...target,
+      asOf: sourceLinkageAsOf(source, {
+        monitorAsOf: monitorLinkageAsOf,
+        focusAsOf: focusLinkageAsOf,
+        stockAsOf: stockLinkageAsOf,
+      }),
+      source,
+    })
+  }
+  const closeQuickLinkage = () => {
+    setQuickTarget(null)
+    window.requestAnimationFrame(() => quickReturnFocusRef.current?.focus())
+  }
+  const openFullLinkage = (nextContext: LinkageContext, source: LinkageSourceView) => {
+    setQuickTarget(null)
+    navigateToView('linkage', {
+      context: nextContext,
+      source,
+      appScroll: {
+        monitorPage: sourcePagesRef.current.monitor,
+        constituentPage: sourcePagesRef.current.constituent,
+        focusScrollY: focusScrollRef.current,
+      },
+    })
+  }
 
   if (authRequired) {
     return <TokenGate onAuthenticated={() => { setAuthRequired(false); void queryClient.invalidateQueries() }} />
@@ -378,18 +626,39 @@ function App() {
 
     <main className="main-content">
       <div className="view-tabs" role="tablist">
-        <button className={view === 'monitor' ? 'selected' : ''} onClick={() => setView('monitor')}><Gauge size={16} />今日监控</button>
-        <button className={view === 'focus' ? 'selected' : ''} onClick={() => setView('focus')}><Crosshair size={16} />动态筛选</button>
-        <button className={view === 'history' ? 'selected' : ''} onClick={() => setView('history')}><LineChart size={16} />历史回看</button>
-        <button className={view === 'stocks' ? 'selected' : ''} onClick={() => setView('stocks')}><Table2 size={16} />收盘个股</button>
-        <button className={view === 'quality' ? 'selected' : ''} onClick={() => setView('quality')}><Server size={16} />采集质量</button>
+        <button className={view === 'monitor' ? 'selected' : ''} onClick={() => navigateToView('monitor')}><Gauge size={16} />今日监控</button>
+        <button className={view === 'focus' ? 'selected' : ''} onClick={() => navigateToView('focus')}><Crosshair size={16} />动态筛选</button>
+        <button className={view === 'linkage' ? 'selected' : ''} onClick={() => navigateToView('linkage')}><Activity size={16} />股票联动</button>
+        <button className={view === 'history' ? 'selected' : ''} onClick={() => navigateToView('history')}><LineChart size={16} />历史回看</button>
+        <button className={view === 'stocks' ? 'selected' : ''} onClick={() => navigateToView('stocks')}><Table2 size={16} />收盘个股</button>
+        <button className={view === 'quality' ? 'selected' : ''} onClick={() => { setQualityScope(''); navigateToView('quality') }}><Server size={16} />采集质量</button>
       </div>
-      {view === 'monitor' && <MonitorView previousDate={previousDate} rankChanges={rankChanges} previousLoading={previousCloseQuery.isLoading} previousError={previousCloseQuery.error} previousAvailable={Boolean(previousCloseQuery.data?.length) && !previousCloseQuery.isError} boardType={boardType} setBoardType={setBoardType} records={visibleRecords} allRecords={records} selected={selected} selectedCode={selectedId} setSelectedCode={setSelectedCode} query={query} setQuery={setQuery} onSort={onSort} sort={sort} metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} series={intradayQuery.data ?? []} loading={intradayQuery.isLoading} rankError={rankQuery.error} seriesError={intradayQuery.error} requestMs={rankQuery.data?.requestMs} status={statusQuery.data} tradeDate={monitorDate} staleSnapshot={staleSnapshot} mobilePane={mobilePane} setMobilePane={setMobilePane} stocks={boardQuotesQuery.data?.data ?? []} stocksLoading={boardQuotesQuery.isLoading || boardQuotesQuery.isFetching} stocksError={boardQuotesQuery.error} quoteMeta={boardQuotesQuery.data?.meta} />}
-      {view === 'focus' && <FocusView request={focusRequest} onScan={(value) => { setFocusRequest(value); focusScan.mutate(value) }} result={focusScan.data} loading={focusScan.isPending} error={focusScan.error} />}
+      {monitorMounted && (
+        <div hidden={view !== 'monitor'}>
+          <MonitorView previousDate={previousDate} rankChanges={rankChanges} previousLoading={previousCloseQuery.isLoading} previousError={previousCloseQuery.error} previousAvailable={Boolean(previousCloseQuery.data?.length) && !previousCloseQuery.isError} boardType={boardType} setBoardType={setBoardType} records={visibleRecords} allRecords={records} selected={selected} selectedCode={selectedId} setSelectedCode={setSelectedCode} query={query} setQuery={setQuery} onSort={onSort} sort={sort} metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} series={intradayQuery.data ?? []} loading={intradayQuery.isLoading} rankError={rankQuery.error} seriesError={intradayQuery.error} requestMs={rankQuery.data?.requestMs} status={statusQuery.data} tradeDate={monitorDate} staleSnapshot={staleSnapshot} mobilePane={mobilePane} setMobilePane={setMobilePane} stocks={boardQuotesQuery.data?.data ?? []} stocksLoading={boardQuotesQuery.isLoading || boardQuotesQuery.isFetching} stocksError={boardQuotesQuery.error} quoteMeta={boardQuotesQuery.data?.meta} linkageAsOf={monitorLinkageAsOf} onQuickLinkage={(stock, event) => openQuickLinkage(stock, 'monitor', event)} sourcePages={sourcePages} onSourcePagesChange={handleSourcePagesChange} />
+        </div>
+      )}
+      {focusMounted && (
+        <div hidden={view !== 'focus'}>
+          <FocusView request={focusRequest} onScan={(value) => { setFocusRequest(value); focusScan.mutate(value) }} result={focusScan.data} loading={focusScan.isPending} error={focusScan.error} linkageAsOf={focusLinkageAsOf} onQuickLinkage={(stock, event) => openQuickLinkage(stock, 'focus', event)} />
+        </div>
+      )}
+      {view === 'linkage' && <LinkageView authRequired={authRequired} context={linkageContext} onContextChange={setLinkageContext} onBackToSource={linkageSourceView ? returnToSourcePage : undefined} onOpenQuality={() => { if (linkageContext.asOf) { setQualityDate(linkageContext.asOf); setQualityScope(linkageContext.scope); } navigateToView('quality', { source: linkageSourceView }); }} />}
       {view === 'history' && <HistoryView boardType={boardType} setBoardType={setBoardType} selected={historicalSelected} historyRanks={historyRanksQuery.data ?? []} historyCode={historyCode} setHistoryCode={setHistoryCode} historyDate={historyDate} setHistoryDate={setHistoryDate} historyAt={historyAt} setHistoryAt={setHistoryAt} metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} series={trendQuery.data ?? []} loading={trendQuery.isLoading || historyRanksQuery.isLoading} error={trendQuery.error ?? historyRanksQuery.error} from={historyFrom} to={historyTo} setFrom={setHistoryFrom} setTo={setHistoryTo} />}
-      {view === 'stocks' && <StockView date={stockDate} setDate={(value) => { setStockDate(value); setStockPage(1) }} records={stockRecords} total={stockMeta?.total ?? 0} query={stockQuery} setQuery={setStockQuery} sort={stockSort} onSort={onStockSort} page={stockPage} pages={stockMeta?.pages ?? 0} setPage={setStockPage} loading={stocksQuery.isLoading || stocksQuery.isFetching} error={stocksQuery.error} />}
-      {view === 'quality' && <QualityView date={qualityDate} setDate={setQualityDate} quality={(qualityQuery.data?.data ?? []).filter((item): item is NonNullable<typeof item> & { rank_type: BoardType } => item.rank_type !== 'stock')} stockQuality={qualityQuery.data?.meta?.stock_archive} manifest={qualityQuery.data?.meta?.archive_manifest} runs={runsQuery.data ?? []} loading={qualityQuery.isLoading || runsQuery.isLoading} error={qualityQuery.error ?? runsQuery.error} />}
+      {view === 'stocks' && <StockView date={stockDate} setDate={(value) => { setStockDate(value); setStockPage(1) }} records={stockRecords} total={stockMeta?.total ?? 0} query={stockQuery} setQuery={setStockQuery} sort={stockSort} onSort={onStockSort} page={stockPage} pages={stockMeta?.pages ?? 0} setPage={setStockPage} loading={stocksQuery.isLoading || stocksQuery.isFetching} error={stocksQuery.error} linkageAsOf={stockLinkageAsOf} onQuickLinkage={(stock, event) => openQuickLinkage(stock, 'stocks', event)} />}
+      {view === 'quality' && <QualityView date={qualityDate} setDate={setQualityDate} limitUpScope={qualityScope} setLimitUpScope={setQualityScope} quality={(qualityQuery.data?.data ?? []).filter((item): item is NonNullable<typeof item> & { rank_type: BoardType } => item.rank_type !== 'stock')} stockQuality={qualityQuery.data?.meta?.stock_archive} manifest={qualityQuery.data?.meta?.archive_manifest} runs={runsQuery.data ?? []} loading={qualityQuery.isLoading || runsQuery.isLoading} error={qualityQuery.error ?? runsQuery.error} />}
     </main>
+    <LinkageQuickPanel
+      authRequired={authRequired}
+      target={quickTarget ?? { code: '', name: '', asOf: '', source: 'monitor' }}
+      open={Boolean(quickTarget)}
+      onClose={closeQuickLinkage}
+      onOpenFull={(nextContext) => {
+        if (quickTarget) {
+          openFullLinkage(nextContext, quickTarget.source)
+        }
+      }}
+    />
   </div>
 }
 
@@ -400,19 +669,33 @@ function MarketStatus({ status }: { status?: SystemStatus }) {
 
 type MonitorProps = {
   previousDate: string; rankChanges: ReadonlyMap<string, ControlRankChange>; previousLoading: boolean; previousError: Error | null; previousAvailable: boolean
-	  boardType: BoardType; setBoardType: (value: BoardType) => void; records: RankRecord[]; allRecords: RankRecord[]; selected?: RankRecord; selectedCode: string; setSelectedCode: (value: string) => void; query: string; setQuery: (value: string) => void; onSort: (key: MonitorSortKey) => void; sort: SortState<MonitorSortKey>; metric: Metric; setMetric: (value: Metric) => void; secondaryMetric: Metric | 'none'; setSecondaryMetric: (value: Metric | 'none') => void; series: RankRecord[]; loading: boolean; rankError: Error | null; seriesError: Error | null; requestMs?: number; status?: SystemStatus; tradeDate: string; staleSnapshot: boolean; mobilePane: 'ranks' | 'trend'; setMobilePane: (value: 'ranks' | 'trend') => void; stocks: BoardStockQuote[]; stocksLoading: boolean; stocksError: Error | null; quoteMeta?: BoardQuoteMeta
+	  boardType: BoardType; setBoardType: (value: BoardType) => void; records: RankRecord[]; allRecords: RankRecord[]; selected?: RankRecord; selectedCode: string; setSelectedCode: (value: string) => void; query: string; setQuery: (value: string) => void; onSort: (key: MonitorSortKey) => void; sort: SortState<MonitorSortKey>; metric: Metric; setMetric: (value: Metric) => void; secondaryMetric: Metric | 'none'; setSecondaryMetric: (value: Metric | 'none') => void; series: RankRecord[]; loading: boolean; rankError: Error | null; seriesError: Error | null; requestMs?: number; status?: SystemStatus; tradeDate: string; staleSnapshot: boolean; mobilePane: 'ranks' | 'trend'; setMobilePane: (value: 'ranks' | 'trend') => void; stocks: BoardStockQuote[]; stocksLoading: boolean; stocksError: Error | null; quoteMeta?: BoardQuoteMeta; linkageAsOf: string; onQuickLinkage: (stock: { code: string; name: string }, event: React.MouseEvent<HTMLButtonElement>) => void; sourcePages: { monitor: number; constituent: number }; onSourcePagesChange: (pages: { monitor: number; constituent: number }) => void
 }
 
 function MonitorView(props: MonitorProps) {
-	  const { previousDate, rankChanges, previousLoading, previousError, previousAvailable, boardType, setBoardType, records, allRecords, selected, selectedCode, setSelectedCode, query, setQuery, onSort, sort, metric, setMetric, secondaryMetric, setSecondaryMetric, series, loading, rankError, seriesError, requestMs, status, tradeDate, staleSnapshot, mobilePane, setMobilePane, stocks, stocksLoading, stocksError, quoteMeta } = props
+	  const { previousDate, rankChanges, previousLoading, previousError, previousAvailable, boardType, setBoardType, records, allRecords, selected, selectedCode, setSelectedCode, query, setQuery, onSort, sort, metric, setMetric, secondaryMetric, setSecondaryMetric, series, loading, rankError, seriesError, requestMs, status, tradeDate, staleSnapshot, mobilePane, setMobilePane, stocks, stocksLoading, stocksError, quoteMeta, linkageAsOf, onQuickLinkage, sourcePages, onSourcePagesChange } = props
   const nonTradingDay = status?.trading_day === false
   const [visibleColumns, setVisibleColumns] = useStoredColumns('shadowflow.monitor.columns.v1', MONITOR_COLUMNS)
   const show = (key: MonitorColumnKey) => visibleColumns.includes(key)
-  const [page, setPage] = useState(1)
+  const [page, setPage] = useState(sourcePages.monitor)
+  const previousMonitorFiltersRef = useRef({ boardType, query, sortKey: sort.key, sortDirection: sort.direction })
   const pages = Math.ceil(records.length / MONITOR_PAGE_SIZE)
   const pageRecords = records.slice((page - 1) * MONITOR_PAGE_SIZE, page * MONITOR_PAGE_SIZE)
-  useEffect(() => setPage(1), [boardType, query, sort.key, sort.direction])
+  useEffect(() => {
+    const previousFilters = previousMonitorFiltersRef.current
+    const filterChanged =
+      previousFilters.boardType !== boardType ||
+      previousFilters.query !== query ||
+      previousFilters.sortKey !== sort.key ||
+      previousFilters.sortDirection !== sort.direction
+    previousMonitorFiltersRef.current = { boardType, query, sortKey: sort.key, sortDirection: sort.direction }
+    if (!filterChanged) {
+      return
+    }
+    setPage(1)
+  }, [boardType, query, sort.key, sort.direction])
   useEffect(() => setPage((current) => Math.max(1, Math.min(current, pages || 1))), [pages])
+  useEffect(() => onSourcePagesChange({ monitor: page, constituent: sourcePages.constituent }), [page, onSourcePagesChange, sourcePages.constituent])
   return <section className="workspace-grid">
     <div className="mobile-pane-tabs"><button className={mobilePane === 'ranks' ? 'active' : ''} onClick={() => setMobilePane('ranks')}><Table2 size={14} />榜单</button><button className={mobilePane === 'trend' ? 'active' : ''} onClick={() => setMobilePane('trend')}><LineChart size={14} />趋势</button></div>
     <section className={`rank-panel panel-section ${mobilePane === 'trend' ? 'mobile-hidden' : ''}`}>
@@ -420,7 +703,7 @@ function MonitorView(props: MonitorProps) {
       {nonTradingDay && tradeDate && <InlineNotice kind={staleSnapshot ? 'warning' : 'info'} text={staleSnapshot ? `今天不是交易日，最近交易日为 ${status.latest_trading_day}；当前仅有 ${tradeDate} 的快照。` : `今天不是交易日，当前展示 ${tradeDate} 的最近交易日数据。`} />}
       {!nonTradingDay && staleSnapshot && <InlineNotice kind="warning" text={`当前展示 ${tradeDate} 的最近可用快照，并非今日数据。`} />}
       <div className="segmented"><button className={boardType === 'industry' ? 'active' : ''} onClick={() => setBoardType('industry')}>行业</button><button className={boardType === 'concept' ? 'active' : ''} onClick={() => setBoardType('concept')}>概念</button></div>
-      <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称或代码" /><kbd>/</kbd></label>
+      <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、代码或拼音" /><kbd>/</kbd></label>
       {rankError && <InlineNotice kind="error" text="榜单读取失败，请检查后端服务。" />}
       {show('control_rank') && <>
         <div className="rank-comparison-note"><span>控盘度排名 · {tradeDate || '当前截面'} 最新</span><span>变动基准：{previousDate ? `${previousDate} 收盘` : '上一个交易日收盘'}</span></div>
@@ -460,27 +743,64 @@ function MonitorView(props: MonitorProps) {
       {seriesError && <InlineNotice kind="error" text="分钟序列读取失败，请稍后重试。" />}
 	      <Chart series={series} metric={metric} secondaryMetric={secondaryMetric} loading={loading} emptyLabel={seriesError ? '分钟序列读取失败' : '选择板块后加载分钟数据'} />
 	      <TrendStats selected={selected} series={series} status={status} />
-	      <ConstituentPanel board={selected} boardType={boardType} tradeDate={tradeDate} stocks={stocks} loading={stocksLoading} error={stocksError} quoteMeta={quoteMeta} status={status} />
+	      <ConstituentPanel
+        board={selected}
+        boardType={boardType}
+        tradeDate={tradeDate}
+        stocks={stocks}
+        loading={stocksLoading}
+        error={stocksError}
+        quoteMeta={quoteMeta}
+        status={status}
+        linkageAsOf={linkageAsOf}
+        onQuickLinkage={onQuickLinkage}
+        initialPage={sourcePages.constituent}
+        onPageChange={(constituentPage) => onSourcePagesChange({ monitor: page, constituent: constituentPage })}
+      />
 	    </section>
   </section>
 }
 
-function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error, quoteMeta, status }: { board?: RankRecord; boardType: BoardType; tradeDate: string; stocks: BoardStockQuote[]; loading: boolean; error: Error | null; quoteMeta?: BoardQuoteMeta; status?: SystemStatus }) {
+function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error, quoteMeta, status, linkageAsOf, onQuickLinkage, initialPage, onPageChange }: { board?: RankRecord; boardType: BoardType; tradeDate: string; stocks: BoardStockQuote[]; loading: boolean; error: Error | null; quoteMeta?: BoardQuoteMeta; status?: SystemStatus; linkageAsOf: string; onQuickLinkage: (stock: { code: string; name: string }, event: React.MouseEvent<HTMLButtonElement>) => void; initialPage: number; onPageChange: (page: number) => void }) {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortState<ConstituentSortKey>>({ key: 'dark_rank', direction: 'asc' })
-  const [page, setPage] = useState(1)
+  const [page, setPage] = useState(initialPage)
   const darkReady = showConstituentDarkData(stocks, quoteMeta, status)
   const displaySort = useMemo(() => constituentSort(sort, darkReady), [sort, darkReady])
+  const previousConstituentFiltersRef = useRef({
+    boardCode: board?.code,
+    query,
+    sortKey: displaySort.key,
+    sortDirection: displaySort.direction,
+  })
   const visibleStocks = useMemo(() => {
     const normalized = query.trim().toLowerCase()
     return stocks
-      .filter((stock) => !normalized || stock.stock_name.toLowerCase().includes(normalized) || stock.stock_code.includes(normalized))
+      .filter((stock) => matchesSearchText(stock.stock_name, normalized) || stock.stock_code.includes(normalized))
       .sort((left, right) => compareConstituents(left, right, displaySort))
   }, [stocks, query, displaySort])
   const pages = Math.ceil(visibleStocks.length / CONSTITUENT_PAGE_SIZE)
   const pageStocks = visibleStocks.slice((page - 1) * CONSTITUENT_PAGE_SIZE, page * CONSTITUENT_PAGE_SIZE)
-  useEffect(() => setPage(1), [board?.code, query, displaySort.key, displaySort.direction])
+  useEffect(() => {
+    const previousFilters = previousConstituentFiltersRef.current
+    const filterChanged =
+      previousFilters.boardCode !== board?.code ||
+      previousFilters.query !== query ||
+      previousFilters.sortKey !== displaySort.key ||
+      previousFilters.sortDirection !== displaySort.direction
+    previousConstituentFiltersRef.current = {
+      boardCode: board?.code,
+      query,
+      sortKey: displaySort.key,
+      sortDirection: displaySort.direction,
+    }
+    if (!filterChanged) {
+      return
+    }
+    setPage(1)
+  }, [board?.code, query, displaySort.key, displaySort.direction])
   useEffect(() => setPage((current) => Math.max(1, Math.min(current, pages || 1))), [pages])
+  useEffect(() => onPageChange(page), [page, onPageChange])
   const onSort = (key: ConstituentSortKey) => setSort((current) => ({ key, direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc' }))
   const quoteTime = stocks.find((stock) => stock.quote_available && stock.quote_time)?.quote_time
   const quoteReady = Boolean(quoteMeta?.quote_available && stocks.some((stock) => stock.quote_available))
@@ -494,7 +814,7 @@ function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error,
     {quoteMeta?.quote_error && <InlineNotice kind="warning" text="实时行情更新失败，已保留可用缓存及成分股关系。" />}
     {error && <InlineNotice kind="error" text="成分股读取失败，请稍后重试。" />}
     {board && !darkReady && status && <InlineNotice kind="info" text={moneyNotice} />}
-    <label className="constituent-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索成分股名称或代码" /></label>
+    <label className="constituent-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索成分股、代码或拼音" /></label>
     <div className={`constituent-table-wrap ${loading ? 'is-loading' : ''}`}>
       {loading && !stocks.length ? <div className="loading-block">正在读取成分股行情…</div> : <table className="constituent-table">
         <thead><tr>
@@ -509,6 +829,7 @@ function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error,
           <SortHead label="最新价" sortKey="latest_price" sort={displaySort} onSort={onSort} />
           <SortHead label="涨跌幅" sortKey="change_pct" sort={displaySort} onSort={onSort} />
           <SortHead label="成交额" sortKey="turnover" sort={displaySort} onSort={onSort} />
+          <th>联动</th>
         </tr></thead>
         <tbody>{pageStocks.map((stock) => <tr key={stock.stock_code}>
           <td><strong>{stock.stock_name || '未命名'}</strong></td>
@@ -522,6 +843,20 @@ function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error,
           <td>{stock.quote_available ? formatNumber(stock.latest_price, 2) : '--'}</td>
           <td className={stock.quote_available ? signedClass(stock.change_pct) : 'muted'}>{stock.quote_available ? `${stock.change_pct > 0 ? '+' : ''}${formatNumber(stock.change_pct * 100, 2)}%` : '--'}</td>
           <td>{stock.quote_available ? formatMoney(stock.turnover) : '--'}</td>
+          <td className="linkage-entry-cell">
+            <button
+              type="button"
+              className="linkage-entry-button"
+              disabled={!linkageAsOf}
+              title={linkageAsOf ? `查看 ${stock.stock_name} 历史强联动（样本截止 ${linkageAsOf}）` : '上一交易日尚未确定'}
+              onClick={(pointerEvent) => {
+                pointerEvent.stopPropagation()
+                onQuickLinkage({ code: stock.stock_code, name: stock.stock_name }, pointerEvent)
+              }}
+            >
+              联动/股性
+            </button>
+          </td>
         </tr>)}</tbody>
       </table>}
       {!loading && !visibleStocks.length && <EmptyState icon={<Table2 size={19} />} title="暂无成分股" detail={board ? '当前截面日没有可展示的归属关系。' : '选择板块后查看成分股。'} />}
@@ -620,6 +955,7 @@ function TrendStats({ selected, series, status }: { selected?: RankRecord; serie
 }
 
 function HistoryView({ boardType, setBoardType, selected, historyRanks, historyCode, setHistoryCode, historyDate, setHistoryDate, historyAt, setHistoryAt, metric, setMetric, secondaryMetric, setSecondaryMetric, series, loading, error, from, to, setFrom, setTo }: { boardType: BoardType; setBoardType: (value: BoardType) => void; selected?: RankRecord; historyRanks: RankRecord[]; historyCode: string; setHistoryCode: (value: string) => void; historyDate: string; setHistoryDate: (value: string) => void; historyAt: string; setHistoryAt: (value: string) => void; metric: Metric; setMetric: (value: Metric) => void; secondaryMetric: Metric | 'none'; setSecondaryMetric: (value: Metric | 'none') => void; series: RankRecord[]; loading: boolean; error: Error | null; from: string; to: string; setFrom: (value: string) => void; setTo: (value: string) => void }) {
+  const historyOptions = useMemo(() => historyRanks.map((item) => ({ value: item.code, name: item.name, code: item.code })), [historyRanks])
 	useEffect(() => {
 		if (!RESEARCH_METRICS.includes(metric)) setMetric('dark_money')
 		if (secondaryMetric !== 'none' && !RESEARCH_METRICS.includes(secondaryMetric)) {
@@ -628,20 +964,20 @@ function HistoryView({ boardType, setBoardType, selected, historyRanks, historyC
 			setSecondaryMetric(RESEARCH_METRICS.find((item) => item !== metric) ?? 'none')
 		}
 	}, [metric, secondaryMetric, setMetric, setSecondaryMetric])
-	  return <section className="history-page panel-section"><div className="section-heading"><div><p className="eyebrow">研究数据</p><h1>板块趋势回看</h1><span className="subline">多日累计资金以前一交易日收盘为基准连续增减；单日原值保留在 tooltip 中。</span></div><div className="section-actions"><ExportLink href={selected ? api.exportURL(boardType, selected.code, from, to) : undefined}><Download size={15} />研究序列</ExportLink><ExportLink href={api.dailyCloseExportURL(historyDate)}><Download size={15} />日终三榜</ExportLink></div></div><div className="history-controls"><label>榜单<select value={boardType} onChange={(event) => setBoardType(event.target.value as BoardType)}><option value="industry">行业</option><option value="concept">概念</option></select></label><label>交易日<input type="date" value={historyDate} onChange={(event) => setHistoryDate(event.target.value)} /></label><label>快照<select value={historyAt} onChange={(event) => setHistoryAt(event.target.value)}><option value="09:35">09:35</option><option value="10:00">10:00</option><option value="11:30">11:30</option><option value="13:05">13:05</option><option value="14:00">14:00</option><option value="15:00">15:00（日终截面）</option></select></label><label>板块<select value={historyCode} onChange={(event) => setHistoryCode(event.target.value)}><option value="">选择板块</option>{historyRanks.map((item) => <option key={item.code} value={item.code}>{item.name} ({item.code})</option>)}</select></label><label>趋势起点<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>趋势终点<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><span className="history-hint">{selected ? `${historyAt === '15:00' ? '日终截面' : '资金点'}排名 ${selected.rank > 0 ? selected.rank : '--'} · ${selected.money_available ? formatMoney(selected.dark_money) : '--'}` : '请选择已归档交易日和板块'}</span></div>{error && <InlineNotice kind="error" text="历史数据读取失败。" />}<MetricToolbar metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} metrics={RESEARCH_METRICS} /><Chart series={series} metric={metric} secondaryMetric={secondaryMetric} loading={loading} emptyLabel="暂无历史研究数据" /><div className="history-summary"><span><CalendarDays size={15} />{from} 至 {to}</span><span>{series.length} 个盘后修订五分钟资金点</span></div></section>
+	  return <section className="history-page panel-section"><div className="section-heading"><div><p className="eyebrow">研究数据</p><h1>板块趋势回看</h1><span className="subline">多日累计资金以前一交易日收盘为基准连续增减；单日原值保留在 tooltip 中。</span></div><div className="section-actions"><ExportLink href={selected ? api.exportURL(boardType, selected.code, from, to) : undefined}><Download size={15} />研究序列</ExportLink><ExportLink href={api.dailyCloseExportURL(historyDate)}><Download size={15} />日终三榜</ExportLink></div></div><div className="history-controls"><label>榜单<select value={boardType} onChange={(event) => setBoardType(event.target.value as BoardType)}><option value="industry">行业</option><option value="concept">概念</option></select></label><label>交易日<input type="date" value={historyDate} onChange={(event) => setHistoryDate(event.target.value)} /></label><label>快照<select value={historyAt} onChange={(event) => setHistoryAt(event.target.value)}><option value="09:35">09:35</option><option value="10:00">10:00</option><option value="11:30">11:30</option><option value="13:05">13:05</option><option value="14:00">14:00</option><option value="15:00">15:00（日终截面）</option></select></label><label>板块<BoardCombobox value={historyCode} options={historyOptions} onChange={setHistoryCode} /></label><label>趋势起点<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>趋势终点<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><span className="history-hint">{selected ? `${historyAt === '15:00' ? '日终截面' : '资金点'}排名 ${selected.rank > 0 ? selected.rank : '--'} · ${selected.money_available ? formatMoney(selected.dark_money) : '--'}` : '请选择已归档交易日和板块'}</span></div>{error && <InlineNotice kind="error" text="历史数据读取失败。" />}<MetricToolbar metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} metrics={RESEARCH_METRICS} /><Chart series={series} metric={metric} secondaryMetric={secondaryMetric} loading={loading} emptyLabel="暂无历史研究数据" /><div className="history-summary"><span><CalendarDays size={15} />{from} 至 {to}</span><span>{series.length} 个盘后修订五分钟资金点</span></div></section>
 }
 
-function StockView({ date, setDate, records, total, query, setQuery, sort, onSort, page, pages, setPage, loading, error }: { date: string; setDate: (value: string) => void; records: RankRecord[]; total: number; query: string; setQuery: (value: string) => void; sort: SortState<keyof RankRecord>; onSort: (key: keyof RankRecord) => void; page: number; pages: number; setPage: (value: number) => void; loading: boolean; error: Error | null }) {
+function StockView({ date, setDate, records, total, query, setQuery, sort, onSort, page, pages, setPage, loading, error, linkageAsOf, onQuickLinkage }: { date: string; setDate: (value: string) => void; records: RankRecord[]; total: number; query: string; setQuery: (value: string) => void; sort: SortState<keyof RankRecord>; onSort: (key: keyof RankRecord) => void; page: number; pages: number; setPage: (value: number) => void; loading: boolean; error: Error | null; linkageAsOf: string; onQuickLinkage: (stock: { code: string; name: string }, event: React.MouseEvent<HTMLButtonElement>) => void }) {
   const [visibleColumns, setVisibleColumns] = useStoredColumns('shadowflow.stocks.columns.v1', STOCK_COLUMNS)
   const show = (key: StockColumnKey) => visibleColumns.includes(key)
   return <section className="stocks-page panel-section">
     <div className="section-heading"><div><p className="eyebrow">日级快照</p><h1>收盘个股榜</h1><span className="subline">同日沉淀个股暗盘榜、OHLC、前收盘、成交额和换手率。</span></div><div className="section-actions"><ExportLink href={api.dailyCloseExportURL(date)}><Download size={15} />导出日终三榜</ExportLink><label className="date-picker"><CalendarDays size={15} /><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label></div></div>
-    <div className="stocks-toolbar"><label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索股票名称或代码" /></label><span>共 {total || '--'} 条</span><ColumnPicker label="收盘个股" columns={STOCK_COLUMNS} visible={visibleColumns} onChange={setVisibleColumns} /></div>
+    <div className="stocks-toolbar"><label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索股票、代码或拼音" /></label><span>共 {total || '--'} 条</span><ColumnPicker label="收盘个股" columns={STOCK_COLUMNS} visible={visibleColumns} onChange={setVisibleColumns} /></div>
     {error && <InlineNotice kind="error" text="收盘榜读取失败。" />}
     <div className="stock-table-wrap">{loading && !records.length ? <div className="loading-block">正在读取收盘榜…</div> : <table className={`stock-table ${loading ? 'is-loading' : ''}`}>
       <thead><tr>{STOCK_COLUMNS.filter((column) => show(column.key)).map((column) => column.key === 'control_rate'
         ? <th key={column.key} title="控盘度 = 主力净流入（含暗盘）÷ 日终成交额 × 100">{column.label}</th>
-        : <SortHead key={column.key} label={column.label} sortKey={column.key} sort={sort} onSort={onSort} />)}</tr></thead>
+        : <SortHead key={column.key} label={column.label} sortKey={column.key} sort={sort} onSort={onSort} />)}<th>联动</th></tr></thead>
       <tbody>{records.map((record) => {
         const control = controlRate(record, record.quote_available ? record.turnover : null)
         return <tr key={`${record.market}-${record.code}`}>
@@ -660,6 +996,20 @@ function StockView({ date, setDate, records, total, query, setQuery, sort, onSor
           {show('main_money_inflow') && <td className={signedClass(record.main_money_inflow)}>{formatMoney(record.main_money_inflow)}</td>}
           {show('control_rate') && <td className={control === null ? 'muted' : signedClass(control)}>{control === null ? '--' : formatNumber(control, 2)}</td>}
           {show('dark_activity') && <td>{formatNumber(record.dark_activity * 100, 2)}%</td>}
+          <td className="linkage-entry-cell">
+            <button
+              type="button"
+              className="linkage-entry-button"
+              disabled={!linkageAsOf}
+              title={linkageAsOf ? `查看 ${record.name} 历史强联动（样本截止 ${linkageAsOf}）` : '尚未确定所选收盘日期'}
+              onClick={(pointerEvent) => {
+                pointerEvent.stopPropagation()
+                onQuickLinkage({ code: record.code, name: record.name }, pointerEvent)
+              }}
+            >
+              联动/股性
+            </button>
+          </td>
         </tr>
       })}</tbody>
     </table>}{!loading && !records.length && <EmptyState icon={<Table2 size={22} />} title="暂无收盘榜" detail="选择一个已完成个股收盘采集的交易日。" />}</div>

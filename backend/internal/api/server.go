@@ -21,6 +21,7 @@ import (
 
 	"github.com/roiding/shadowflow/internal/focus"
 	"github.com/roiding/shadowflow/internal/graymarket"
+	"github.com/roiding/shadowflow/internal/proxypool"
 	"github.com/roiding/shadowflow/internal/quote"
 	"github.com/roiding/shadowflow/internal/repository"
 	"github.com/roiding/shadowflow/internal/tradingcalendar"
@@ -34,6 +35,9 @@ type Server struct {
 	location *time.Location
 	started  time.Time
 	router   chi.Router
+	pool     *proxypool.Manager
+	limitUpArchiveScheduled bool
+	limitUpScope string
 }
 
 type Options struct {
@@ -49,6 +53,9 @@ type Options struct {
 	// RemoteAddr bucket; trusting the header unconditionally would instead
 	// let any direct client spoof its way past the limiter.
 	TrustedProxyCIDR string
+	ProxyPool        *proxypool.Manager
+	LimitUpArchiveScheduled bool
+	LimitUpScope string
 }
 
 type QuoteSnapshotSource interface {
@@ -74,6 +81,9 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 	server := &Server{store: store, calendar: calendar, logger: logger, location: location, started: time.Now().UTC()}
 	if len(options) > 0 {
 		server.quotes = options[0].QuoteSource
+		server.pool = options[0].ProxyPool
+		server.limitUpArchiveScheduled = options[0].LimitUpArchiveScheduled
+		server.limitUpScope = options[0].LimitUpScope
 	}
 	normalLimit := 120
 	exportLimit := 10
@@ -93,6 +103,7 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 	export := newRateLimiter(exportLimit)
 	scan := newRateLimiter(scanLimit)
 	scanGate := scanConcurrencyGate()
+	limitUpGate := limitUpConcurrencyGate()
 	var trustedProxy *net.IPNet
 	if len(options) > 0 && options[0].TrustedProxyCIDR != "" {
 		_, parsed, err := net.ParseCIDR(options[0].TrustedProxyCIDR)
@@ -108,7 +119,7 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 			switch {
 			case strings.HasPrefix(r.URL.Path, "/api/v1/research/") && strings.HasSuffix(r.URL.Path, "/export"):
 				limiter = export
-			case r.URL.Path == "/api/v1/focus/scan", r.URL.Path == "/api/v1/focus/three-day":
+			case r.URL.Path == "/api/v1/focus/scan", r.URL.Path == "/api/v1/focus/three-day", strings.HasPrefix(r.URL.Path, "/api/v1/limit-up/"):
 				// three-day runs the same multi-day scan pipeline as /scan and
 				// must share its stricter budget, not the normal read bucket.
 				limiter = scan
@@ -177,6 +188,9 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 			r.Get("/collection-runs", server.collectionRuns)
 			r.With(scanGate).Get("/focus/three-day", server.threeDayFocus)
 			r.With(scanGate).Post("/focus/scan", server.focusScan)
+			r.With(limitUpGate).Get("/limit-up/overview", server.limitUpOverview)
+			r.With(limitUpGate).Get("/limit-up/stocks/{code}", server.limitUpStock)
+			r.Get("/limit-up/quality", server.limitUpQuality)
 			r.Get("/system/status", server.status)
 		})
 	})
@@ -509,6 +523,24 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "shadowflow_trading_calendar_days_remaining %d\n", coverage.DaysRemaining)
 	writeMetricHelp(w, "shadowflow_trading_calendar_expired", "Whether the explicit exchange calendar has expired", "gauge")
 	fmt.Fprintf(w, "shadowflow_trading_calendar_expired %d\n", boolIntAPI(coverage.Expired))
+	proxyPool := s.proxyPoolStatus()
+	writeMetricHelp(w, "shadowflow_proxy_pool_enabled", "Whether the upstream proxy pool is configured", "gauge")
+	fmt.Fprintf(w, "shadowflow_proxy_pool_enabled %d\n", boolIntAPI(proxyPool.Enabled))
+	writeMetricHelp(w, "shadowflow_proxy_pool_proxies", "Proxy pool proxies by state", "gauge")
+	fmt.Fprintf(w, "shadowflow_proxy_pool_proxies{state=\"available\"} %d\n", proxyPool.AvailableCount)
+	fmt.Fprintf(w, "shadowflow_proxy_pool_proxies{state=\"cooling\"} %d\n", proxyPool.CoolingCount)
+	fmt.Fprintf(w, "shadowflow_proxy_pool_proxies{state=\"expired\"} %d\n", proxyPool.ExpiredCount)
+	writeMetricHelp(w, "shadowflow_proxy_pool_refresh_total", "Proxy pool refreshes by result", "counter")
+	fmt.Fprintf(w, "shadowflow_proxy_pool_refresh_total{result=\"success\"} %d\n", proxyPool.RefreshSuccesses)
+	fmt.Fprintf(w, "shadowflow_proxy_pool_refresh_total{result=\"error\"} %d\n", proxyPool.RefreshErrors)
+	writeMetricHelp(w, "shadowflow_proxy_pool_workers", "Managed upstream workers by state", "gauge")
+	fmt.Fprintf(w, "shadowflow_proxy_pool_workers{state=\"total\"} %d\n", proxyPool.Workers)
+	fmt.Fprintf(w, "shadowflow_proxy_pool_workers{state=\"busy\"} %d\n", proxyPool.BusyWorkers)
+	writeMetricHelp(w, "shadowflow_proxy_pool_leases_total", "Proxy lease acquisitions and same-binding renewals", "counter")
+	fmt.Fprintf(w, "shadowflow_proxy_pool_leases_total{operation=\"acquire\"} %d\n", proxyPool.LeaseAcquires)
+	fmt.Fprintf(w, "shadowflow_proxy_pool_leases_total{operation=\"renew\"} %d\n", proxyPool.LeaseRenewals)
+	writeMetricHelp(w, "shadowflow_proxy_pool_cleanup_errors_total", "Failed proxy lease or binding cleanup calls", "counter")
+	fmt.Fprintf(w, "shadowflow_proxy_pool_cleanup_errors_total %d\n", proxyPool.CleanupErrors)
 }
 
 func writeMetricHelp(w http.ResponseWriter, name, help, metricType string) {
@@ -961,8 +993,25 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
 		"server_time": now, "timezone": "Asia/Shanghai", "market_status": s.marketStatus(now),
 		"trading_day": s.calendar.IsTradingDay(now), "latest_trading_day": s.latestTradingDay(now),
+		"event_research_as_of": s.eventResearchAsOf(now),
 		"uptime_seconds": int64(time.Since(s.started).Seconds()), "trading_calendar": s.calendar.Coverage(now),
+		"proxy_pool": s.proxyPoolStatus(),
 	}})
+}
+
+func (s *Server) proxyPoolStatus() proxypool.Status {
+	if s.pool == nil {
+		return proxypool.DisabledStatus()
+	}
+	return s.pool.Status()
+}
+
+func (s *Server) eventResearchAsOf(now time.Time) string {
+	current := now.In(s.location)
+	if s.calendar.IsTradingDay(current) && current.Hour()*60+current.Minute() < 15*60+30 {
+		return s.calendar.PreviousTradingDay(current).Format("2006-01-02")
+	}
+	return s.latestTradingDay(current)
 }
 
 func boolIntAPI(value bool) int {

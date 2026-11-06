@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/roiding/shadowflow/internal/proxypool"
 )
 
 var ErrCircuitOpen = errors.New("upstream circuit is open")
@@ -92,7 +94,38 @@ func New(httpClient *http.Client, options Options) *Guard {
 	}
 }
 
+func (guard *Guard) Prepare(ctx context.Context, rawURLs ...string) error {
+	if preparer, ok := guard.httpClient.Transport.(interface {
+		Prepare(context.Context, ...string) error
+	}); ok {
+		return preparer.Prepare(ctx, rawURLs...)
+	}
+	return nil
+}
+
+func (guard *Guard) PrepareForRequests(ctx context.Context, requestCount, concurrency int, rawURLs ...string) error {
+	if requestCount == 0 {
+		return ctx.Err()
+	}
+	if preparer, ok := guard.httpClient.Transport.(interface {
+		PrepareForRequests(context.Context, int, int, ...string) error
+	}); ok {
+		return preparer.PrepareForRequests(ctx, requestCount, concurrency, rawURLs...)
+	}
+	return guard.Prepare(ctx, rawURLs...)
+}
+
 func (g *Guard) Do(ctx context.Context, request *http.Request) (*http.Response, error) {
+	if request == nil || request.URL == nil {
+		return nil, errors.New("invalid upstream request")
+	}
+	if preparer, ok := g.httpClient.Transport.(interface {
+		EnsurePrepared(context.Context, string) error
+	}); ok {
+		if err := preparer.EnsurePrepared(ctx, request.URL.String()); err != nil {
+			return nil, err
+		}
+	}
 	key := circuitKey(request)
 	probe, err := g.acquireProbe(key)
 	if err != nil {
@@ -116,7 +149,8 @@ func (g *Guard) Do(ctx context.Context, request *http.Request) (*http.Response, 
 		releaseSlot()
 		// Caller cancellation is neutral. A client/transport timeout with a
 		// live caller context is still an upstream failure.
-		if !callerCanceled() {
+		if !callerCanceled() && !errors.Is(err, proxypool.ErrControlPlane) && !errors.Is(err, proxypool.ErrNoProxy) &&
+			!errors.Is(err, proxypool.ErrPrewarmIncomplete) {
 			g.record(key, false)
 		}
 		g.releaseProbe(key, probe)

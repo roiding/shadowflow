@@ -37,6 +37,9 @@ func (s *Service) CollectStockBoardRelations(ctx context.Context, tradeDate stri
 		return syncErr
 	}
 
+	if err := s.PrepareUpstreamRequests(ctx, "relations", -1, 1); err != nil {
+		return fail(err)
+	}
 	seenBoards := make(map[string]graymarket.BoardType, 1024)
 	for _, boardType := range []graymarket.BoardType{graymarket.BoardIndustry, graymarket.BoardConcept} {
 		boards, err := s.fetchBoardCatalog(ctx, boardType)

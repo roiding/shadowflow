@@ -30,6 +30,7 @@ const (
 	SnapshotResearch5m SnapshotKind = "research_5m"
 	SnapshotDailyClose SnapshotKind = "daily_close"
 	SnapshotStockKline SnapshotKind = "stock_kline_5m"
+	SnapshotLimitUpEvents SnapshotKind = "limit_up_events"
 )
 
 type BoardType string

@@ -23,6 +23,7 @@ import (
 	"github.com/roiding/shadowflow/internal/collector"
 	"github.com/roiding/shadowflow/internal/config"
 	"github.com/roiding/shadowflow/internal/datasource/eastmoney"
+	"github.com/roiding/shadowflow/internal/datasource/ths"
 	"github.com/roiding/shadowflow/internal/datasource/upstream"
 	"github.com/roiding/shadowflow/internal/quote"
 	"github.com/roiding/shadowflow/internal/repository/sqlite"
@@ -61,16 +62,23 @@ func main() {
 	if coverage := calendar.Coverage(time.Now()); coverage.Expired {
 		logger.Warn("trading calendar is missing or expired; falling back to weekday-only trading detection", "coverage", coverage)
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConns = cfg.UpstreamMaxConcurrency * 4
-	transport.MaxIdleConnsPerHost = cfg.UpstreamMaxConcurrency
-	upstreamClient := &http.Client{Transport: transport, Timeout: cfg.RequestTimeout}
-	guard := upstream.New(upstreamClient, upstream.Options{
-		MaxConcurrency: cfg.UpstreamMaxConcurrency, RatePerSecond: cfg.UpstreamRatePerSecond,
-	})
+	bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), cfg.ProxyPoolRequestTimeout)
+	upstreamResult, err := upstream.NewClient(bootstrapCtx, cfg, logger)
+	bootstrapCancel()
+	if err != nil {
+		logger.Error("create upstream client", "error", err)
+		os.Exit(1)
+	}
+	upstreamClient, guard, proxyPool := upstreamResult.Client, upstreamResult.Guard, upstreamResult.Pool
+	if proxyPool != nil {
+		defer proxyPool.Stop()
+	}
 	client := eastmoney.NewClient(cfg.UpstreamBaseURL, upstreamClient, cfg.PageSize).
 		WithQuoteBaseURLs(cfg.QuoteBaseURLs).WithUpstreamGuard(guard)
-	collectorService := collector.New(client, store, logger).WithAllowMissingQuotes(cfg.AllowMissingQuotes)
+	thsClient := ths.NewClient(ths.DefaultBaseURL, &http.Client{Timeout: 20 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }})
+	collectorService := collector.New(client, store, logger).WithAllowMissingQuotes(cfg.AllowMissingQuotes).
+		WithLimitUpSource(thsClient, cfg.LimitUpScope)
 	disabledKinds := make(map[string]struct{}, len(cfg.SchedulerDisabledKinds))
 	for _, kind := range cfg.SchedulerDisabledKinds {
 		if kind = strings.TrimSpace(kind); kind != "" {
@@ -82,6 +90,8 @@ func main() {
 		FailureRunRetentionDays: cfg.FailureRunRetentionDays,
 		Jobs:                    store,
 		DisabledKinds:           disabledKinds,
+		ProxyPrewarmEnabled:     proxyPool != nil,
+		LimitUpArchiveEnabled:   cfg.LimitUpArchiveEnabled,
 	})
 	if err != nil {
 		logger.Error("create scheduler", "error", err)
@@ -95,7 +105,10 @@ func main() {
 		sort.Strings(kinds)
 		logger.Info("scheduler job kinds disabled", "kinds", kinds)
 	}
-	apiServer, err := api.New(store, calendar, logger, api.Options{StaticDir: cfg.StaticDir, QuoteSource: quote.NewCache(client, logger), APIToken: cfg.APIToken, NormalRatePerMinute: cfg.NormalRatePerMinute, ExportRatePerMinute: cfg.ExportRatePerMinute, ScanRatePerMinute: cfg.ScanRatePerMinute, TrustedProxyCIDR: cfg.TrustedProxyCIDR})
+	_, eventDisabled := disabledKinds["end-of-day-events"]
+	_, postCloseDisabled := disabledKinds["end-of-day"]
+	eventsScheduled := cfg.SchedulerEnabled && cfg.LimitUpArchiveEnabled && !eventDisabled && !postCloseDisabled
+	apiServer, err := api.New(store, calendar, logger, api.Options{StaticDir: cfg.StaticDir, QuoteSource: quote.NewCache(client, logger), APIToken: cfg.APIToken, NormalRatePerMinute: cfg.NormalRatePerMinute, ExportRatePerMinute: cfg.ExportRatePerMinute, ScanRatePerMinute: cfg.ScanRatePerMinute, TrustedProxyCIDR: cfg.TrustedProxyCIDR, ProxyPool: proxyPool, LimitUpArchiveScheduled: eventsScheduled, LimitUpScope: cfg.LimitUpScope})
 	if err != nil {
 		logger.Error("create API", "error", err)
 		os.Exit(1)

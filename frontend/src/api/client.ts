@@ -1,10 +1,32 @@
 import { getToken, notifyUnauthorized } from '../auth'
 import type { components } from './schema'
 import { loadCompleteBoardClose } from './boardClose'
+import type { LimitUpAnalysis, LimitUpArchiveQuality, LimitUpOverview, LimitUpQuery } from './limitup'
+import { limitUpQualityParams } from './limitup'
 import type { ApiEnvelope, ArchiveRevision, BoardQuoteMeta, BoardStockQuote, CollectionRun, DailyFeature, FutureReturnLabel, FocusResult, FocusScanRequest, PageMeta, QualityMeta, QualitySummary, RankRecord, RankType, StockResearchPoint, SystemStatus } from './types'
 
 const REQUEST_TIMEOUT_MS = 25_000
 const SCAN_TIMEOUT_MS = 35_000
+
+export class ApiRequestError extends Error {
+  readonly code: string
+  readonly status: number
+
+  constructor(message: string, code: string, status: number) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.code = code
+    this.status = status
+  }
+}
+
+function limitUpParams(query: LimitUpQuery) {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== '') params.set(key, String(value))
+  }
+  return params.toString()
+}
 
 async function request<T, M = Record<string, unknown>>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<ApiEnvelope<T, M>> {
   const controller = new AbortController()
@@ -34,7 +56,7 @@ async function request<T, M = Record<string, unknown>>(path: string, init?: Requ
       throw new Error(`服务返回了无法识别的响应 (${response.status})`)
     }
     if (!response.ok || payload.error) {
-      throw new Error(payload.error?.message ?? `请求失败 (${response.status})`)
+      throw new ApiRequestError(payload.error?.message ?? `请求失败 (${response.status})`, payload.error?.code ?? 'http_error', response.status)
     }
     return payload
   } catch (error) {
@@ -48,6 +70,9 @@ async function request<T, M = Record<string, unknown>>(path: string, init?: Requ
 }
 
 export const api = {
+  limitUpOverview: (query: LimitUpQuery, signal?: AbortSignal) => request<LimitUpOverview>(`/api/v1/limit-up/overview?${limitUpParams(query)}`, { signal }),
+  limitUpStock: (code: string, query: LimitUpQuery, signal?: AbortSignal) => request<LimitUpAnalysis>(`/api/v1/limit-up/stocks/${encodeURIComponent(code)}?${limitUpParams(query)}`, { signal }),
+  limitUpQuality: (date: string, scope?: string, signal?: AbortSignal) => request<LimitUpArchiveQuality>(`/api/v1/limit-up/quality?${limitUpQualityParams(date, scope)}`, { signal }),
   latest: (type: Exclude<RankType, 'stock'>, signal?: AbortSignal) => request<RankRecord[], components['schemas']['LatestRankMeta']>(`/api/v1/ranks/latest?type=${type}`, { signal }),
   rankAt: (type: Exclude<RankType, 'stock'>, date: string, at: string, signal?: AbortSignal) =>
     request<RankRecord[]>(`/api/v1/ranks?type=${type}&trade_date=${date}&at=${at}`, { signal }),

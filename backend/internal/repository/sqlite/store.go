@@ -117,6 +117,9 @@ func OpenWithReadConns(path string, readConns int) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("migrate database: %w", err)
 	}
+	if _, err := db.Exec(limitUpSchema); err != nil {
+		return nil, fmt.Errorf("migrate limit-up event tables: %w", err)
+	}
 	if err := migrateRunLeases(db); err != nil {
 		return nil, fmt.Errorf("migrate collection run leases: %w", err)
 	}
