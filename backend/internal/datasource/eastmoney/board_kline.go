@@ -57,11 +57,11 @@ func (c *Client) FetchBoardDailyKlinesRange(ctx context.Context, from, to time.T
 		if err != nil || len(fields) != 11 {
 			return fmt.Errorf("invalid board kline row %q", raw)
 		}
-		at, err := time.ParseInLocation("2006-01-02 15:04", fields[0], location)
-		if err != nil {
+		// Daily bars carry a date-only first field (no intraday time).
+		tradeDate := fields[0]
+		if _, err := time.ParseInLocation("2006-01-02", tradeDate, location); err != nil {
 			return fmt.Errorf("invalid board kline date %q", fields[0])
 		}
-		tradeDate := at.Format("2006-01-02")
 		numbers, err := klineNumbers(fields, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 		if err != nil {
 			return err
