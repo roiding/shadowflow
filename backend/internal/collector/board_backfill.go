@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/roiding/shadowflow/internal/datasource/eastmoney"
 	"github.com/roiding/shadowflow/internal/graymarket"
 	"github.com/roiding/shadowflow/internal/repository"
 )
@@ -18,23 +19,7 @@ var shanghaiZone = time.FixedZone("Asia/Shanghai", 8*3600)
 // backfill path for board identity snapshots).
 type boardDailyCloseSource interface {
 	FetchBoardDailyKlinesRange(ctx context.Context, from, to time.Time,
-		board graymarket.Board, emit func(tradeDate string, bar BoardDailyBar)) error
-}
-
-// BoardDailyBar mirrors the eastmoney board bar type without importing the
-// datasource package here.
-type BoardDailyBar struct {
-	TradeDate    string
-	Open         float64
-	Close        float64
-	High         float64
-	Low          float64
-	Volume       float64
-	Amount       float64
-	Amplitude    float64
-	ChangePct    float64
-	ChangeValue  float64
-	TurnoverRate float64
+		board graymarket.Board, emit func(tradeDate string, bar eastmoney.BoardDailyBar)) error
 }
 
 // BoardBackfillReport summarizes one operator-run board identity patch.
@@ -139,7 +124,7 @@ func (s *Service) CollectBoardDailyCloseBackfill(ctx context.Context, from, to t
 			return
 		}
 		err := source.FetchBoardDailyKlinesRange(ctx, from, to, board,
-			func(tradeDate string, bar BoardDailyBar) {
+			func(tradeDate string, bar eastmoney.BoardDailyBar) {
 				key := dayTypeKey{tradeDate, rankType}
 				if !pending[key] {
 					return

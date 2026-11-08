@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/roiding/shadowflow/internal/datasource/eastmoney"
 	"github.com/roiding/shadowflow/internal/graymarket"
 	"github.com/roiding/shadowflow/internal/repository"
 )
@@ -89,12 +90,12 @@ func (fake *fakeBoardKlineSource) FetchBoardConstituents(ctx context.Context, bo
 }
 
 func (fake *fakeBoardKlineSource) FetchBoardDailyKlinesRange(ctx context.Context, from, to time.Time,
-	board graymarket.Board, emit func(tradeDate string, bar BoardDailyBar)) error {
+	board graymarket.Board, emit func(tradeDate string, bar eastmoney.BoardDailyBar)) error {
 	fake.calls++
 	fake.boards = append(fake.boards, string(board.Type)+":"+board.Code)
 	for day := from; !day.After(to); day = day.AddDate(0, 0, 1) {
 		tradeDate := day.Format("2006-01-02")
-		emit(tradeDate, BoardDailyBar{TradeDate: tradeDate, Open: 10, Close: 11, High: 12, Low: 9,
+		emit(tradeDate, eastmoney.BoardDailyBar{TradeDate: tradeDate, Open: 10, Close: 11, High: 12, Low: 9,
 			Volume: 1000, Amount: 100000, ChangeValue: 1, ChangePct: 10, Amplitude: 30, TurnoverRate: 1})
 	}
 	return nil
