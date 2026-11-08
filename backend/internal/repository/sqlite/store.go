@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/url"
 	"os"
@@ -34,10 +35,20 @@ const timestampLayout = time.RFC3339Nano
 // archive-completeness counts and equality lookups silently wrong.
 func formatTimestamp(t time.Time) string { return t.UTC().Format(timestampLayout) }
 
+// bseStock reports whether a stock identity belongs to the Beijing Stock
+// Exchange. BSE prints are out of the research universe in every stock
+// dimension: the operator never trades them, and the upstream's BSE
+// 5-minute series cannot satisfy the 48-slot completeness contract.
+func bseStock(market int64, code string) bool {
+	return market == 0 && strings.HasPrefix(code, "92")
+}
+
+// quoteAvailableRecords narrows a stock snapshot to the research universe:
+// rows with a usable daily quote, excluding BSE prints.
 func quoteAvailableRecords(records []graymarket.RankRecord) []graymarket.RankRecord {
 	result := make([]graymarket.RankRecord, 0, len(records))
 	for _, record := range records {
-		if record.QuoteAvailable {
+		if record.QuoteAvailable && !bseStock(record.Market, record.Code) {
 			result = append(result, record)
 		}
 	}
@@ -158,6 +169,9 @@ func OpenWithReadConns(path string, readConns int) (*Store, error) {
 	}
 	if err := migrateStockResearchUniverse(store); err != nil {
 		return nil, fmt.Errorf("migrate stock research universe: %w", err)
+	}
+	if err := migrateStockUniverseHS(store); err != nil {
+		return nil, fmt.Errorf("migrate stock universe to HS: %w", err)
 	}
 	if err := migrateResearchCloseModel(db); err != nil {
 		return nil, fmt.Errorf("migrate 15:00 close snapshots: %w", err)
@@ -517,6 +531,88 @@ daily_kline_rows=(SELECT count(*) FROM rank_snapshot WHERE trade_date=stock_arch
 AND snapshot_kind='daily_close' AND rank_type='stock' AND quote_available=1)
 WHERE expected_kline_stocks=0 AND daily_kline_rows=0`)
 	return err
+}
+
+// migrateStockUniverseHS removes every BSE print (market 0, code 92xxxx)
+// from all stock dimensions — identity snapshots, 5-minute money and kline
+// rows, kline provenance — and recomputes the per-day quality and manifest
+// accounting for the narrowed HS universe. The operator never trades BSE and
+// the upstream's BSE 5-minute series cannot satisfy the 48-slot contract.
+// Sealed revision rows keep their historical counts on purpose: they audit
+// what was sealed at the time.
+func migrateStockUniverseHS(store *Store) error {
+	var migrated int
+	if err := store.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM database_maintenance
+WHERE name='stock_universe_hs_v1')`).Scan(&migrated); err != nil {
+		return err
+	}
+	if migrated == 1 {
+		return nil
+	}
+	tx, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, query := range []string{
+		`DELETE FROM stock_research_5m WHERE market=0 AND code LIKE '92%'`,
+		`DELETE FROM stock_kline_source WHERE market=0 AND code LIKE '92%'`,
+		`DELETE FROM rank_snapshot WHERE rank_type='stock' AND market=0 AND code LIKE '92%'`,
+	} {
+		if _, err := tx.Exec(query); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE stock_archive_quality AS q SET
+	expected_stocks=(SELECT count(*) FROM rank_snapshot WHERE trade_date=q.trade_date
+		AND snapshot_kind='daily_close' AND rank_type='stock'),
+	expected_kline_stocks=(SELECT count(*) FROM rank_snapshot WHERE trade_date=q.trade_date
+		AND snapshot_kind='daily_close' AND rank_type='stock' AND quote_available=1),
+	daily_close_rows=(SELECT count(*) FROM rank_snapshot WHERE trade_date=q.trade_date
+		AND snapshot_kind='daily_close' AND rank_type='stock'),
+	daily_kline_rows=(SELECT coalesce(sum(quote_available),0) FROM rank_snapshot WHERE trade_date=q.trade_date
+		AND snapshot_kind='daily_close' AND rank_type='stock'),
+	money_rows=(SELECT coalesce(sum(money_available),0) FROM stock_research_5m WHERE trade_date=q.trade_date),
+	kline_rows=(SELECT coalesce(sum(kline_available),0) FROM stock_research_5m WHERE trade_date=q.trade_date),
+	kline_archived_at=CASE
+		WHEN (SELECT coalesce(sum(kline_available),0) FROM stock_research_5m WHERE trade_date=q.trade_date)
+			= (SELECT count(*) FROM rank_snapshot WHERE trade_date=q.trade_date
+				AND snapshot_kind='daily_close' AND rank_type='stock' AND quote_available=1) * q.expected_points
+		THEN coalesce(q.kline_archived_at, q.updated_at) ELSE NULL END`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at) VALUES('stock_universe_hs_v1',?)`,
+		formatTimestamp(time.Now().UTC())); err != nil {
+		return err
+	}
+	dates, err := tx.QueryContext(context.Background(), `SELECT DISTINCT trade_date FROM stock_archive_quality ORDER BY trade_date`)
+	if err != nil {
+		return err
+	}
+	var tradeDates []string
+	for dates.Next() {
+		var tradeDate string
+		if err := dates.Scan(&tradeDate); err != nil {
+			dates.Close()
+			return err
+		}
+		tradeDates = append(tradeDates, tradeDate)
+	}
+	dates.Close()
+	if err := dates.Err(); err != nil {
+		return err
+	}
+	for _, tradeDate := range tradeDates {
+		if err := refreshArchiveManifest(context.Background(), tx, tradeDate); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	slog.Info("stock universe narrowed to HS: BSE prints removed",
+		"tables", "rank_snapshot,stock_research_5m,stock_kline_source")
+	return nil
 }
 
 // migrateStockResearchUniverse removes placeholder five-minute rows for
@@ -1245,6 +1341,16 @@ WHERE target.trade_date=?1 AND target.minute_index=?2 AND target.money_available
 }
 
 func (s *Store) SaveStockKlines(ctx context.Context, runID string, points []graymarket.StockKlinePoint) error {
+	if len(points) == 0 {
+		return graymarket.ErrNoData
+	}
+	filtered := make([]graymarket.StockKlinePoint, 0, len(points))
+	for _, point := range points {
+		if !bseStock(point.Market, point.Code) {
+			filtered = append(filtered, point)
+		}
+	}
+	points = filtered
 	if len(points) == 0 {
 		return graymarket.ErrNoData
 	}

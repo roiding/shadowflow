@@ -178,20 +178,13 @@ func (s *Service) CollectStockKlineRangePatch(ctx context.Context, from, to time
 	return report, finishRange(ctx, s, run, &report, days, dayOrder)
 }
 
-// finishRange settles the audit run and finalizes every touched day's
-// manifest so the quality pages reflect the patch immediately.
+// finishRange settles the audit run. Every touched day's manifest was
+// already refreshed inside SaveStockKlines; the per-date revision seal is the
+// daily task's job and is skipped here because the range run spans many dates
+// and a run's revision belongs to a single requested date.
 func finishRange(ctx context.Context, s *Service, run repository.CollectionRun,
 	report *RangePatchReport, days map[string]*dayRangeState, dayOrder []string) error {
 	var combined error
-	for _, date := range dayOrder {
-		state := days[date]
-		if state.written == 0 || len(state.pending) > 0 {
-			continue
-		}
-		if _, err := s.store.SealArchiveRevision(ctx, date, "kline-range-"+run.RunID); err != nil {
-			combined = errors.Join(combined, fmt.Errorf("seal %s: %w", date, err))
-		}
-	}
 	if combined == nil && report.FailedStocks == 0 && len(report.IncompleteDates) == 0 {
 		run.Status = repository.RunSuccess
 	} else if run.Status == repository.RunRunning {

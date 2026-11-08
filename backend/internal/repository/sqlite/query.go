@@ -534,7 +534,8 @@ AND kline_rows=expected_kline_stocks*expected_points)`, tradeDate).Scan(&exists)
 func (s *Store) MissingStockKlineCodes(ctx context.Context, tradeDate string) ([]string, error) {
 	var expectedStocks, expectedPoints, closeStocks int
 	err := s.readDB().QueryRowContext(ctx, `SELECT expected_kline_stocks,expected_points,
-(SELECT count(*) FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock' AND quote_available=1)
+(SELECT count(*) FROM rank_snapshot WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock' AND quote_available=1
+	AND NOT (market=0 AND code LIKE '92%'))
 FROM stock_archive_quality WHERE trade_date=?`, tradeDate, tradeDate).Scan(&expectedStocks, &expectedPoints, &closeStocks)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: stock archive is unavailable for %s", graymarket.ErrNoData, tradeDate)
@@ -551,7 +552,8 @@ LEFT JOIN (
 	FROM stock_research_5m WHERE trade_date=? GROUP BY market,code
 ) AS archived ON archived.market=close.market AND archived.code=close.code
 WHERE close.trade_date=? AND close.snapshot_kind='daily_close' AND close.rank_type='stock'
-AND close.quote_available=1 AND coalesce(archived.kline_rows,0)<? ORDER BY close.rank`, tradeDate, tradeDate, expectedPoints)
+AND close.quote_available=1 AND NOT (close.market=0 AND close.code LIKE '92%')
+AND coalesce(archived.kline_rows,0)<? ORDER BY close.rank`, tradeDate, tradeDate, expectedPoints)
 	if err != nil {
 		return nil, err
 	}

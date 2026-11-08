@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/roiding/shadowflow/internal/graymarket"
@@ -390,6 +391,15 @@ func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error
 	}
 	snapshot := graymarket.RankSnapshot{TradeDate: tradeDate, RankType: graymarket.RankStock,
 		SnapshotAt: time.Date(runAt.Year(), runAt.Month(), runAt.Day(), 15, 0, 0, 0, runAt.Location()), Records: records}
+	// BSE prints are out of the research universe in every stock dimension;
+	// do not spend upstream requests on them.
+	filtered := snapshot.Records[:0]
+	for _, record := range snapshot.Records {
+		if !(record.Market == 0 && strings.HasPrefix(record.Code, "92")) {
+			filtered = append(filtered, record)
+		}
+	}
+	snapshot.Records = filtered
 	run.ExpectedTotal = len(snapshot.Records) * 48
 	run.PageCount = len(snapshot.Records)
 	if incremental, ok := s.source.(IncrementalStockKlineSource); ok {
