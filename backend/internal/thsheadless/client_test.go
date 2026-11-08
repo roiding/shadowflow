@@ -100,7 +100,7 @@ func TestWaitForRiskSessionRejectsCookieCaptureFailure(testingT *testing.T) {
 		commandFunc:  fixedCommand(fakeCookieResult{err: errors.New("fixture command failure")}),
 	}
 	_, _, waitError := waitForRiskSession(context.Background(), session,
-		50*time.Millisecond, 50*time.Millisecond, time.Millisecond, time.Millisecond)
+		50*time.Millisecond, 50*time.Millisecond, time.Millisecond, time.Millisecond, 0)
 	if !errors.Is(waitError, ErrUnavailable) {
 		testingT.Fatalf("cookie capture failure was not returned: %v", waitError)
 	}
@@ -112,7 +112,7 @@ func TestWaitForRiskSessionRejectsCookieEvaluationFailure(testingT *testing.T) {
 		commandFunc:  fixedCommand(fakeCookiePayload(testingT)),
 	}
 	_, _, waitError := waitForRiskSession(context.Background(), session,
-		50*time.Millisecond, 50*time.Millisecond, time.Millisecond, time.Millisecond)
+		50*time.Millisecond, 50*time.Millisecond, time.Millisecond, time.Millisecond, 0)
 	if !errors.Is(waitError, ErrUnavailable) {
 		testingT.Fatalf("cookie evaluation failure was not returned: %v", waitError)
 	}
@@ -124,7 +124,7 @@ func TestWaitForRiskSessionRejectsMalformedCookieJSON(testingT *testing.T) {
 		commandFunc:  fixedCommand(fakeCookieResult{payload: json.RawMessage("{")}),
 	}
 	_, _, waitError := waitForRiskSession(context.Background(), session,
-		50*time.Millisecond, 50*time.Millisecond, time.Millisecond, time.Millisecond)
+		50*time.Millisecond, 50*time.Millisecond, time.Millisecond, time.Millisecond, 0)
 	if !errors.Is(waitError, ErrUnavailable) {
 		testingT.Fatalf("malformed cookie JSON was not returned as an error: %v", waitError)
 	}
@@ -136,7 +136,7 @@ func TestWaitForRiskSessionRejectsEmptyCookieSet(testingT *testing.T) {
 		commandFunc:  fixedCommand(fakeCookiePayload(testingT)),
 	}
 	_, _, waitError := waitForRiskSession(context.Background(), session,
-		50*time.Millisecond, 50*time.Millisecond, time.Millisecond, time.Millisecond)
+		50*time.Millisecond, 50*time.Millisecond, time.Millisecond, time.Millisecond, 0)
 	if !errors.Is(waitError, ErrUnavailable) {
 		testingT.Fatalf("empty cookie set was accepted: %v", waitError)
 	}
@@ -164,7 +164,7 @@ func TestWaitForRiskSessionAcceptsStableCookiesAfterChange(testingT *testing.T) 
 		},
 	}
 	riskCookie, cookies, waitError := waitForRiskSession(context.Background(), session,
-		time.Second, time.Second, time.Millisecond, time.Millisecond)
+		time.Second, time.Second, time.Millisecond, time.Millisecond, 0)
 	if waitError != nil {
 		testingT.Fatal(waitError)
 	}
@@ -199,7 +199,7 @@ func TestWaitForRiskSessionUsesRotatedRiskCookie(testingT *testing.T) {
 		},
 	}
 	riskCookie, cookies, waitError := waitForRiskSession(context.Background(), session,
-		time.Second, time.Second, time.Millisecond, time.Millisecond)
+		time.Second, time.Second, time.Millisecond, time.Millisecond, 0)
 	if waitError != nil {
 		testingT.Fatal(waitError)
 	}
@@ -229,7 +229,7 @@ func TestWaitForRiskSessionHonorsCancellation(testingT *testing.T) {
 		},
 	}
 	_, _, waitError := waitForRiskSession(ctx, session,
-		time.Second, time.Second, time.Millisecond, time.Millisecond)
+		time.Second, time.Second, time.Millisecond, time.Millisecond, 0)
 	if !errors.Is(waitError, context.Canceled) {
 		testingT.Fatalf("cancellation did not stop the wait: %v", waitError)
 	}
@@ -251,7 +251,7 @@ func TestWaitForRiskSessionRejectsExpiredStabilityBudget(testingT *testing.T) {
 		},
 	}
 	_, _, waitError := waitForRiskSession(context.Background(), session,
-		time.Second, 30*time.Millisecond, time.Millisecond, time.Millisecond)
+		time.Second, 30*time.Millisecond, time.Millisecond, time.Millisecond, 0)
 	if !errors.Is(waitError, ErrUnavailable) {
 		testingT.Fatalf("expired stability budget was accepted: %v", waitError)
 	}
@@ -271,6 +271,52 @@ func TestCaptureCookiesPreservesDomainAndSizeLimits(testingT *testing.T) {
 	}
 	if len(cookies) != 1 || cookies[0].Name != "v" {
 		testingT.Fatalf("domain or size filtering changed: %+v", cookies)
+	}
+}
+
+func TestWaitForRiskSessionWaitsForDelayedDeviceCookies(testingT *testing.T) {
+	initial := fakeCookiePayload(testingT,
+		cdpCookie{Name: "v", Value: "fixture-risk", Domain: ".10jqka.com.cn", Path: "/", Secure: true},
+	)
+	complete := fakeCookiePayload(testingT,
+		cdpCookie{Name: "v", Value: "fixture-risk", Domain: ".10jqka.com.cn", Path: "/", Secure: true},
+		cdpCookie{Name: "u_did", Value: "fixture-device", Domain: ".10jqka.com.cn", Path: "/", HTTPOnly: true},
+		cdpCookie{Name: "PHPSESSID", Value: "fixture-session", Domain: ".10jqka.com.cn", Path: "/", Secure: true},
+	)
+	completeCaptures := 0
+	minimumWait := 80 * time.Millisecond
+	started := time.Now()
+	session := &fakeCDPSession{
+		evaluateFunc: fixedEvaluate("v=fixture-risk", nil),
+		commandFunc: func(context.Context, string, map[string]any) (json.RawMessage, error) {
+			if time.Since(started) < minimumWait/2 {
+				return initial.payload, nil
+			}
+			completeCaptures++
+			return complete.payload, nil
+		},
+	}
+	_, cookies, waitError := waitForRiskSession(context.Background(), session,
+		time.Second, time.Second, time.Millisecond, time.Millisecond, minimumWait)
+	if waitError != nil {
+		testingT.Fatal(waitError)
+	}
+	if time.Since(started) < minimumWait || completeCaptures < 3 || len(cookies) != 3 {
+		testingT.Fatalf("handshake returned before delayed cookies stabilized: complete_captures=%d cookies=%d", completeCaptures, len(cookies))
+	}
+}
+
+func TestWaitForRiskSessionDoesNotBypassMinimumWaitOnTimeout(testingT *testing.T) {
+	session := &fakeCDPSession{
+		evaluateFunc: fixedEvaluate("v=fixture-risk", nil),
+		commandFunc: fixedCommand(fakeCookiePayload(testingT,
+			cdpCookie{Name: "v", Value: "fixture-risk", Domain: ".10jqka.com.cn", Path: "/", Secure: true},
+		)),
+	}
+	_, _, waitError := waitForRiskSession(context.Background(), session,
+		time.Second, 30*time.Millisecond, time.Millisecond, time.Millisecond, time.Second)
+	if !errors.Is(waitError, ErrUnavailable) {
+		testingT.Fatalf("stability deadline bypassed the minimum handshake wait: %v", waitError)
 	}
 }
 

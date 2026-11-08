@@ -24,7 +24,8 @@ var ErrUnavailable = errors.New("headless browser unavailable")
 const (
 	riskTokenPollInterval    = 250 * time.Millisecond
 	handshakePollInterval    = 750 * time.Millisecond
-	handshakeStabilityWindow = 12 * time.Second
+	handshakeStabilityWindow = 20 * time.Second
+	handshakeMinimumWait     = 10 * time.Second
 	maxHandshakeCookies      = 64
 )
 
@@ -131,7 +132,7 @@ func (client *Client) visit(ctx context.Context, pageURL string) (string, *http.
 	}
 	defer cdp.close()
 	cookie, cookies, waitError := waitForRiskSession(ctx, cdp, client.options.Timeout,
-		handshakeStabilityWindow, riskTokenPollInterval, handshakePollInterval)
+		handshakeStabilityWindow, riskTokenPollInterval, handshakePollInterval, handshakeMinimumWait)
 	if waitError != nil {
 		return "", nil, nil, waitError
 	}
@@ -152,11 +153,11 @@ type cdpCookie struct {
 	Expires  float64 `json:"expires"`
 }
 
-func waitForRiskSession(ctx context.Context, session cdpSession, tokenTimeout, stabilityTimeout, tokenInterval, cookieInterval time.Duration) (*http.Cookie, []*http.Cookie, error) {
+func waitForRiskSession(ctx context.Context, session cdpSession, tokenTimeout, stabilityTimeout, tokenInterval, cookieInterval, minimumWait time.Duration) (*http.Cookie, []*http.Cookie, error) {
 	if tokenError := waitForRiskToken(ctx, session, tokenTimeout, tokenInterval); tokenError != nil {
 		return nil, nil, tokenError
 	}
-	return waitForStableRiskCookies(ctx, session, stabilityTimeout, cookieInterval)
+	return waitForStableRiskCookies(ctx, session, stabilityTimeout, cookieInterval, minimumWait)
 }
 
 func waitForRiskToken(ctx context.Context, session cdpSession, timeout, interval time.Duration) error {
@@ -190,9 +191,10 @@ func waitForRiskToken(ctx context.Context, session cdpSession, timeout, interval
 	}
 }
 
-func waitForStableRiskCookies(ctx context.Context, session cdpSession, timeout, interval time.Duration) (*http.Cookie, []*http.Cookie, error) {
+func waitForStableRiskCookies(ctx context.Context, session cdpSession, timeout, interval, minimumWait time.Duration) (*http.Cookie, []*http.Cookie, error) {
 	deadline := time.Now().Add(timeout)
 	var previous []*http.Cookie
+	var firstValidAt time.Time
 	stableStreak := 0
 	for {
 		if contextError := ctx.Err(); contextError != nil {
@@ -211,10 +213,14 @@ func waitForStableRiskCookies(ctx context.Context, session cdpSession, timeout, 
 		if !time.Now().Before(deadline) {
 			return nil, nil, fmt.Errorf("%w: ths handshake cookies did not stabilize", ErrUnavailable)
 		}
-		riskCookie, riskValid := currentRiskCookie(cookies, time.Now())
+		observedAt := time.Now()
+		riskCookie, riskValid := currentRiskCookie(cookies, observedAt)
+		if riskValid && firstValidAt.IsZero() {
+			firstValidAt = observedAt
+		}
 		if riskValid && len(previous) > 0 && sameCookieSet(previous, cookies) {
 			stableStreak++
-			if stableStreak >= 2 {
+			if stableStreak >= 2 && observedAt.Sub(firstValidAt) >= minimumWait {
 				return riskCookie, cookies, nil
 			}
 		} else {
@@ -224,6 +230,7 @@ func waitForStableRiskCookies(ctx context.Context, session cdpSession, timeout, 
 			previous = cookies
 		} else {
 			previous = nil
+			firstValidAt = time.Time{}
 		}
 		if waitError := waitForNextPoll(ctx, deadline, interval); waitError != nil {
 			return nil, nil, waitError
