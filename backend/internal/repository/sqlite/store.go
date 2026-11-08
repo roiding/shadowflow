@@ -554,6 +554,27 @@ WHERE name='stock_universe_hs_v1')`).Scan(&migrated); err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	// Days whose 5-minute money was already degraded by the hot/cold
+	// lifecycle (money rows pruned, manifest still sealed complete) must keep
+	// their sealed manifests: refreshing them against the degraded tables
+	// would flip sealed days to incomplete.
+	degraded := map[string]bool{}
+	moneyRows, err := tx.QueryContext(context.Background(), `SELECT trade_date FROM stock_archive_quality WHERE money_rows=0 AND kline_rows>0`)
+	if err != nil {
+		return err
+	}
+	for moneyRows.Next() {
+		var tradeDate string
+		if err := moneyRows.Scan(&tradeDate); err != nil {
+			moneyRows.Close()
+			return err
+		}
+		degraded[tradeDate] = true
+	}
+	moneyRows.Close()
+	if err := moneyRows.Err(); err != nil {
+		return err
+	}
 	for _, query := range []string{
 		`DELETE FROM stock_research_5m WHERE market=0 AND code LIKE '92%'`,
 		`DELETE FROM stock_kline_source WHERE market=0 AND code LIKE '92%'`,
@@ -603,6 +624,9 @@ WHERE name='stock_universe_hs_v1')`).Scan(&migrated); err != nil {
 		return err
 	}
 	for _, tradeDate := range tradeDates {
+		if degraded[tradeDate] {
+			continue
+		}
 		if err := refreshArchiveManifest(context.Background(), tx, tradeDate); err != nil {
 			return err
 		}
