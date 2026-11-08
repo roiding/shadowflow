@@ -21,7 +21,7 @@ import (
 	"testing"
 )
 
-func captchaFixture(testingT *testing.T, backgroundName, pieceName string) ([]byte, []byte) {
+func captchaFixture(testingT testing.TB, backgroundName, pieceName string) ([]byte, []byte) {
 	testingT.Helper()
 	background, err := os.ReadFile(backgroundName)
 	if err != nil {
@@ -42,7 +42,7 @@ func TestDetectCaptchaOffsetUsesOfficialImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if offset < 150 || offset > 160 {
+	if offset != 154 {
 		t.Fatalf("unexpected captcha offset: %.1f", offset)
 	}
 }
@@ -71,7 +71,7 @@ func TestDetectCaptchaOffsetSyntheticShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if offset < 80 || offset > 86 {
+	if offset != 86 {
 		t.Fatalf("unexpected synthetic captcha offset: %.1f", offset)
 	}
 }
@@ -79,6 +79,30 @@ func TestDetectCaptchaOffsetSyntheticShape(t *testing.T) {
 func TestDetectCaptchaOffsetRejectsBrokenImages(t *testing.T) {
 	if _, err := detectCaptchaOffset([]byte("not-an-image"), []byte("also-not")); err == nil {
 		t.Fatal("broken captcha images were accepted")
+	}
+}
+
+func TestDetectCaptchaOffsetContextCancellation(testingT *testing.T) {
+	background, piece := captchaFixture(testingT,
+		"testdata/captcha-background.jpg",
+		"testdata/captcha-piece.png")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := detectCaptchaOffsetContext(ctx, background, piece); err != context.Canceled {
+		testingT.Fatalf("captcha cancellation was not observed: %v", err)
+	}
+}
+
+func TestDetectCaptchaOffsetRejectsDecodeBomb(testingT *testing.T) {
+	width, height := 2049, 2048
+	background := image.NewRGBA(image.Rect(0, 0, width, height))
+	var backgroundBuffer bytes.Buffer
+	if err := png.Encode(&backgroundBuffer, background); err != nil {
+		testingT.Fatal(err)
+	}
+	piece, _ := captchaFixture(testingT, "testdata/captcha-piece.png", "testdata/captcha-piece.png")
+	if _, err := detectCaptchaOffset(backgroundBuffer.Bytes(), piece); err == nil {
+		testingT.Fatal("oversized captcha image was decoded")
 	}
 }
 
@@ -125,6 +149,13 @@ func TestCaptchaSolutionPhraseUsesServerInitYAndDisplayScale(t *testing.T) {
 	}
 	if !strings.Contains(getTicketQuery, "103.605882") {
 		t.Fatalf("captcha phrase did not use the display scale: %s", getTicketQuery)
+	}
+	query, err := url.ParseQuery(getTicketQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phrase := query.Get("phrase"); phrase != "140;103.605882352941;309;177.220588235294" {
+		t.Fatalf("captcha phrase changed: %s", phrase)
 	}
 	phraseValue := strings.SplitN(strings.SplitN(getTicketQuery, "phrase=", 2)[1], "&", 2)[0]
 	phraseFields := strings.Split(phraseValue, "%3B")
@@ -243,4 +274,38 @@ func TestCaptchaFixtureEncoding(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = base64.StdEncoding
+}
+
+func BenchmarkDetectCaptchaOffset(testingB *testing.B) {
+	background, piece := captchaFixture(testingB,
+		"testdata/captcha-background.jpg",
+		"testdata/captcha-piece.png")
+	testingB.ReportAllocs()
+	testingB.ResetTimer()
+	for index := 0; index < testingB.N; index++ {
+		if _, err := detectCaptchaOffset(background, piece); err != nil {
+			testingB.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkCaptchaSearch(testingB *testing.B) {
+	backgroundBytes, pieceBytes := captchaFixture(testingB,
+		"testdata/captcha-background.jpg",
+		"testdata/captcha-piece.png")
+	background, _ := decodeCaptchaImage(context.Background(), backgroundBytes)
+	piece, _ := decodeCaptchaImage(context.Background(), pieceBytes)
+	template, _ := prepareCaptchaTemplate(context.Background(), piece)
+	backgroundGray, _ := grayscaleImage(context.Background(), background)
+	backgroundWidth := background.Bounds().Dx()
+	pieceWidth, pieceHeight := piece.Bounds().Dx(), piece.Bounds().Dy()
+	testingB.ReportAllocs()
+	testingB.ResetTimer()
+	for index := 0; index < testingB.N; index++ {
+		for row := 0; row+pieceHeight <= background.Bounds().Dy(); row++ {
+			for column := 0; column+pieceWidth <= background.Bounds().Dx(); column++ {
+				_ = captchaSimilarity(backgroundGray, backgroundWidth, template, column, row)
+			}
+		}
+	}
 }

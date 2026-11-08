@@ -27,6 +27,8 @@ const (
 	captchaImageHeight   = 195.0
 	captchaMaxImages     = 2 << 20
 	captchaMaxJSONPBytes = 256 << 10
+	captchaMaxPixels     = 4 << 20
+	captchaScanInterval  = 64
 )
 
 var captchaJSONP = regexp.MustCompile(`(?s)^\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\((.*)\)\s*;?\s*$`)
@@ -68,7 +70,7 @@ func solveCaptcha(ctx context.Context, client *http.Client) (captchaSolution, er
 	if err != nil {
 		return captchaSolution{}, err
 	}
-	x, err := detectCaptchaOffset(background, piece)
+	x, err := detectCaptchaOffsetContext(ctx, background, piece)
 	if err != nil {
 		return captchaSolution{}, err
 	}
@@ -194,12 +196,25 @@ func decodeCaptchaJSONP(body []byte, target any) error {
 }
 
 func detectCaptchaOffset(backgroundBytes, pieceBytes []byte) (float64, error) {
-	background, _, err := image.Decode(bytes.NewReader(backgroundBytes))
+	return detectCaptchaOffsetContext(context.Background(), backgroundBytes, pieceBytes)
+}
+
+func detectCaptchaOffsetContext(ctx context.Context, backgroundBytes, pieceBytes []byte) (float64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	background, err := decodeCaptchaImage(ctx, backgroundBytes)
 	if err != nil {
+		if contextError := ctx.Err(); contextError != nil {
+			return 0, contextError
+		}
 		return 0, fmt.Errorf("%w: invalid captcha background", ErrChallenge)
 	}
-	piece, _, err := image.Decode(bytes.NewReader(pieceBytes))
+	piece, err := decodeCaptchaImage(ctx, pieceBytes)
 	if err != nil {
+		if contextError := ctx.Err(); contextError != nil {
+			return 0, contextError
+		}
 		return 0, fmt.Errorf("%w: invalid captcha piece", ErrChallenge)
 	}
 	backgroundBounds := background.Bounds()
@@ -209,14 +224,31 @@ func detectCaptchaOffset(backgroundBytes, pieceBytes []byte) (float64, error) {
 		pieceBounds.Dx() > backgroundBounds.Dx() || pieceBounds.Dy() > backgroundBounds.Dy() {
 		return 0, fmt.Errorf("%w: unsupported captcha image dimensions", ErrChallenge)
 	}
+	template, err := prepareCaptchaTemplate(ctx, piece)
+	if err != nil {
+		return 0, err
+	}
+	backgroundGray, err := grayscaleImage(ctx, background)
+	if err != nil {
+		return 0, err
+	}
+	backgroundWidth := backgroundBounds.Dx()
+	pieceWidth, pieceHeight := pieceBounds.Dx(), pieceBounds.Dy()
 	bestScore := -1.0
 	bestX := 0
-	for y := 0; y+pieceBounds.Dy() <= backgroundBounds.Dy(); y++ {
-		for x := 0; x+pieceBounds.Dx() <= backgroundBounds.Dx(); x++ {
-			score := captchaSimilarity(background, piece, x, y)
+	scanned := 0
+	for row := 0; row+pieceHeight <= backgroundBounds.Dy(); row++ {
+		for column := 0; column+pieceWidth <= backgroundBounds.Dx(); column++ {
+			if scanned%captchaScanInterval == 0 {
+				if err := ctx.Err(); err != nil {
+					return 0, err
+				}
+			}
+			scanned++
+			score := captchaSimilarity(backgroundGray, backgroundWidth, template, column, row)
 			if score > bestScore {
 				bestScore = score
-				bestX = x
+				bestX = column
 			}
 		}
 	}
@@ -226,43 +258,105 @@ func detectCaptchaOffset(backgroundBytes, pieceBytes []byte) (float64, error) {
 	return float64(bestX), nil
 }
 
-func captchaSimilarity(background, piece image.Image, left, top int) float64 {
-	pieceBounds := piece.Bounds()
-	width, height := pieceBounds.Dx(), pieceBounds.Dy()
-	backgroundGray := make([]float64, 0, width*height)
-	pieceGray := make([]float64, 0, width*height)
-	for py := 0; py < height; py++ {
-		for px := 0; px < width; px++ {
-			red, green, blue, alpha := piece.At(pieceBounds.Min.X+px, pieceBounds.Min.Y+py).RGBA()
+type captchaTemplate struct {
+	positions []image.Point
+	values    []float64
+	mean      float64
+	energy    float64
+}
+
+func decodeCaptchaImage(ctx context.Context, payload []byte) (image.Image, error) {
+	config, _, err := image.DecodeConfig(bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	if config.Width <= 0 || config.Height <= 0 || config.Width > captchaMaxPixels/config.Height {
+		return nil, fmt.Errorf("%w: captcha image exceeds pixel limit", ErrChallenge)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	decoded, _, err := image.Decode(bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	return decoded, nil
+}
+
+func prepareCaptchaTemplate(ctx context.Context, piece image.Image) (captchaTemplate, error) {
+	bounds := piece.Bounds()
+	positions := make([]image.Point, 0, bounds.Dx()*bounds.Dy())
+	values := make([]float64, 0, bounds.Dx()*bounds.Dy())
+	for pieceRow := 0; pieceRow < bounds.Dy(); pieceRow++ {
+		if pieceRow%captchaScanInterval == 0 {
+			if err := ctx.Err(); err != nil {
+				return captchaTemplate{}, err
+			}
+		}
+		for pieceColumn := 0; pieceColumn < bounds.Dx(); pieceColumn++ {
+			red, green, blue, alpha := piece.At(bounds.Min.X+pieceColumn, bounds.Min.Y+pieceRow).RGBA()
 			if alpha>>8 < 200 {
 				continue
 			}
-			backgroundRed, backgroundGreen, backgroundBlue, _ := background.At(left+px, top+py).RGBA()
-			backgroundGray = append(backgroundGray, 0.299*float64(backgroundRed>>8)+0.587*float64(backgroundGreen>>8)+0.114*float64(backgroundBlue>>8))
-			pieceGray = append(pieceGray, 0.299*float64(red>>8)+0.587*float64(green>>8)+0.114*float64(blue>>8))
+			positions = append(positions, image.Pt(pieceColumn, pieceRow))
+			values = append(values, captchaGray(red, green, blue))
 		}
 	}
-	if len(pieceGray) < 200 {
-		return -1
+	if len(values) < 200 {
+		return captchaTemplate{}, fmt.Errorf("%w: captcha piece was not located", ErrChallenge)
 	}
-	return pearsonCorrelation(backgroundGray, pieceGray)
+	if err := ctx.Err(); err != nil {
+		return captchaTemplate{}, err
+	}
+	mean := mean(values)
+	energy := 0.0
+	for _, value := range values {
+		centered := value - mean
+		energy += centered * centered
+	}
+	return captchaTemplate{positions: positions, values: values, mean: mean, energy: energy}, nil
 }
 
-func pearsonCorrelation(first, second []float64) float64 {
-	firstMean, secondMean := mean(first), mean(second)
-	numerator, firstEnergy, secondEnergy := 0.0, 0.0, 0.0
-	for index := range first {
-		firstValue := first[index] - firstMean
-		secondValue := second[index] - secondMean
-		numerator += firstValue * secondValue
-		firstEnergy += firstValue * firstValue
-		secondEnergy += secondValue * secondValue
+func grayscaleImage(ctx context.Context, source image.Image) ([]float64, error) {
+	bounds := source.Bounds()
+	gray := make([]float64, bounds.Dx()*bounds.Dy())
+	for row := 0; row < bounds.Dy(); row++ {
+		if row%captchaScanInterval == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		for column := 0; column < bounds.Dx(); column++ {
+			red, green, blue, _ := source.At(bounds.Min.X+column, bounds.Min.Y+row).RGBA()
+			gray[row*bounds.Dx()+column] = captchaGray(red, green, blue)
+		}
 	}
-	denominator := math.Sqrt(firstEnergy * secondEnergy)
-	if denominator == 0 {
+	return gray, nil
+}
+
+func captchaSimilarity(background []float64, stride int, template captchaTemplate, left, top int) float64 {
+	total := 0.0
+	squares := 0.0
+	products := 0.0
+	for index, position := range template.positions {
+		value := background[(top+position.Y)*stride+left+position.X]
+		total += value
+		squares += value * value
+		products += value * template.values[index]
+	}
+	count := float64(len(template.values))
+	backgroundMean := total / count
+	backgroundEnergy := squares - count*backgroundMean*backgroundMean
+	numerator := products - count*backgroundMean*template.mean
+	denominator := math.Sqrt(backgroundEnergy * template.energy)
+	if denominator <= 0 || math.IsNaN(denominator) {
 		return -1
 	}
 	return numerator / denominator
+}
+
+func captchaGray(red, green, blue uint32) float64 {
+	return 0.299*float64(red>>8) + 0.587*float64(green>>8) + 0.114*float64(blue>>8)
 }
 
 func mean(values []float64) float64 {
