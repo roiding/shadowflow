@@ -163,6 +163,11 @@ type StockKlinePoint struct {
 const (
 	KlineSourceFiveMinute = "stock_kline_5m"
 	KlineSourceTrend241   = "stock_trends_1m_241"
+	// KlineSourceFiveMinuteBackfill marks rows written by the operator-run
+	// range patcher, which fetches one long request per stock and skips the
+	// per-day daily-bar cross-check (upstream BSE series disagree with their
+	// own daily bar on auction and after-hours prints).
+	KlineSourceFiveMinuteBackfill = "stock_kline_5m_backfill"
 	KlineSourceUnknown    = "unknown"
 )
 

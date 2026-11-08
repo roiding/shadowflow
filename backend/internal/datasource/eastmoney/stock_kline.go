@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -528,4 +529,112 @@ func researchMinuteIndexForSource(value time.Time) (int, bool) {
 		return 24 + (minutes-(13*60+5))/5, true
 	}
 	return 0, false
+}
+
+// FetchStockKlines5mRange fetches one stock's 5-minute bars over an inclusive
+// date range in a single upstream request and emits them grouped per trade
+// date. This is the operator-run backfill path: bars are NOT cross-checked
+// against the stock's daily bar (the upstream's own BSE series disagrees with
+// its daily bar on auction and after-hours prints), and every point is marked
+// with the backfill source. Dates whose 5-minute series is incomplete are
+// skipped, so the regular per-day task can retry them later.
+func (c *Client) FetchStockKlines5mRange(ctx context.Context, from, to time.Time,
+	stock graymarket.RankRecord, maxBars int, emit func(tradeDate string, points []graymarket.StockKlinePoint)) error {
+	if maxBars < 48 || maxBars > 3000 {
+		return fmt.Errorf("%w: range backfill bar budget out of bounds: %d", graymarket.ErrNoData, maxBars)
+	}
+	params := url.Values{
+		"secid": {fmt.Sprintf("%d.%s", stock.Market, stock.Code)},
+		"klt":   {"5"}, "fqt": {"0"},
+		"beg": {from.Format("20060102")}, "end": {to.Format("20060102")},
+		"lmt":     {strconv.Itoa(maxBars)},
+		"fields1": {"f1,f2,f3,f4,f5,f6"},
+		"fields2": {"f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"},
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.stockKlineBaseURL+"?"+params.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", "Mozilla/5.0 ShadowFlow/0.1")
+	request.Header.Set("Referer", "https://quote.eastmoney.com/")
+	response, err := c.guard.Do(ctx, request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, response.Body)
+		return fmt.Errorf("upstream returned HTTP %d", response.StatusCode)
+	}
+	var payload stockKlineResponse
+	if err := decodeKlineBody(response.Body, &payload); err != nil {
+		return err
+	}
+	if payload.ReturnCode != 0 || payload.Data == nil || len(payload.Data.Klines) == 0 {
+		count := 0
+		if payload.Data != nil {
+			count = len(payload.Data.Klines)
+		}
+		return fmt.Errorf("%w: range kline response has %d bars", graymarket.ErrNoData, count)
+	}
+	fetchedAt := time.Now().UTC()
+	type dayBatch struct {
+		points []graymarket.StockKlinePoint
+		seen   map[int]struct{}
+	}
+	days := map[string]*dayBatch{}
+	var order []string
+	for _, raw := range payload.Data.Klines {
+		fields, err := csv.NewReader(strings.NewReader(raw)).Read()
+		if err != nil || len(fields) != 11 {
+			return fmt.Errorf("invalid historical kline row %q", raw)
+		}
+		at, err := time.ParseInLocation("2006-01-02 15:04", fields[0], snapshotLocation(stock.SnapshotAt))
+		if err != nil {
+			return fmt.Errorf("invalid historical kline time %q", fields[0])
+		}
+		tradeDate := at.Format("2006-01-02")
+		index, ok := researchMinuteIndexForSource(at)
+		if !ok {
+			return fmt.Errorf("unexpected historical kline time %s", fields[0])
+		}
+		batch := days[tradeDate]
+		if batch == nil {
+			batch = &dayBatch{seen: make(map[int]struct{}, 48)}
+			days[tradeDate] = batch
+			order = append(order, tradeDate)
+		}
+		if _, duplicate := batch.seen[index]; duplicate {
+			return fmt.Errorf("duplicate historical kline time %s", fields[0])
+		}
+		batch.seen[index] = struct{}{}
+		numbers, err := klineNumbers(fields, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+		if err != nil {
+			return err
+		}
+		volume, err := klineAmount(numbers[5], true)
+		if err != nil {
+			return fmt.Errorf("volume at %s: %w", fields[0], err)
+		}
+		turnover, err := klineAmount(numbers[6], false)
+		if err != nil {
+			return fmt.Errorf("turnover at %s: %w", fields[0], err)
+		}
+		batch.points = append(batch.points, graymarket.StockKlinePoint{
+			TradeDate: tradeDate, SnapshotAt: at, Market: stock.Market, Code: stock.Code,
+			Source:    graymarket.KlineSourceFiveMinuteBackfill,
+			OpenPrice: numbers[1], ClosePrice: numbers[2], HighPrice: numbers[3], LowPrice: numbers[4],
+			Volume: volume, Turnover: turnover, Amplitude: numbers[7] / 100, ChangePct: numbers[8] / 100,
+			ChangeValue: numbers[9], TurnoverRate: numbers[10] / 100, FetchedAt: fetchedAt,
+		})
+	}
+	for _, tradeDate := range order {
+		batch := days[tradeDate]
+		if len(batch.seen) != 48 {
+			continue
+		}
+		emit(tradeDate, batch.points)
+	}
+	return nil
 }
