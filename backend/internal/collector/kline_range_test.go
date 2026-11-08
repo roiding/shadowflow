@@ -66,3 +66,61 @@ func TestCollectStockKlineRangePatchFetchesEachStockOnce(testingT *testing.T) {
 		testingT.Fatalf("range run was not settled as success: %+v", store.finished)
 	}
 }
+
+func (s *fakeStore) CountBoardDailyCloseRows(ctx context.Context, tradeDate string) (map[graymarket.RankType]int, error) {
+	return map[graymarket.RankType]int{graymarket.RankIndustry: 0, graymarket.RankConcept: 0}, nil
+}
+
+func (s *fakeStore) RefreshArchiveManifestDay(ctx context.Context, tradeDate string) error {
+	return nil
+}
+
+type fakeBoardKlineSource struct {
+	calls  int
+	boards []string
+}
+
+func (fake *fakeBoardKlineSource) FetchBoardCatalog(ctx context.Context, boardType graymarket.BoardType) ([]graymarket.Board, error) {
+	return []graymarket.Board{{Code: "BK0433", Name: "农林牧渔", Type: boardType, SourceRank: 0}}, nil
+}
+
+func (fake *fakeBoardKlineSource) FetchBoardConstituents(ctx context.Context, board graymarket.Board) ([]graymarket.StockBoardRelation, error) {
+	return nil, nil
+}
+
+func (fake *fakeBoardKlineSource) FetchBoardDailyKlinesRange(ctx context.Context, from, to time.Time,
+	board graymarket.Board, emit func(tradeDate string, bar BoardDailyBar)) error {
+	fake.calls++
+	fake.boards = append(fake.boards, string(board.Type)+":"+board.Code)
+	for day := from; !day.After(to); day = day.AddDate(0, 0, 1) {
+		tradeDate := day.Format("2006-01-02")
+		emit(tradeDate, BoardDailyBar{TradeDate: tradeDate, Open: 10, Close: 11, High: 12, Low: 9,
+			Volume: 1000, Amount: 100000, ChangeValue: 1, ChangePct: 10, Amplitude: 30, TurnoverRate: 1})
+	}
+	return nil
+}
+
+type boardSourceAdapter struct {
+	*fakeRangeSource
+	*fakeBoardKlineSource
+}
+
+func TestCollectBoardDailyCloseBackfillFillsMissingDimensions(t *testing.T) {
+	store := &fakeStore{hasDailyClose: true, missingKlines: []string{}}
+	source := &boardSourceAdapter{fakeRangeSource: &fakeRangeSource{}, fakeBoardKlineSource: &fakeBoardKlineSource{}}
+	service := New(source, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	report, err := service.CollectBoardDailyCloseBackfill(context.Background(),
+		time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.fakeBoardKlineSource.calls != 2 {
+		t.Fatalf("expected two board fetches (industry+concept), got %d", source.fakeBoardKlineSource.calls)
+	}
+	if report.RowsWritten != 2 || len(report.RemainingGaps) != 0 {
+		t.Fatalf("unexpected report: %+v", report)
+	}
+	if len(store.finished) != 1 || store.finished[0].Status != repository.RunSuccess {
+		t.Fatalf("run was not settled as success: %+v", store.finished)
+	}
+}

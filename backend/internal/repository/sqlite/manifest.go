@@ -322,3 +322,11 @@ UNION SELECT trade_date FROM stock_archive_quality
 ON CONFLICT(name) DO UPDATE SET completed_at=excluded.completed_at`, now)
 	return err
 }
+
+// RefreshArchiveManifestDay recomputes one day's archive manifest (counts,
+// validation errors and status) from the stored tables. It exists for the
+// operator-run backfill paths that write archive rows outside the daily
+// collection flow.
+func (s *Store) RefreshArchiveManifestDay(ctx context.Context, tradeDate string) error {
+	return refreshArchiveManifest(ctx, s.writeDB(), tradeDate)
+}

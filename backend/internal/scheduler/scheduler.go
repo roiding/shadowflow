@@ -194,7 +194,7 @@ func (s *Scheduler) enqueueReplayableJobs(ctx context.Context, now time.Time) {
 		{"end-of-day-stock", "16:30"}, {"end-of-day-stock", "16:35"}, {"end-of-day-stock", "16:40"},
 		{"end-of-day-events", "16:30"}, {"end-of-day-events", "16:35"}, {"end-of-day-events", "16:40"},
 		{"ths-account-data", "16:50"}, {"ths-account-data", "17:10"}, {"ths-account-data", "17:50"},
-		{"stock-kline", "16:45"}, {"stock-kline", "17:30"}, {"stock-kline", "20:00"},
+		{"stock-kline", "17:00"}, {"stock-kline", "17:30"}, {"stock-kline", "20:00"},
 	}
 	for _, plan := range plans {
 		if !s.kindEnabled(plan.kind) {
@@ -221,7 +221,7 @@ func (s *Scheduler) enqueueReplayableJobs(ctx context.Context, now time.Time) {
 			{"proxy-prewarm-boards", "09:26"},
 			{"proxy-prewarm-boards", "12:56"},
 			{"proxy-prewarm-end-of-day", "16:25"},
-			{"proxy-prewarm-stock-kline", "16:40"},
+			{"proxy-prewarm-stock-kline", "16:55"},
 			{"proxy-prewarm-stock-kline", "17:25"},
 			{"proxy-prewarm-stock-kline", "19:55"},
 		}
@@ -849,7 +849,7 @@ func jobKind(current time.Time) string {
 	case current.Hour() == 16 && current.Minute() == 50,
 		current.Hour() == 17 && (current.Minute() == 10 || current.Minute() == 50):
 		return "ths-account-data"
-	case current.Hour() == 16 && current.Minute() == 45,
+	case current.Hour() == 17 && current.Minute() == 0,
 		current.Hour() == 17 && current.Minute() == 30,
 		current.Hour() == 20 && current.Minute() == 0:
 		return "stock-kline"
@@ -884,7 +884,7 @@ func prewarmJobKind(current time.Time) string {
 		return "proxy-prewarm-boards"
 	case currentHour == 16 && currentMinute == 25:
 		return "proxy-prewarm-end-of-day"
-	case currentHour == 16 && currentMinute == 40,
+	case currentHour == 16 && currentMinute == 55,
 		currentHour == 17 && currentMinute == 25,
 		currentHour == 19 && currentMinute == 55:
 		return "proxy-prewarm-stock-kline"

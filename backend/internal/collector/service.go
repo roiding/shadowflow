@@ -66,6 +66,8 @@ const stockKlinePersistBatchStocks = 500
 const moneyPersistBatchStocks = 500
 
 type store interface {
+	CountBoardDailyCloseRows(context.Context, string) (map[graymarket.RankType]int, error)
+	RefreshArchiveManifestDay(context.Context, string) error
 	SaveIntraday(context.Context, string, graymarket.RankSnapshot, bool) error
 	SaveDailyClose(context.Context, string, graymarket.RankSnapshot) error
 	SaveBoardArchive(context.Context, string, graymarket.RankSnapshot, []graymarket.MoneyPoint) error

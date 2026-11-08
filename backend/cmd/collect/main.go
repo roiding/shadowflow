@@ -28,7 +28,7 @@ func main() {
 
 func run() error {
 	var task, date, at, scope, codes, from, to string
-	flag.StringVar(&task, "task", "", "task: boards, end-of-day, stock-kline, stock-kline-range, daily-close, relations, limit-up, ths-focus, ths-login, ths-auth-status, ths-account-data, cleanup, maintenance, analytics, or is-trading-day")
+	flag.StringVar(&task, "task", "", "task: boards, end-of-day, stock-kline, stock-kline-range, board-daily-close-backfill, daily-close, relations, limit-up, ths-focus, ths-login, ths-auth-status, ths-account-data, cleanup, maintenance, analytics, or is-trading-day")
 	flag.StringVar(&from, "from", "", "range start date YYYY-MM-DD for stock-kline-range")
 	flag.StringVar(&to, "to", "", "range end date YYYY-MM-DD for stock-kline-range")
 	flag.StringVar(&date, "date", "", "trade date in YYYY-MM-DD")
@@ -50,6 +50,17 @@ func run() error {
 			defer store.Close()
 		}
 		return collectTHSAccount(cfg, store, task, date, codes)
+	}
+	if task == "board-daily-close-backfill" {
+		if from == "" || to == "" {
+			flag.Usage()
+			os.Exit(2)
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		return collectBoardDailyCloseBackfill(cfg, from, to)
 	}
 	if task == "stock-kline-range" {
 		if from == "" || to == "" {
@@ -144,7 +155,7 @@ func run() error {
 		runAt := time.Date(tradeDate.Year(), tradeDate.Month(), tradeDate.Day(), 16, 30, 0, 0, location)
 		return service.CollectEndOfDay(ctx, runAt)
 	case "stock-kline":
-		runAt := time.Date(tradeDate.Year(), tradeDate.Month(), tradeDate.Day(), 16, 45, 0, 0, location)
+		runAt := time.Date(tradeDate.Year(), tradeDate.Month(), tradeDate.Day(), 17, 0, 0, 0, location)
 		return service.CollectStockKlines(ctx, runAt)
 	case "daily-close":
 		closeAt := time.Date(tradeDate.Year(), tradeDate.Month(), tradeDate.Day(), 15, 0, 0, 0, location)

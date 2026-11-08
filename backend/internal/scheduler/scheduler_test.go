@@ -53,7 +53,7 @@ func TestScheduledJobBoundaries(t *testing.T) {
 		"08:59": "", "09:00": "cleanup", "09:01": "", "09:15": "", "09:16": "", "09:30": "",
 		"09:05": "maintenance",
 		"15:05": "", "15:30": "", "16:30": "end-of-day", "16:35": "end-of-day", "16:40": "end-of-day", "16:41": "",
-		"16:45": "stock-kline", "16:50": "ths-account-data", "17:10": "ths-account-data", "17:50": "ths-account-data",
+		"16:50": "ths-account-data", "17:00": "stock-kline", "17:10": "ths-account-data", "17:50": "ths-account-data",
 		"17:30": "stock-kline", "20:00": "stock-kline", "20:01": "",
 	}
 	for value, expected := range tests {
@@ -562,9 +562,9 @@ func TestProxyPrewarmBoundaries(testingT *testing.T) {
 		"15:54": "",
 		"16:25": "proxy-prewarm-end-of-day",
 		"16:26": "",
-		"16:39": "",
-		"16:40": "proxy-prewarm-stock-kline",
-		"16:41": "",
+		"16:54": "",
+		"16:55": "proxy-prewarm-stock-kline",
+		"16:56": "",
 		"17:24": "",
 		"17:25": "proxy-prewarm-stock-kline",
 		"17:26": "",
@@ -681,40 +681,6 @@ func TestProxyPrewarmCallsCollectorWithCorrectPurpose(testingT *testing.T) {
 	expectedCalls := []string{"relations", "boards", "end-of-day", "stock-kline"}
 	if fmt.Sprint(callsRecorded) != fmt.Sprint(expectedCalls) {
 		testingT.Fatalf("expected prewarm calls %v, got %v", expectedCalls, callsRecorded)
-	}
-}
-
-func TestProxyPrewarm1640DoesNotCoverEndOfDay(testingT *testing.T) {
-	calendar, loadErr := tradingcalendar.Load(filepath.Join(testingT.TempDir(), "missing.json"))
-	if loadErr != nil {
-		testingT.Fatal(loadErr)
-	}
-	collector := &prewarmRecordingCollector{}
-	jobsStore := &replayRecordingJobStore{}
-	scheduler, newErr := New(collector, calendar, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{
-		Jobs:                jobsStore,
-		ProxyPrewarmEnabled: true,
-	})
-	if newErr != nil {
-		testingT.Fatal(newErr)
-	}
-	time1640 := time.Date(2026, 9, 7, 16, 40, 5, 0, scheduler.location)
-	scheduler.check(context.Background(), time1640)
-	var foundEndOfDay bool
-	var foundPrewarmStockKline bool
-	for _, jobItem := range jobsStore.jobs {
-		if jobItem.Kind == "end-of-day" {
-			foundEndOfDay = true
-		}
-		if jobItem.Kind == "proxy-prewarm-stock-kline" {
-			foundPrewarmStockKline = true
-		}
-	}
-	if !foundEndOfDay {
-		testingT.Fatal("16:40 check did not schedule original end-of-day collection")
-	}
-	if !foundPrewarmStockKline {
-		testingT.Fatal("16:40 check did not schedule proxy-prewarm-stock-kline")
 	}
 }
 

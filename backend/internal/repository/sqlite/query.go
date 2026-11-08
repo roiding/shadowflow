@@ -898,3 +898,28 @@ FROM research_quality GROUP BY rank_type ORDER BY rank_type`)
 	}
 	return result, rows.Err()
 }
+
+// CountBoardDailyCloseRows returns how many industry and concept daily-close
+// identity rows exist for a date, so the board backfill can detect missing
+// snapshot dimensions.
+func (s *Store) CountBoardDailyCloseRows(ctx context.Context, tradeDate string) (map[graymarket.RankType]int, error) {
+	rows, err := s.readDB().QueryContext(ctx, `SELECT rank_type, count(*) FROM rank_snapshot
+WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type IN ('industry','concept')
+GROUP BY rank_type`, tradeDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[graymarket.RankType]int{
+		graymarket.RankIndustry: 0, graymarket.RankConcept: 0,
+	}
+	for rows.Next() {
+		var rankType string
+		var count int
+		if err := rows.Scan(&rankType, &count); err != nil {
+			return nil, err
+		}
+		counts[graymarket.RankType(rankType)] = count
+	}
+	return counts, rows.Err()
+}
