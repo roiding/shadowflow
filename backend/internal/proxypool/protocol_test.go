@@ -126,3 +126,38 @@ func TestFailedBindingReleaseIsCounted(testingT *testing.T) {
 		testingT.Fatalf("failed binding release was not counted once: %v status=%+v", err, manager.Status())
 	}
 }
+
+func TestPrewarmAcceptsRunningCapacityAtOriginalTarget(testingT *testing.T) {
+	var polls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.URL.Path == "/api/v1/prewarm" {
+			writer.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(writer, `{"job_id":"warm_stuck","kind":"prewarm","state":"PENDING","target":2,"ready":0}`)
+			return
+		}
+		polls.Add(1)
+		// The pool reached the requested capacity but its finalize write
+		// failed, so the row stays RUNNING at the original target forever.
+		_ = json.NewEncoder(writer).Encode(prewarmJob{ID: "warm_stuck", Kind: "prewarm",
+			State: "RUNNING", Target: 2, Ready: 2})
+	}))
+	defer server.Close()
+	manager, err := NewManager(ManagerOptions{URL: server.URL, Token: "test-key", Workers: 1,
+		PollInterval: time.Millisecond, PrewarmTimeout: time.Second, ControlTimeout: time.Second,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		testingT.Fatal(err)
+	}
+	defer manager.Stop()
+	if err := manager.Prepare(context.Background(), "https://push2his.eastmoney.com"); err != nil {
+		testingT.Fatalf("running capacity at the original target was rejected: %v", err)
+	}
+	if polls.Load() != 1 {
+		testingT.Fatalf("capacity success required %d polls", polls.Load())
+	}
+	status := manager.Status().Prewarms[0]
+	if status.State != "RUNNING" || status.Ready != 2 {
+		testingT.Fatalf("unexpected status after early success: %+v", status)
+	}
+}

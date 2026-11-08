@@ -328,8 +328,21 @@ func (manager *Manager) runPrewarm(parent context.Context, scope validationScope
 		Validation validationScope `json:"validation"`
 	}{current.status.Requested, durationSeconds(manager.options.PrewarmTimeout), manager.options.Protocols, manager.options.SourceIDs, scope}
 	var job prewarmJob
-	if err := manager.control(ctx, http.MethodPost, "/prewarm", body, &job, manager.options.ControlTimeout, http.StatusAccepted); err != nil {
-		return fmt.Errorf("start proxy prewarm: %w", err)
+	createErr := manager.control(ctx, http.MethodPost, "/prewarm", body, &job, manager.options.ControlTimeout, http.StatusAccepted)
+	if createErr != nil {
+		var failure *controlError
+		if errors.As(createErr, &failure) && !failure.temporary() {
+			return fmt.Errorf("start proxy prewarm: %w", createErr)
+		}
+		// The public control path can drop connections; one retry keeps a
+		// transient blip from aborting the whole collection run. A duplicated
+		// create surfaces as a pool conflict on the retry.
+		if waitErr := waitContext(ctx, 500*time.Millisecond); waitErr != nil {
+			return fmt.Errorf("start proxy prewarm: %w", waitErr)
+		}
+		if createErr = manager.control(ctx, http.MethodPost, "/prewarm", body, &job, manager.options.ControlTimeout, http.StatusAccepted); createErr != nil {
+			return fmt.Errorf("start proxy prewarm: %w", createErr)
+		}
 	}
 	if !safeIdentifier(job.ID) || job.Kind != "prewarm" {
 		return errors.New("invalid proxy prewarm job identity")
@@ -374,6 +387,19 @@ func (manager *Manager) runPrewarm(parent context.Context, scope validationScope
 			terminal = true
 			return fmt.Errorf("%w: %s ready %d/%d (%s)", ErrPrewarmIncomplete, job.State, job.Ready, body.Count, safeReason(job.StopReason))
 		case "PENDING", "QUEUED", "RUNNING":
+			// A RUNNING job that still reports the original target and already
+			// holds ready >= count has the requested validated capacity right
+			// now. Waiting for a terminal state would only burn the whole
+			// prewarm budget, and a finalize failure pool-side would otherwise
+			// stall this run. A raised target means the pool is deliberately
+			// topping up beyond the request, so the terminal-state contract
+			// still applies there.
+			if job.State == "RUNNING" && job.Ready >= body.Count && job.Target <= body.Count {
+				terminal = true
+				manager.options.Logger.Info("proxy prewarm reached capacity while running",
+					"job_id", jobID, "target", scope.Target, "ready", job.Ready)
+				return nil
+			}
 		default:
 			return errors.New("proxy prewarm returned an unknown state")
 		}
