@@ -181,6 +181,19 @@ func ratio(numerator, denominator int) *float64 {
 	return &value
 }
 
+func medianClock(times []int) string {
+	if len(times) == 0 {
+		return ""
+	}
+	sort.Ints(times)
+	middle := len(times) / 2
+	median := times[middle]
+	if len(times)%2 == 0 {
+		median = (median + times[middle-1]) / 2
+	}
+	return time.Date(2000, 1, 1, 0, 0, 0, 0, Shanghai()).Add(time.Duration(median) * time.Second).Format("15:04:05")
+}
+
 func buildProfile(summary StockSummary, events []Event, observedDays int) Profile {
 	profile := Profile{
 		StockSummary: summary, SealRate: ratio(summary.SealDays, summary.TouchDays),
@@ -190,6 +203,7 @@ func buildProfile(summary StockSummary, events []Event, observedDays int) Profil
 	}
 	openTotal := 0
 	firstTimes := []int{}
+	firstDownTimes := []int{}
 	limitTypes := make(map[string]int)
 	bucketLabels := []string{"09:30前", "09:30–10:00", "10:00–11:30", "13:00–14:00", "14:00后"}
 	buckets := make([]int, len(bucketLabels))
@@ -197,6 +211,10 @@ func buildProfile(summary StockSummary, events []Event, observedDays int) Profil
 	for _, event := range events {
 		if event.Pool == PoolDown {
 			downDates[event.TradeDate] = true
+			if event.FirstDownAt != nil {
+				downTime := event.FirstDownAt.In(Shanghai())
+				firstDownTimes = append(firstDownTimes, downTime.Hour()*3600+downTime.Minute()*60+downTime.Second())
+			}
 			continue
 		}
 		upDates[event.TradeDate] = true
@@ -245,15 +263,9 @@ func buildProfile(summary StockSummary, events []Event, observedDays int) Profil
 	profile.MeanOpenCount = ratio(openTotal, profile.OpenCountKnownDays)
 	profile.RecoveryRate = ratio(profile.RecoveredDays, profile.OpenedDays)
 	profile.FirstTimeSamples = len(firstTimes)
-	if len(firstTimes) > 0 {
-		sort.Ints(firstTimes)
-		middle := len(firstTimes) / 2
-		median := firstTimes[middle]
-		if len(firstTimes)%2 == 0 {
-			median = (median + firstTimes[middle-1]) / 2
-		}
-		profile.MedianFirstTime = time.Date(2000, 1, 1, 0, 0, 0, 0, Shanghai()).Add(time.Duration(median) * time.Second).Format("15:04:05")
-	}
+	profile.MedianFirstTime = medianClock(firstTimes)
+	profile.FirstDownTimeSamples = len(firstDownTimes)
+	profile.MedianFirstDownTime = medianClock(firstDownTimes)
 	for position, label := range bucketLabels {
 		profile.FirstTimeBuckets = append(profile.FirstTimeBuckets, CategoryCount{Label: label, Count: buckets[position]})
 	}

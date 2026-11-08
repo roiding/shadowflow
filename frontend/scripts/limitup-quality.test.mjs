@@ -11,6 +11,7 @@ const {
   limitUpQualityParams,
   limitUpQualityQueryKey,
   limitUpQualityFailureNotice,
+  limitUpCountCorrectionNotice,
   limitUpScopeLabel,
 } = await import(urls.limitup)
 
@@ -52,4 +53,35 @@ test('a failed reseed is not hidden by the previous complete archive', () => {
     limitUpQualityFailureNotice({ complete: true, last_run: { status: 'success', error_message: '' } }),
     '',
   )
+})
+
+test('count correction notice exposes source totals, local totals and evidence codes', () => {
+  assert.equal(
+    limitUpCountCorrectionNotice({
+      broken_count: 24,
+      touched_count: 114,
+      count_correction: {
+        reason: 'broken_down_summary_undercount',
+        source_broken_count: 23,
+        source_touched_count: 113,
+        codes: ['002856'],
+      },
+    }),
+    '计数已校正：源炸板23→本地24，源触板113→本地114，证据002856，原始汇总保留。',
+  )
+  assert.equal(
+    limitUpCountCorrectionNotice({
+      broken_count: 24,
+      touched_count: 114,
+      count_correction: {
+        reason: 'broken_down_summary_undercount',
+        source_broken_count: 23,
+        source_touched_count: 113,
+        codes: ['002856', '300716'],
+      },
+    }),
+    '计数已校正：源炸板23→本地24，源触板113→本地114，证据002856、300716，原始汇总保留。',
+  )
+  assert.equal(limitUpCountCorrectionNotice({ broken_count: 19, touched_count: 97 }), '')
+  assert.equal(limitUpCountCorrectionNotice(null), '')
 })

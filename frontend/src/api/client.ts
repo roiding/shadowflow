@@ -2,6 +2,7 @@ import { getToken, notifyUnauthorized } from '../auth'
 import type { components } from './schema'
 import { loadCompleteBoardClose } from './boardClose'
 import type { LimitUpAnalysis, LimitUpArchiveQuality, LimitUpOverview, LimitUpQuery } from './limitup'
+import type { ThsFocusPayload } from './thsfocus'
 import { limitUpQualityParams } from './limitup'
 import type { ApiEnvelope, ArchiveRevision, BoardQuoteMeta, BoardStockQuote, CollectionRun, DailyFeature, FutureReturnLabel, FocusResult, FocusScanRequest, PageMeta, QualityMeta, QualitySummary, RankRecord, RankType, StockResearchPoint, SystemStatus } from './types'
 
@@ -70,6 +71,7 @@ async function request<T, M = Record<string, unknown>>(path: string, init?: Requ
 }
 
 export const api = {
+	thsFocus: (tradeDate: string, scope: string, signal?: AbortSignal) => request<ThsFocusPayload>(`/api/v1/limit-up/focus?${new URLSearchParams({ trade_date: tradeDate, scope })}`, { signal }),
   limitUpOverview: (query: LimitUpQuery, signal?: AbortSignal) => request<LimitUpOverview>(`/api/v1/limit-up/overview?${limitUpParams(query)}`, { signal }),
   limitUpStock: (code: string, query: LimitUpQuery, signal?: AbortSignal) => request<LimitUpAnalysis>(`/api/v1/limit-up/stocks/${encodeURIComponent(code)}?${limitUpParams(query)}`, { signal }),
   limitUpQuality: (date: string, scope?: string, signal?: AbortSignal) => request<LimitUpArchiveQuality>(`/api/v1/limit-up/quality?${limitUpQualityParams(date, scope)}`, { signal }),

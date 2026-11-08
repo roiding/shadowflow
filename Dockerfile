@@ -50,6 +50,9 @@ ARG VULN_DB_REFRESH=manual
 RUN printf 'Runtime package refresh: %s\n' "$VULN_DB_REFRESH" \
     && apk upgrade --no-cache \
     && apk add --no-cache ca-certificates sqlite tzdata python3 \
+    # The THS account lane performs its headless risk handshake in Chromium;
+    # CJK fonts keep the login page rendering (and its fingerprint) complete.
+    && apk add --no-cache chromium font-noto-cjk \
     && addgroup -g 10001 -S shadowflow \
     && adduser -u 10001 -S -G shadowflow shadowflow
 WORKDIR /app
@@ -72,7 +75,8 @@ ENV TZ=Asia/Shanghai \
     SHADOWFLOW_DATABASE_PATH=/data/shadowflow.db \
     SHADOWFLOW_CALENDAR_PATH=/app/config/trading_calendar.json \
     SHADOWFLOW_STATIC_DIR=/app/web \
-    SHADOWFLOW_LISTEN_ADDR=0.0.0.0:8080
+    SHADOWFLOW_LISTEN_ADDR=0.0.0.0:8080 \
+    SHADOWFLOW_THS_HEADLESS_BROWSER=/usr/bin/chromium-browser
 EXPOSE 8080
 # Run unprivileged: any RCE in the HTTP stack must not hand out root on the
 # host-mounted data and backup volumes. Deployments must chown the mounted

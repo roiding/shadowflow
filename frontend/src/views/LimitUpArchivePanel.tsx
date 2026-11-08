@@ -2,7 +2,13 @@ import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, Check, RefreshCw } from 'lucide-react'
 
 import { api } from '../api/client'
-import { LIMIT_UP_SCOPE_OPTIONS, limitUpQualityFailureNotice, limitUpQualityQueryKey, limitUpScopeLabel } from '../api/limitup'
+import {
+  LIMIT_UP_SCOPE_OPTIONS,
+  limitUpCountCorrectionNotice,
+  limitUpQualityFailureNotice,
+  limitUpQualityQueryKey,
+  limitUpScopeLabel,
+} from '../api/limitup'
 import './limitup-quality.css'
 
 const STATUS_LABELS: Record<string, string> = {
@@ -35,6 +41,7 @@ export function LimitUpArchivePanel({
   })
   const quality = query.data
   const failureNotice = limitUpQualityFailureNotice(quality)
+  const correctionNotice = limitUpCountCorrectionNotice(quality?.day)
 
   return (
     <section className="event-archive-quality" aria-label="涨跌停事件归档质量">
@@ -84,6 +91,12 @@ export function LimitUpArchivePanel({
               <small>{quality.scope}</small>
             </div>
           </div>
+          {correctionNotice && (
+            <p className="inline-notice warning event-archive-correction" role="status">
+              <AlertTriangle size={14} />
+              <span>{correctionNotice}</span>
+            </p>
+          )}
           <p className="event-archive-detail">
             {quality.complete && quality.day ? `已采集 ${collectedTime(quality.day.fetched_at)}，三池完整发布。` : quality.status === 'disabled' ? '自动事件归档当前关闭；首次历史回补仍可由手动命令执行。' : quality.status === 'failed' ? `最近一次失败：${quality.last_run?.error_message || '未提供错误原因'}。` : '等待盘后事件归档完成。'}
             {quality.latest_trade_date ? ` 最近完整日期：${quality.latest_trade_date}。` : ''}

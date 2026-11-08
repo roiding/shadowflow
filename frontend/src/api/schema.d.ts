@@ -948,6 +948,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/limit-up/focus": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 已归档的同花顺题材与连板补充资料
+         * @description 只读取本地补充归档。题材为源Top列表，市场概览及晋级对比使用源默认口径；部分接口无日期回显，响应保留该限制。
+         */
+        get: {
+            parameters: {
+                query: {
+                    trade_date: components["parameters"]["TradeDate"];
+                    /** @description 市场范围独立存储，不混合不同筛选口径；不保证北交所覆盖。 */
+                    scope?: components["parameters"]["LimitUpScope"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 所选日期补充归档，未采集时snapshot为空。 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ThsFocusArchive"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/limit-up/overview": {
         parameters: {
             query?: never;
@@ -1101,6 +1149,61 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        ThsFocusArchive: {
+            /** Format: date */
+            trade_date: string;
+            /** @enum {string} */
+            scope: "HS,GEM2STAR" | "HS,GEM2STAR,ST,NEW";
+            /** @enum {string} */
+            status: "not_collected" | "complete";
+            snapshot: components["schemas"]["ThsFocusSnapshot"] | null;
+        };
+        ThsFocusSnapshot: {
+            /** Format: date */
+            trade_date: string;
+            /** @constant */
+            source: "ths_focus";
+            /** @enum {string} */
+            scope: "HS,GEM2STAR" | "HS,GEM2STAR,ST,NEW";
+            /** @constant */
+            market_scope: "source_default";
+            /** Format: date-time */
+            fetched_at: string;
+            /** @description 当前源有不回显日期的子接口，此值固定为false。 */
+            source_date_verified: boolean;
+            limitations: string[];
+            blocks: {
+                code: string;
+                name: string;
+                change: number | null;
+                limit_up_count: number;
+                stocks: components["schemas"]["ThsFocusStock"][];
+            }[];
+            ladder: {
+                height: number;
+                stocks: components["schemas"]["ThsFocusStock"][];
+            }[];
+            /** @description 源市场概览，数字字符串及中文单位原样保留。 */
+            market: {
+                [key: string]: unknown;
+            };
+            /** @description 源前后两日晋级对照，rate为涨跌幅而非概率。 */
+            comparison: {
+                [key: string]: unknown;
+            };
+        };
+        ThsFocusStock: {
+            code: string;
+            name: string;
+            market_id: number;
+            /** @description 原始连板字段，独立于梯队高度和几天几板标签。 */
+            continue_num: number;
+            reason: string;
+            /** @description 同花顺源叙事，可能含AI生成内容，非本地事实核验结论。 */
+            reason_detail: string;
+            high_days: string;
+            change_percent: number | null;
+        };
         LimitUpArchiveRun: {
             run_id: string;
             /** @enum {string} */
@@ -1161,8 +1264,18 @@ export interface components {
             /** @description 收盘跌停数，不代表盘中所有触及跌停的股票数。 */
             down_count: number;
             touched_count: number;
+            count_correction?: components["schemas"]["LimitUpCountCorrection"];
             /** @description 规范化事件内容的 SHA-256。 */
             content_hash: string;
+        };
+        LimitUpCountCorrection: {
+            /** @constant */
+            reason: "broken_down_summary_undercount";
+            /** @description 未修改的源炸板汇总；本地broken_count依据已验证的完整事件重算。 */
+            source_broken_count: number;
+            /** @description 未修改的源触涨停汇总；本地touched_count依据已验证的完整事件重算。 */
+            source_touched_count: number;
+            codes: string[];
         };
         LimitUpStock: {
             code: string;
@@ -1207,6 +1320,9 @@ export interface components {
             /** @description 首次触板上海时间中位数，缺失时为空字符串。 */
             median_first_time: string;
             first_time_samples: number;
+            /** @description 有真实跌停时间记录的首次跌停上海时刻中位数，不使用涨停时间替代。 */
+            median_first_down_time?: string;
+            first_down_time_samples?: number;
             limit_types: components["schemas"]["LimitUpCategory"][];
             first_time_buckets: components["schemas"]["LimitUpCategory"][];
         };
@@ -1226,6 +1342,16 @@ export interface components {
             first_limit_at: string | null;
             /** Format: date-time */
             last_limit_at: string | null;
+            /**
+             * Format: date-time
+             * @description 源字段first_limit_down_time，缺失不推算。
+             */
+            first_down_at?: string;
+            /**
+             * Format: date-time
+             * @description 源字段last_limit_down_time，缺失不推算。
+             */
+            last_down_at?: string;
             limit_type: string;
             /** @description 原始几天几板标签，不直接换算成连板数。 */
             high_days: string;
@@ -1495,7 +1621,7 @@ export interface components {
             /** Format: date-time */
             snapshot_at?: string;
             /** @enum {string} */
-            snapshot_kind?: "minute_work" | "research_5m" | "daily_close" | "stock_kline_5m";
+            snapshot_kind?: "minute_work" | "research_5m" | "daily_close" | "stock_kline_5m" | "limit_up_events" | "ths_focus";
             /** @enum {string} */
             rank_type?: "stock" | "industry" | "concept";
             /** @enum {string} */

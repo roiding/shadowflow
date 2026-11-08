@@ -17,16 +17,17 @@ import (
 )
 
 const (
-	DefaultBaseURL     = "https://data.10jqka.com.cn/dataapi/limit_up"
-	DefaultUserAgent   = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
-	DefaultReferer     = "https://data.10jqka.com.cn/mobile/limitup/v2/index.html"
-	DefaultFieldList   = "199112,10,9001,330323,330324,330325,9002,330329,133971,133970,1968584,3475914,9003,9004"
-	DefaultOrderField  = "330324"
-	DefaultOrderType   = "0"
-	defaultPageLimit   = 100
-	defaultMinInterval = 1 * time.Second
-	maxPageBudget      = limitup.MaxPoolPages
-	maxBodyLimit       = 4 << 20
+	DefaultBaseURL        = "https://data.10jqka.com.cn/dataapi/limit_up"
+	DefaultUserAgent      = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+	DefaultReferer        = "https://data.10jqka.com.cn/mobile/limitup/v2/index.html"
+	DefaultFieldList      = "199112,10,9001,330323,330324,330325,9002,330329,133971,133970,1968584,3475914,9003,9004,330333,330334"
+	DefaultOrderField     = "330324"
+	DefaultDownOrderField = "330334"
+	DefaultOrderType      = "0"
+	defaultPageLimit      = 100
+	defaultMinInterval    = 1 * time.Second
+	maxPageBudget         = limitup.MaxPoolPages
+	maxBodyLimit          = 4 << 20
 )
 
 type Client struct {
@@ -165,6 +166,10 @@ func (client *Client) FetchDay(ctx context.Context, date string, scope string) (
 		RawPages:     rawPages,
 	}
 
+	if correctionError := applyCountCorrection(&snapshot, brokenSummaries); correctionError != nil {
+		return limitup.Snapshot{}, correctionError
+	}
+
 	if validateError := limitup.ValidateSnapshot(snapshot); validateError != nil {
 		return limitup.Snapshot{}, validateError
 	}
@@ -245,9 +250,17 @@ func (client *Client) fetchPool(
 			if expectedPageLimit <= 0 {
 				return nil, nil, dailySummaries{}, fmt.Errorf("invalid page limit %d for %s", expectedPageLimit, poolName)
 			}
-			if pageMeta.Total != expectedTotalCount {
+			if pageMeta.Total < 0 || pageMeta.Total > limitup.MaxDailyEvents {
+				return nil, nil, dailySummaries{}, fmt.Errorf("invalid page total %d for %s", pageMeta.Total, poolName)
+			}
+			if poolName == limitup.PoolBroken {
+				if pageMeta.Total < expectedTotalCount {
+					return nil, nil, dailySummaries{}, fmt.Errorf("page total %d is below summary count %d for %s", pageMeta.Total, expectedTotalCount, poolName)
+				}
+			} else if pageMeta.Total != expectedTotalCount {
 				return nil, nil, dailySummaries{}, fmt.Errorf("page total %d does not match summary count %d for %s", pageMeta.Total, expectedTotalCount, poolName)
 			}
+			expectedTotalCount = pageMeta.Total
 
 			if expectedTotalCount == 0 {
 				if len(pageEvents) != 0 {
@@ -346,6 +359,10 @@ func (client *Client) fetchPage(
 	isToday bool,
 	seenStockPools map[string]map[string]bool,
 ) ([]limitup.Event, json.RawMessage, parsedPageMeta, dailySummaries, error) {
+	orderField := DefaultOrderField
+	if poolName == limitup.PoolDown {
+		orderField = DefaultDownOrderField
+	}
 	requestURL := fmt.Sprintf(
 		"%s/%s?page=%d&limit=%d&field=%s&filter=%s&date=%s&order_field=%s&order_type=%s",
 		client.baseURL,
@@ -355,7 +372,7 @@ func (client *Client) fetchPage(
 		url.QueryEscape(DefaultFieldList),
 		url.QueryEscape(scope),
 		dateDigits,
-		url.QueryEscape(DefaultOrderField),
+		url.QueryEscape(orderField),
 		url.QueryEscape(DefaultOrderType),
 	)
 
@@ -629,6 +646,8 @@ func parseStockEvent(rawStockBytes json.RawMessage, tradeDate string, poolName s
 		OpenNum        json.RawMessage `json:"open_num"`
 		FirstLimitTime json.RawMessage `json:"first_limit_up_time"`
 		LastLimitTime  json.RawMessage `json:"last_limit_up_time"`
+		FirstDownTime  json.RawMessage `json:"first_limit_down_time"`
+		LastDownTime   json.RawMessage `json:"last_limit_down_time"`
 		LimitUpType    json.RawMessage `json:"limit_up_type"`
 		HighDays       json.RawMessage `json:"high_days"`
 		ReasonType     json.RawMessage `json:"reason_type"`
@@ -689,6 +708,24 @@ func parseStockEvent(rawStockBytes json.RawMessage, tradeDate string, poolName s
 		return limitup.Event{}, fmt.Errorf("%w: last limit time before first for %s", limitup.ErrInvalid, trimmedCode)
 	}
 
+	var firstDownTimestamp *time.Time
+	var lastDownTimestamp *time.Time
+	if poolName == limitup.PoolDown {
+		var firstDownError error
+		firstDownTimestamp, firstDownError = parseOptionalTimestamp(item.FirstDownTime, tradeDate)
+		if firstDownError != nil {
+			return limitup.Event{}, fmt.Errorf("%w: first_limit_down_time error for %s: %v", limitup.ErrInvalid, trimmedCode, firstDownError)
+		}
+		var lastDownError error
+		lastDownTimestamp, lastDownError = parseOptionalTimestamp(item.LastDownTime, tradeDate)
+		if lastDownError != nil {
+			return limitup.Event{}, fmt.Errorf("%w: last_limit_down_time error for %s: %v", limitup.ErrInvalid, trimmedCode, lastDownError)
+		}
+		if firstDownTimestamp != nil && lastDownTimestamp != nil && lastDownTimestamp.Before(*firstDownTimestamp) {
+			return limitup.Event{}, fmt.Errorf("%w: last limit-down time before first for %s", limitup.ErrInvalid, trimmedCode)
+		}
+	}
+
 	limitTypeString, _ := parseStringValue(item.LimitUpType)
 	highDaysString, _ := parseStringValue(item.HighDays)
 	reasonString, _ := parseStringValue(item.ReasonType)
@@ -721,6 +758,8 @@ func parseStockEvent(rawStockBytes json.RawMessage, tradeDate string, poolName s
 		OpenCount:      openCountPointer,
 		FirstLimitAt:   firstLimitTimestamp,
 		LastLimitAt:    lastLimitTimestamp,
+		FirstDownAt:    firstDownTimestamp,
+		LastDownAt:     lastDownTimestamp,
 		LimitType:      strings.TrimSpace(limitTypeString),
 		HighDays:       strings.TrimSpace(highDaysString),
 		Reason:         strings.TrimSpace(reasonString),
@@ -729,6 +768,13 @@ func parseStockEvent(rawStockBytes json.RawMessage, tradeDate string, poolName s
 		TurnoverRate:   turnoverRatePointer,
 		Raw:            rawStockBytes,
 	}, nil
+}
+
+func parseOptionalTimestamp(raw json.RawMessage, tradeDate string) (*time.Time, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	return parseTimestamp(raw, tradeDate)
 }
 
 func parseStringValue(raw json.RawMessage) (string, error) {
@@ -806,6 +852,9 @@ func parseTimestamp(raw json.RawMessage, tradeDate string) (*time.Time, error) {
 	} else {
 		var textValue string
 		if unmarshalStringError := json.Unmarshal(raw, &textValue); unmarshalStringError == nil {
+			if strings.TrimSpace(textValue) == "" {
+				return nil, nil
+			}
 			parsedInt, parseError := strconv.ParseInt(strings.TrimSpace(textValue), 10, 64)
 			if parseError != nil {
 				return nil, parseError

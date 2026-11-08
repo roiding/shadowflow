@@ -22,8 +22,19 @@ services:
       # and backup/restore scripts use the same explicit path.
       SHADOWFLOW_COLD_DATABASE_PATH: ${SHADOWFLOW_COLD_DATABASE_PATH:-}
       SHADOWFLOW_HOT_TRADING_DAYS: ${SHADOWFLOW_HOT_TRADING_DAYS:-10}
-      SHADOWFLOW_LIMIT_UP_ARCHIVE_ENABLED: ${SHADOWFLOW_LIMIT_UP_ARCHIVE_ENABLED:-false}
+      SHADOWFLOW_LIMIT_UP_ARCHIVE_ENABLED: ${SHADOWFLOW_LIMIT_UP_ARCHIVE_ENABLED:-true}
       SHADOWFLOW_LIMIT_UP_SCOPE: ${SHADOWFLOW_LIMIT_UP_SCOPE:-HS,GEM2STAR}
+      # The THS account lane: headless Chromium performs the risk handshake and
+      # the login session persists in the database (no session file needed).
+      # Credentials come from compose environment variables; they are visible
+      # via `docker inspect`, which the deployment accepts as its trade-off.
+      SHADOWFLOW_THS_AUTO_LOGIN: ${SHADOWFLOW_THS_AUTO_LOGIN:-true}
+      SHADOWFLOW_THS_USERNAME: ${SHADOWFLOW_THS_USERNAME:-}
+      SHADOWFLOW_THS_PASSWORD: ${SHADOWFLOW_THS_PASSWORD:-}
+      SHADOWFLOW_THS_CREDENTIALS_FILE: ${SHADOWFLOW_THS_CREDENTIALS_FILE:-}
+      SHADOWFLOW_THS_SESSION_FILE: ${SHADOWFLOW_THS_SESSION_FILE:-}
+      # Chromium inside the container runs unprivileged and with a small /dev/shm.
+      SHADOWFLOW_THS_CHROME_ARGS: ${SHADOWFLOW_THS_CHROME_ARGS:---no-sandbox --disable-dev-shm-usage}
       SHADOWFLOW_PROXY_POOL_URL: ${SHADOWFLOW_PROXY_POOL_URL:-}
       SHADOWFLOW_PROXY_POOL_TOKEN: ${SHADOWFLOW_PROXY_POOL_TOKEN:-}
       SHADOWFLOW_PROXY_POOL_SOURCE_IDS: ${SHADOWFLOW_PROXY_POOL_SOURCE_IDS:-}
@@ -39,7 +50,8 @@ services:
       SHADOWFLOW_REQUEST_TIMEOUT_SECONDS: ${SHADOWFLOW_REQUEST_TIMEOUT_SECONDS:-12}
     # End-of-day archives hold ~250k rows of batch state plus SQLite page
     # cache in the Go heap; 256m caused OOM headroom concerns on archive days.
-    mem_limit: 768m
+    # Headless Chromium (THS risk handshake) needs another few hundred MB.
+    mem_limit: 1536m
     # Give in-flight archive transactions and the WAL checkpoint a window to
     # finish on shutdown instead of being killed after Docker's 10s default.
     stop_grace_period: 30s

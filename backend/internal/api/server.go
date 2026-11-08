@@ -28,16 +28,16 @@ import (
 )
 
 type Server struct {
-	store    repository.Store
-	quotes   QuoteSnapshotSource
-	calendar *tradingcalendar.Calendar
-	logger   *slog.Logger
-	location *time.Location
-	started  time.Time
-	router   chi.Router
-	pool     *proxypool.Manager
+	store                   repository.Store
+	quotes                  QuoteSnapshotSource
+	calendar                *tradingcalendar.Calendar
+	logger                  *slog.Logger
+	location                *time.Location
+	started                 time.Time
+	router                  chi.Router
+	pool                    *proxypool.Manager
 	limitUpArchiveScheduled bool
-	limitUpScope string
+	limitUpScope            string
 }
 
 type Options struct {
@@ -52,10 +52,10 @@ type Options struct {
 	// userland proxy or a reverse proxy every client otherwise shares one
 	// RemoteAddr bucket; trusting the header unconditionally would instead
 	// let any direct client spoof its way past the limiter.
-	TrustedProxyCIDR string
-	ProxyPool        *proxypool.Manager
+	TrustedProxyCIDR        string
+	ProxyPool               *proxypool.Manager
 	LimitUpArchiveScheduled bool
-	LimitUpScope string
+	LimitUpScope            string
 }
 
 type QuoteSnapshotSource interface {
@@ -191,6 +191,7 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 			r.With(limitUpGate).Get("/limit-up/overview", server.limitUpOverview)
 			r.With(limitUpGate).Get("/limit-up/stocks/{code}", server.limitUpStock)
 			r.Get("/limit-up/quality", server.limitUpQuality)
+			r.Get("/limit-up/focus", server.thsFocus)
 			r.Get("/system/status", server.status)
 		})
 	})
@@ -994,7 +995,7 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 		"server_time": now, "timezone": "Asia/Shanghai", "market_status": s.marketStatus(now),
 		"trading_day": s.calendar.IsTradingDay(now), "latest_trading_day": s.latestTradingDay(now),
 		"event_research_as_of": s.eventResearchAsOf(now),
-		"uptime_seconds": int64(time.Since(s.started).Seconds()), "trading_calendar": s.calendar.Coverage(now),
+		"uptime_seconds":       int64(time.Since(s.started).Seconds()), "trading_calendar": s.calendar.Coverage(now),
 		"proxy_pool": s.proxyPoolStatus(),
 	}})
 }

@@ -400,6 +400,26 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/limit-up/focus:
+    get:
+      summary: 已归档的同花顺题材与连板补充资料
+      description: 只读取本地补充归档。题材为源Top列表，市场概览及晋级对比使用源默认口径；部分接口无日期回显，响应保留该限制。
+      parameters:
+        - $ref: "#/components/parameters/TradeDate"
+        - $ref: "#/components/parameters/LimitUpScope"
+      responses:
+        "200":
+          description: 所选日期补充归档，未采集时snapshot为空。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ThsFocusArchive" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/limit-up/overview:
     get:
       summary: 完整涨跌停事件日和候选股票
@@ -582,6 +602,61 @@ components:
               meta:
                 $ref: "#/components/schemas/BoardQuoteMeta"
   schemas:
+    ThsFocusArchive:
+      type: object
+      required: [trade_date, scope, status, snapshot]
+      properties:
+        trade_date: { type: string, format: date }
+        scope: { type: string, enum: ["HS,GEM2STAR", "HS,GEM2STAR,ST,NEW"] }
+        status: { type: string, enum: [not_collected, complete] }
+        snapshot:
+          oneOf:
+            - $ref: "#/components/schemas/ThsFocusSnapshot"
+            - type: "null"
+    ThsFocusSnapshot:
+      type: object
+      required: [trade_date, source, scope, market_scope, fetched_at, source_date_verified, limitations, blocks, ladder, market, comparison]
+      properties:
+        trade_date: { type: string, format: date }
+        source: { type: string, const: ths_focus }
+        scope: { type: string, enum: ["HS,GEM2STAR", "HS,GEM2STAR,ST,NEW"] }
+        market_scope: { type: string, const: source_default }
+        fetched_at: { type: string, format: date-time }
+        source_date_verified: { type: boolean, description: 当前源有不回显日期的子接口，此值固定为false。 }
+        limitations: { type: array, items: { type: string } }
+        blocks:
+          type: array
+          items:
+            type: object
+            required: [code, name, change, limit_up_count, stocks]
+            properties:
+              code: { type: string }
+              name: { type: string }
+              change: { type: [number, "null"] }
+              limit_up_count: { type: integer }
+              stocks: { type: array, items: { $ref: "#/components/schemas/ThsFocusStock" } }
+        ladder:
+          type: array
+          items:
+            type: object
+            required: [height, stocks]
+            properties:
+              height: { type: integer }
+              stocks: { type: array, items: { $ref: "#/components/schemas/ThsFocusStock" } }
+        market: { type: object, additionalProperties: true, description: 源市场概览，数字字符串及中文单位原样保留。 }
+        comparison: { type: object, additionalProperties: true, description: 源前后两日晋级对照，rate为涨跌幅而非概率。 }
+    ThsFocusStock:
+      type: object
+      required: [code, name, market_id, continue_num, reason, reason_detail, high_days, change_percent]
+      properties:
+        code: { type: string, pattern: '^[0-9]{6}$' }
+        name: { type: string }
+        market_id: { type: integer }
+        continue_num: { type: integer, description: 原始连板字段，独立于梯队高度和几天几板标签。 }
+        reason: { type: string }
+        reason_detail: { type: string, description: 同花顺源叙事，可能含AI生成内容，非本地事实核验结论。 }
+        high_days: { type: string }
+        change_percent: { type: [number, "null"] }
     LimitUpArchiveRun:
       type: object
       required: [run_id, status, started_at, finished_at, fetched_total, page_count, error_code, error_message]
@@ -637,7 +712,18 @@ components:
         broken_count: { type: integer }
         down_count: { type: integer, description: 收盘跌停数，不代表盘中所有触及跌停的股票数。 }
         touched_count: { type: integer }
+        count_correction: { $ref: "#/components/schemas/LimitUpCountCorrection" }
         content_hash: { type: string, description: 规范化事件内容的 SHA-256。 }
+    LimitUpCountCorrection:
+      type: object
+      required: [reason, source_broken_count, source_touched_count, codes]
+      properties:
+        reason: { type: string, const: broken_down_summary_undercount }
+        source_broken_count: { type: integer, description: 未修改的源炸板汇总；本地broken_count依据已验证的完整事件重算。 }
+        source_touched_count: { type: integer, description: 未修改的源触涨停汇总；本地touched_count依据已验证的完整事件重算。 }
+        codes:
+          type: array
+          items: { type: string, pattern: '^[0-9]{6}$' }
     LimitUpStock:
       type: object
       required: [code, name, market_type, touch_days, seal_days, broken_days, down_days, last_seen]
@@ -686,6 +772,8 @@ components:
             mean_open_count: { type: [number, "null"], description: 仅在开板次数非空的记录中求平均。 }
             median_first_time: { type: string, description: 首次触板上海时间中位数，缺失时为空字符串。 }
             first_time_samples: { type: integer }
+            median_first_down_time: { type: string, description: 有真实跌停时间记录的首次跌停上海时刻中位数，不使用涨停时间替代。 }
+            first_down_time_samples: { type: integer }
             limit_types:
               type: array
               items: { $ref: "#/components/schemas/LimitUpCategory" }
@@ -705,6 +793,8 @@ components:
         open_count: { type: [integer, "null"], description: 未知保持null，不补0。 }
         first_limit_at: { type: [string, "null"], format: date-time }
         last_limit_at: { type: [string, "null"], format: date-time }
+        first_down_at: { type: string, format: date-time, description: 源字段first_limit_down_time，缺失不推算。 }
+        last_down_at: { type: string, format: date-time, description: 源字段last_limit_down_time，缺失不推算。 }
         limit_type: { type: string }
         high_days: { type: string, description: 原始几天几板标签，不直接换算成连板数。 }
         reason: { type: string }
@@ -925,7 +1015,7 @@ components:
       properties:
         run_id: { type: string }
         snapshot_at: { type: string, format: date-time }
-        snapshot_kind: { type: string, enum: [minute_work, research_5m, daily_close, stock_kline_5m] }
+        snapshot_kind: { type: string, enum: [minute_work, research_5m, daily_close, stock_kline_5m, limit_up_events, ths_focus] }
         rank_type: { type: string, enum: [stock, industry, concept] }
         status: { type: string, enum: [running, success, partial, failed, skipped] }
         requested_date: { type: string, format: date }

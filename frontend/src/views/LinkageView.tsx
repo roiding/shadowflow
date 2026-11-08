@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 
 import { api } from '../api/client'
+import { ThsFocusPanel } from '../ThsFocusPanel'
 import type {
   LimitUpCoverage,
   LimitUpDay,
@@ -22,6 +23,7 @@ import type {
 } from '../api/limitup'
 import {
   calculateGraphCoordinates,
+  eventTouchTimes,
   filterStockCandidates,
   formatEventRowKey,
   formatNumber,
@@ -396,9 +398,9 @@ export function LinkageView({
                 }
               }}
             >
-              <option value="seal">同日收盘封板 (seal)</option>
-              <option value="touch">同日曾触板 (touch)</option>
-              <option value="down">同日收盘跌停 (down)</option>
+              <option value="seal">同日收盘封板</option>
+              <option value="touch">同日曾触板</option>
+              <option value="down">同日收盘跌停</option>
             </select>
           </div>
 
@@ -976,6 +978,17 @@ export function LinkageView({
                       有时间戳样本：{profileData.first_time_samples} 个
                     </span>
                   </div>
+
+                  <div className="linkage-metric-box">
+                    <span className="linkage-metric-title">首次跌停时刻中位数</span>
+                    <strong className="linkage-metric-num">
+                      {formatTimeText(profileData.median_first_down_time)}
+                    </strong>
+                    <span className="linkage-metric-sub">
+                      仅统计有真实跌停时间的记录：{formatNumber(profileData.first_down_time_samples)}
+                      {' '}个（不混用涨停时间）
+                    </span>
+                  </div>
                 </div>
 
                 <div className="linkage-distribution-grid">
@@ -1044,7 +1057,7 @@ export function LinkageView({
                 </div>
 
                 <div className="linkage-table-context">
-                  涨停、炸板、跌停为独立的日终池记录；同一天可同时出现炸板与跌停两行。开板与触板时段只适用于上涨侧记录。
+                  涨停、炸板、跌停为独立的日终池记录；同一天可同时出现炸板与跌停两行。时间列会按记录所在池明确标出涨跌停两侧：上涨侧用涨停时间，跌停侧只用真实跌停时间，缺失显示“--”。
                 </div>
 
                 <div className="linkage-table-wrap">
@@ -1054,8 +1067,8 @@ export function LinkageView({
                         <th>交易日期</th>
                         <th>收盘状态</th>
                         <th>开板次数</th>
-                        <th>首次触及时刻</th>
-                        <th>最后触及时刻</th>
+                        <th>首次触及所列涨/跌停</th>
+                        <th>末次触及所列涨/跌停</th>
                         <th>形态 / 板型</th>
                         <th>源标签（几天几板）</th>
                         <th>涨跌幅</th>
@@ -1073,6 +1086,7 @@ export function LinkageView({
                       )}
                       {paginatedEvents.paginatedItems.map((eventItem) => {
                         const poolStatus = formatPoolStatus(eventItem.pool)
+                        const touchTimes = eventTouchTimes(eventItem)
                         return (
                           <tr key={formatEventRowKey(eventItem)}>
                             <td>
@@ -1084,8 +1098,18 @@ export function LinkageView({
                               </span>
                             </td>
                             <td>{formatOpenCountDisplay(eventItem.open_count)}</td>
-                            <td>{formatTimeText(eventItem.first_limit_at)}</td>
-                            <td>{formatTimeText(eventItem.last_limit_at)}</td>
+                            <td title={`${touchTimes.firstLabel}（${touchTimes.side === 'down' ? '跌停侧' : '涨停侧'}）`}>
+                              <span className={`linkage-touch-side ${touchTimes.side}`}>
+                                {touchTimes.side === 'down' ? '跌停侧' : '涨停侧'}
+                              </span>
+                              {formatTimeText(touchTimes.first)}
+                            </td>
+                            <td title={`${touchTimes.lastLabel}（${touchTimes.side === 'down' ? '跌停侧' : '涨停侧'}）`}>
+                              <span className={`linkage-touch-side ${touchTimes.side}`}>
+                                {touchTimes.side === 'down' ? '跌停侧' : '涨停侧'}
+                              </span>
+                              {formatTimeText(touchTimes.last)}
+                            </td>
                             <td>{eventItem.limit_type || '--'}</td>
                             <td>
                               <strong>{eventItem.high_days || '--'}</strong>
@@ -1132,6 +1156,25 @@ export function LinkageView({
                   </div>
                 )}
               </section>
+
+              <details className="linkage-auxiliary" aria-labelledby="linkage-auxiliary-heading">
+                <summary>
+                  <span>
+                    <strong id="linkage-auxiliary-heading">题材与连板补充</strong>
+                    <small>同花顺源 Top 题材、连板梯队与市场摘要，辅助核对，不是全量成份</small>
+                  </span>
+                  <span className="linkage-auxiliary-action">展开</span>
+                </summary>
+                <div className="linkage-auxiliary-body">
+                  <ThsFocusPanel
+                    tradeDate={analysisData.coverage.latest_date || asOfDate}
+                    scope={marketScope}
+                    stockCode={selectedStockCode}
+                    authRequired={authRequired}
+                    nested
+                  />
+                </div>
+              </details>
             </>
           )}
         </>

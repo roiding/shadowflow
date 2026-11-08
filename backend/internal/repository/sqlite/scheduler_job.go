@@ -186,4 +186,3 @@ AND attempt_count>=max_attempts`, timestamp, timestamp); err != nil {
 	}
 	return nil
 }
-

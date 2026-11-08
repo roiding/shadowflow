@@ -93,6 +93,38 @@ export function formatEventRowKey(eventRecord: Pick<LimitUpEvent, 'trade_date' |
   return `${eventRecord.trade_date}:${eventRecord.pool}`
 }
 
+export interface EventTouchTimes {
+  first: string | null
+  last: string | null
+  firstLabel: string
+  lastLabel: string
+  side: 'up' | 'down'
+}
+
+export function eventTouchTimes(
+  eventRecord: Pick<
+    LimitUpEvent,
+    'pool' | 'first_limit_at' | 'last_limit_at' | 'first_down_at' | 'last_down_at'
+  >,
+): EventTouchTimes {
+  if (eventRecord.pool === 'limit_down') {
+    return {
+      first: eventRecord.first_down_at ?? null,
+      last: eventRecord.last_down_at ?? null,
+      firstLabel: '首次触及跌停',
+      lastLabel: '末次触及跌停',
+      side: 'down',
+    }
+  }
+  return {
+    first: eventRecord.first_limit_at,
+    last: eventRecord.last_limit_at,
+    firstLabel: '首次触及涨停',
+    lastLabel: '末次触及涨停',
+    side: 'up',
+  }
+}
+
 export function formatTimeText(rawTime: string | null | undefined): string {
   if (!rawTime) {
     return '--'

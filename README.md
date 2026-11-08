@@ -1,6 +1,6 @@
 # ShadowFlow 暗流
 
-面向行业、概念和个股资金趋势研究的单机 Web 系统。Go 服务在交易日 `09:31-11:30`、`13:01-15:00` 每分钟采集完整板块榜，仅供盘中实时展示。每天 `16:00` 从东方财富 `darktrade` 与 `darktradetick` 独立重新抓取行业、概念、个股完整日终榜及 48 个五分钟累计资金点；`16:15` 起抓取有成交个股的 48 根未复权五分钟 K。完整日归档直接按交易日长期累积，每日只保存一份主数据和一条轻量完整性摘要；日级特征及后续 `1/3/5/10/20` 日收益标签均从主归档生成。盘中工作数据只在长期数据全部完整后由次日 `09:00` 任务清理。
+面向行业、概念和个股资金趋势研究的单机 Web 系统。Go 服务在交易日 `09:31-11:30`、`13:01-15:00` 每分钟采集完整板块榜，仅供盘中实时展示。每个交易日 `16:30` 从东方财富 `darktrade` 与 `darktradetick` 独立重新抓取行业、概念、个股完整日终榜及 48 个五分钟累计资金点；`16:45` 起抓取有成交个股的 48 根未复权五分钟 K，`16:50` 起用登录态采集同花顺涨停受限数据。完整日归档直接按交易日长期累积，每日只保存一份主数据和一条轻量完整性摘要；日级特征及后续 `1/3/5/10/20` 日收益标签均从主归档生成。盘中工作数据只在长期数据全部完整后由次日 `09:00` 任务清理。
 
 东方财富数据源资料见 [项目记忆](项目记忆.md)。`push2/push2his` 的请求参数、Cookie 状态窗口、重试策略和故障判定统一以 [行情接口调用规范](docs/EASTMONEY_PUSH2_API.md) 为准。
 
@@ -122,13 +122,17 @@ curl 'http://localhost:8080/api/v1/relations/changes?trade_date=2026-08-13'
 
 “股票联动”页面以同花顺涨停聚焦的完整涨停池、炸板池、跌停池为独立事件数据源，不依赖日 K、五分钟行情或成份归档。按 30/90/180/365 自然日回看，分别研究涨停、触涨停、跌停的共现网络，展示条件共现率、Jaccard、提升倍数与共同日期，以及封板/炸板/回封、开板次数、首次触板时段、跌停频率和触涨停后跌停记录。缺失日期不补零、未知开板次数不当成零，小样本明确提示。
 
-日常事件采集由独立 `end-of-day-events` 盘后子任务执行，在交易日 `16:00`、`16:05`、`16:10` 发出邀请；单次预算 10 分钟，最多 3 次尝试。服务启动时在非盘中窗口恢复最近交易日，交易日 `09:30–16:00` 不恢复。开关 `SHADOWFLOW_LIMIT_UP_ARCHIVE_ENABLED` 默认 `false`，既有实时、盘后行情及成份开关保持原状。
+日常事件采集由独立 `end-of-day-events` 盘后子任务执行，在交易日 `16:30`、`16:35`、`16:40` 发出邀请；单次预算 10 分钟，最多 3 次尝试。受限的同花顺账号数据由独立 `ths-account-data` 子任务在交易日 `16:50`、`17:10`、`17:50` 采集，只有 `SHADOWFLOW_THS_AUTO_LOGIN` 打开且已实际配置凭据、浏览器并接入账号数据源时才排队和领取任务。服务启动时在非盘中窗口恢复最近交易日，交易日 `09:30–16:00` 不恢复。开关 `SHADOWFLOW_LIMIT_UP_ARCHIVE_ENABLED` 在Compose中默认 `true`，直接运行Go程序时默认 `false`，既有实时、盘后行情及成份开关保持原状。
 
 今日监控的板块成分股、动态筛选的个股结果和收盘个股均提供“联动/股性”快查，可选择 Top 5/Top 10，并进入完整股票联动页。快查与完整页显示实际事件样本截止日；完整页 URL 保存研究上下文和返回来源（`monitor`、`focus` 或 `stocks`），支持候选股票搜索和六位代码手输。事件明细与共同日期可查看；点击事件日期跳回收盘个股尚未实现。
 
 采集质量页已接通只读事件分项 quality API，区分 `disabled`、`not_collected`、`running`、`failed`、`complete`，并显示涨停、炸板、跌停三池数量、完整零事件日、最近采集时间和失败原因。首次历史回补仍由用户手动执行，不自动采全年，也不伪造行情。
 
 手工回补/修复入口为在 `backend` 中运行 `go run ./cmd/collect -task limit-up -date YYYY-MM-DD`。命令先向 `SHADOWFLOW_DATABASE_PATH` 指定的数据库写入运行记录，再低频串行抓取并验证三池，全部通过后原子发布；失败保留旧完整版本与失败运行记录。研究页面和 quality 接口只读本地数据，不触发采集。模块职责、跨页协作、指标口径与 URL 参数见 [股票联动与股性](docs/STOCK_LINKAGE_AND_BEHAVIOR.md)。
+
+股票联动页的“题材与连板补充”读取独立盘后归档，展示 Top20 题材、源涨停原因、连板梯队、市场摘要和两日晋级对照；部分源接口没有日期回显，页面明确标注覆盖限制。手工入口为 `go run ./cmd/collect -task ths-focus -date YYYY-MM-DD`。三池计数异常只在完整分页与炸板/跌停交集证据吻合时校正，同时保留源计数和证据代码。
+
+公开复盘接口继续匿名访问。受限的同花顺指标查询使用独立会话管理器，配置凭据后支持过期自动登录、并发合并刷新和原请求单次重放；错误密码、验证码和设备确认停止自动密码重试。独立 `ths-login` 写入的新会话会被常驻服务在后续请求时重新加载；会话文件配置在CLI和服务中均生效。账号归档拒绝显式未授权指标，保留指标映射，并按股票身份补采缺项。凭据录入、会话保存与 `ths-login`、`ths-auth-status`、`ths-account-data` 命令见 [同花顺接口与登录](docs/THS_FOCUS_API.md)。
 
 ## 动态连续筛选
 
@@ -174,7 +178,7 @@ docker compose up -d
 
 GitHub Actions 位于 `.github/workflows/arm64-image.yaml`。它先运行 Go race 测试/`go vet`、脚本回归和 React lint/test/build，再构建 `linux/arm64` 镜像。Docker 构建阶段也运行后端测试/vet、前端 lint/test/build；只有 npm 漏洞检查及 `govulncheck` 对实际目标架构的 `shadowflow`、`collect` 两个二进制扫描都成功，才可生成最终镜像。发布前另以 Trivy 检查最终镜像的操作系统和库，HIGH/CRITICAL 告警（包括尚无补丁的告警）会阻止发布；再经 QEMU 验证就绪、鉴权、静态页面和 Alpine 备份/日历脚本。所有门槛通过后，`main` 分支推送、`v*` 标签或手工触发才发布 GHCR，Pull Request 不发布。
 
-容器基线固定为 `golang:1.26.10-alpine3.24`、`node:22.23.2-alpine3.24` 和 `alpine:3.24.1`；`golang.org/x/text` 使用 v0.43.0。Go 构建设置 `GOTOOLCHAIN=local`，避免自动改用未核验版本；`go.mod` 的 1.26.0 仅是语言最低要求，不是生产安全补丁要求。本机 Go/Node 无需为部署改装。运行时不包含 Go/Node 工具链，只含服务、采集器、静态前端和 SQLite 等系统包；Compose 内存限制为 768 MiB。前端仅为 TypeScript ESLint 的间接依赖固定 `minimatch` 11.0.1，修复 GHSA-g3hv-75wg-m249；不豁免 npm 漏洞门槛。
+容器基线固定为 `golang:1.26.10-alpine3.24`、`node:22.23.2-alpine3.24` 和 `alpine:3.24.1`；`golang.org/x/text` 使用 v0.43.0。Go 构建设置 `GOTOOLCHAIN=local`，避免自动改用未核验版本；`go.mod` 的 1.26.0 仅是语言最低要求，不是生产安全补丁要求。本机 Go/Node 无需为部署改装。运行时不包含 Go/Node 工具链，包含服务、采集器、静态前端、SQLite 和用于同花顺登录握手的 Chromium；Compose 内存限制为 1536 MiB。前端仅为 TypeScript ESLint 的间接依赖固定 `minimatch` 11.0.1，修复 GHSA-g3hv-75wg-m249；不豁免 npm 漏洞门槛。
 
 CI 每轮设置不同的 `VULN_DB_REFRESH`，重新更新运行时 Alpine 包并执行漏洞扫描，不复用旧安全结果。手动源码构建也应刷新该参数：
 
@@ -212,8 +216,12 @@ docker buildx build --platform linux/arm64 --load \
 | `SHADOWFLOW_PROXY_POOL_PROTOCOLS` | `http,socks5` | 允许使用的代理协议 |
 | `SHADOWFLOW_PROXY_POOL_DIRECT_FALLBACK` | `false` | 新版接入必须保持 false，不允许绕过预热或代理供应不足 |
 | `SHADOWFLOW_SCHEDULER_ENABLED` | `true` | 是否运行盘中和盘后采集调度；健康检查或只读 API 模式可设为 `false` |
-| `SHADOWFLOW_LIMIT_UP_ARCHIVE_ENABLED` | `false` | 是否启用独立 `end-of-day-events` 涨跌停事件盘后归档；不改变行情与成份任务开关 |
+| `SHADOWFLOW_LIMIT_UP_ARCHIVE_ENABLED` | `true` | 是否启用独立 `end-of-day-events` 涨跌停事件与同花顺账号数据盘后归档；不改变行情与成份任务开关 |
 | `SHADOWFLOW_LIMIT_UP_SCOPE` | `HS,GEM2STAR` | 事件归档范围，可选 `HS,GEM2STAR` 或 `HS,GEM2STAR,ST,NEW` |
+| `SHADOWFLOW_THS_AUTO_LOGIN` | `true` | 同花顺账号自动登录；要求 `SHADOWFLOW_THS_USERNAME/THS_PASSWORD`（或 `SHADOWFLOW_THS_CREDENTIALS_FILE`）与 `SHADOWFLOW_THS_HEADLESS_BROWSER` |
+| `SHADOWFLOW_THS_USERNAME` / `SHADOWFLOW_THS_PASSWORD` | 空 | 同花顺账号凭据（compose 环境变量，`docker inspect` 可见）；与凭据文件二选一 |
+| `SHADOWFLOW_THS_HEADLESS_BROWSER` | `/usr/bin/chromium-browser` | 无头浏览器路径，登录态写入数据库 `ths_session` 表 |
+| `SHADOWFLOW_THS_CHROME_ARGS` | 容器内 `--no-sandbox --disable-dev-shm-usage` | 无头浏览器附加启动参数（空白分隔） |
 | `SHADOWFLOW_SUCCESS_RUN_RETENTION_DAYS` | `30` | 成功/跳过的采集运行记录保留天数 |
 | `SHADOWFLOW_FAILURE_RUN_RETENTION_DAYS` | `180` | 失败/部分成功的采集运行记录保留天数，必须不少于成功记录保留天数 |
 | `SHADOWFLOW_BACKUP_RETENTION_DAYS` | `3` | 有效压缩备份保留数量，必须为正整数，不是自然日；只清理自动命名且校验通过的备份及其 sidecar |
@@ -223,7 +231,7 @@ docker buildx build --platform linux/arm64 --load \
 
 代理池接口格式和运行策略见 [docs/PROXY_POOL_API.md](docs/PROXY_POOL_API.md)。代理池只作用于东方财富上游请求，代理控制 API 和交易日历请求保持独立。服务启动不访问代理池，启用调度后在采集前发起异步预热并等待真实完成；供应不足不阻止只读 Web 服务启动。
 
-交易日成份同步的原时间仍为 `07:00/07:30/08:00`，新增 `06:55/07:25/07:55` 提前预热；盘后归档 `15:55` 预热，五分钟 K `16:10/17:25/19:55` 预热。提前预热不是预约存活代理，业务启动时过旧的完成结果会重新检查/预热，领取时仍由代理池验证当前资格。所有 Go 上游采集共用最多四个代理 worker，健康会话续租、失败反馈并释放后换代理，五分钟正式主路径直接请求 `klt=5,fqt=0`，不再合成一分钟数据。Compose 为代理业务请求采用 12 秒超时，可通过环境变量调整。
+交易日成份同步的原时间仍为 `07:00/07:30/08:00`，新增 `06:55/07:25/07:55` 提前预热；盘后归档 `16:25` 预热，五分钟 K `16:40/17:25/19:55` 预热。提前预热不是预约存活代理，业务启动时过旧的完成结果会重新检查/预热，领取时仍由代理池验证当前资格。所有 Go 上游采集共用最多四个代理 worker，健康会话续租、失败反馈并释放后换代理，五分钟正式主路径直接请求 `klt=5,fqt=0`，不再合成一分钟数据。Compose 为代理业务请求采用 12 秒超时，可通过环境变量调整。
 
 `backend/config/trading_calendar.json` 已内置 2026 年 A 股休市日期和 `valid_through`。服务每天检查覆盖期，距离到期不足阈值时读取交易所年度休市安排；只有年度标题、日期范围和最少假日数全部校验通过才原子替换，失败时保留旧文件。覆盖状态同时出现在 `/api/v1/system/status` 和 Prometheus 指标中。
 
@@ -296,7 +304,7 @@ go run ./cmd/collect -task relations -date 2026-08-13
 docker compose run --rm --entrypoint /app/collect shadowflow -task relations -date 2026-08-13
 ```
 
-`end-of-day` 在 `16:00` 执行，失败时于 `16:05`、`16:10` 补试，原子写入行业、概念、个股各自的完整日终榜和 48 个盘后修订资金点。`stock-kline` 在 `16:15` 执行，并于 `17:30`、`20:00` 补试，保存有成交个股的 48 根未复权五分钟 K。五分钟接口不可用时，会从同源 `trends2` 取得当日 241 根一分钟 OHLC，按 `09:35-11:30`、`13:05-15:00` 聚合为 48 根并与日 K 的 OHLC 交叉校验；分钟量额保留原值，不与可能包含 `15:00-15:30` 盘后交易的日终截面强制一致，241 根源数据也不长期保存。K 线任务以当日已归档日终个股截面为候选源，每只股票只有完整 48 根才会在事务中落库；整批允许部分成功，后续运行只补当日缺失股票。历史日没有当日主归档时不依赖事后猜测，系统以每日实际采集为准。`cleanup` 每天 `09:00` 检查上一交易日：两类板块资金与日终、个股资金、五分钟 K、完整日终榜和日 K 任一不完整，都不会删除盘中工作数据。
+`end-of-day` 在 `16:30` 执行，失败时于 `16:35`、`16:40` 补试，原子写入行业、概念、个股各自的完整日终榜和 48 个盘后修订资金点。`stock-kline` 在 `16:45` 执行，并于 `17:30`、`20:00` 补试，保存有成交个股的 48 根未复权五分钟 K。五分钟接口不可用时，会从同源 `trends2` 取得当日 241 根一分钟 OHLC，按 `09:35-11:30`、`13:05-15:00` 聚合为 48 根并与日 K 的 OHLC 交叉校验；分钟量额保留原值，不与可能包含 `15:00-15:30` 盘后交易的日终截面强制一致，241 根源数据也不长期保存。K 线任务以当日已归档日终个股截面为候选源，每只股票只有完整 48 根才会在事务中落库；整批允许部分成功，后续运行只补当日缺失股票。历史日没有当日主归档时不依赖事后猜测，系统以每日实际采集为准。`cleanup` 每天 `09:00` 检查上一交易日：两类板块资金与日终、个股资金、五分钟 K、完整日终榜和日 K 任一不完整，都不会删除盘中工作数据。
 
 调度实例持久化在 SQLite `scheduled_job` 表中，使用原子 claim 和 lease 防止进程重启后重复执行；失败任务按类型保留重试预算，过期 lease 会自动回到队列。启动时会回补当日已错过且可安全重放的非分钟级任务。盘中采集、关系同步和盘后归档使用独立调度通道，关系扫描变慢不会阻塞分钟采集。每天 `09:05` 维护任务会按保留策略清理运行日志、调度任务、回收旧的临时原始响应、执行被动 WAL checkpoint，并按约 30 天周期运行 `PRAGMA optimize`。`/api/v1/research/quality` 的 `meta.archive_manifest` 提供统一的每日归档清单、代码集合摘要、来源契约和校验错误。
 

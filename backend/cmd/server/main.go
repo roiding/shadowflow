@@ -24,10 +24,14 @@ import (
 	"github.com/roiding/shadowflow/internal/config"
 	"github.com/roiding/shadowflow/internal/datasource/eastmoney"
 	"github.com/roiding/shadowflow/internal/datasource/ths"
+	"github.com/roiding/shadowflow/internal/datasource/thsdataq"
+	"github.com/roiding/shadowflow/internal/datasource/thsfocus"
 	"github.com/roiding/shadowflow/internal/datasource/upstream"
 	"github.com/roiding/shadowflow/internal/quote"
 	"github.com/roiding/shadowflow/internal/repository/sqlite"
 	"github.com/roiding/shadowflow/internal/scheduler"
+	"github.com/roiding/shadowflow/internal/thsauth"
+	"github.com/roiding/shadowflow/internal/thsheadless"
 	"github.com/roiding/shadowflow/internal/tradingcalendar"
 )
 
@@ -78,7 +82,35 @@ func main() {
 	thsClient := ths.NewClient(ths.DefaultBaseURL, &http.Client{Timeout: 20 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }})
 	collectorService := collector.New(client, store, logger).WithAllowMissingQuotes(cfg.AllowMissingQuotes).
-		WithLimitUpSource(thsClient, cfg.LimitUpScope)
+		WithLimitUpSource(thsClient, cfg.LimitUpScope).
+		WithThsFocusSource(thsfocus.NewClient("", &http.Client{Timeout: 20 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}), cfg.LimitUpScope)
+	// The restricted THS dataset lane needs an authenticated account session;
+	// it is wired only when headless THS login is enabled and the archive lane
+	// it depends on is scheduled. The manager refreshes the session (including
+	// a headless browser login) on demand when the stored state is rejected.
+	if cfg.THSAutoLogin && (cfg.THSUsername != "" || cfg.THSCredentialsFile != "") && cfg.THSHeadlessBrowser == "" {
+		logger.Error("THS auto-login requires SHADOWFLOW_THS_HEADLESS_BROWSER when credentials are configured")
+		os.Exit(1)
+	}
+	if cfg.THSAutoLogin && cfg.THSUsername == "" && cfg.THSCredentialsFile == "" {
+		logger.Warn("THS auto-login has no credentials configured; only a stored session can be used until it expires")
+	}
+	// The lane requires the full login capability: credentials plus a headless
+	// browser. Session-only deployments (database reuse without credentials)
+	// still serve the collect CLI but cannot run the scheduled restricted lane.
+	thsAccountDataEnabled := false
+	if cfg.THSAutoLogin && cfg.LimitUpArchiveEnabled && cfg.THSHeadlessBrowser != "" &&
+		(cfg.THSUsername != "" || cfg.THSCredentialsFile != "") {
+		manager, managerErr := newTHSAccountManager(cfg, store, logger)
+		if managerErr != nil {
+			logger.Error("create THS account manager", "error", managerErr)
+			os.Exit(1)
+		}
+		defer manager.Close()
+		collectorService = collectorService.WithThsAccountSource(thsdataq.NewClient(manager))
+		thsAccountDataEnabled = true
+	}
 	disabledKinds := make(map[string]struct{}, len(cfg.SchedulerDisabledKinds))
 	for _, kind := range cfg.SchedulerDisabledKinds {
 		if kind = strings.TrimSpace(kind); kind != "" {
@@ -92,6 +124,7 @@ func main() {
 		DisabledKinds:           disabledKinds,
 		ProxyPrewarmEnabled:     proxyPool != nil,
 		LimitUpArchiveEnabled:   cfg.LimitUpArchiveEnabled,
+		THSAccountDataEnabled:   thsAccountDataEnabled,
 	})
 	if err != nil {
 		logger.Error("create scheduler", "error", err)
@@ -174,6 +207,44 @@ func main() {
 		os.Exit(1)
 	default:
 	}
+}
+
+// newTHSAccountManager builds the long-lived THS login manager backed by the
+// database session store and the headless browser risk-token provider.
+func newTHSAccountManager(cfg config.Config, store *sqlite.Store, logger *slog.Logger) (*thsauth.Manager, error) {
+	var source thsauth.CredentialSource
+	if cfg.THSUsername != "" {
+		source = thsauth.EnvCredentials(cfg.THSUsername, cfg.THSPassword)
+	} else {
+		source = thsauth.FileCredentials(cfg.THSCredentialsFile)
+	}
+	browser, err := thsheadless.New(thsheadless.Options{
+		Executable: cfg.THSHeadlessBrowser,
+		Timeout:    30 * time.Second,
+		ChromeArgs: strings.Fields(cfg.THSChromeArgs),
+	})
+	if err != nil {
+		return nil, err
+	}
+	options := thsauth.Options{
+		SessionFile:    cfg.THSSessionFile,
+		AutoLogin:      true,
+		Login:          thsauth.PasswordLoginWithRiskProviderSource(source, browser),
+		RequestTimeout: 20 * time.Second,
+		RefreshTimeout: 120 * time.Second,
+		Cooldown:       5 * time.Minute,
+	}
+	if cfg.THSSessionFile == "" {
+		options.Session = store.THSSessionStore()
+	}
+	manager, err := thsauth.New(options)
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("THS account lane enabled",
+		"credentials", map[bool]string{true: "environment", false: "file"}[cfg.THSUsername != ""],
+		"browser", cfg.THSHeadlessBrowser)
+	return manager, nil
 }
 
 func runCalendarUpdater(ctx context.Context, calendar *tradingcalendar.Calendar, cfg config.Config, logger *slog.Logger) {

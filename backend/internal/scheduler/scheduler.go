@@ -43,6 +43,11 @@ type limitUpCollector interface {
 	HasLimitUpArchive(context.Context, string) (bool, error)
 }
 
+type thsFocusCollector interface {
+	CollectThsFocus(context.Context, time.Time) error
+	HasThsFocusArchive(context.Context, string) (bool, error)
+}
+
 type proxyPrewarmer interface {
 	PrepareUpstream(context.Context, string) error
 }
@@ -60,6 +65,7 @@ type Options struct {
 	DisabledKinds         map[string]struct{}
 	ProxyPrewarmEnabled   bool
 	LimitUpArchiveEnabled bool
+	THSAccountDataEnabled bool
 }
 
 type Scheduler struct {
@@ -100,6 +106,7 @@ func New(service collectorService, calendar *tradingcalendar.Calendar, logger *s
 		}
 		config.ProxyPrewarmEnabled = provided.ProxyPrewarmEnabled
 		config.LimitUpArchiveEnabled = provided.LimitUpArchiveEnabled
+		config.THSAccountDataEnabled = provided.THSAccountDataEnabled
 	}
 	owner := strings.TrimSpace(config.InstanceID)
 	if owner == "" {
@@ -182,11 +189,12 @@ func (s *Scheduler) enqueueReplayableJobs(ctx context.Context, now time.Time) {
 	}{
 		{"cleanup", "09:00"}, {"maintenance", "09:05"},
 		{"relations", "07:00"}, {"relations", "07:30"}, {"relations", "08:00"},
-		{"end-of-day-industry", "16:00"}, {"end-of-day-industry", "16:05"}, {"end-of-day-industry", "16:10"},
-		{"end-of-day-concept", "16:00"}, {"end-of-day-concept", "16:05"}, {"end-of-day-concept", "16:10"},
-		{"end-of-day-stock", "16:00"}, {"end-of-day-stock", "16:05"}, {"end-of-day-stock", "16:10"},
-		{"end-of-day-events", "16:00"}, {"end-of-day-events", "16:05"}, {"end-of-day-events", "16:10"},
-		{"stock-kline", "16:15"}, {"stock-kline", "17:30"}, {"stock-kline", "20:00"},
+		{"end-of-day-industry", "16:30"}, {"end-of-day-industry", "16:35"}, {"end-of-day-industry", "16:40"},
+		{"end-of-day-concept", "16:30"}, {"end-of-day-concept", "16:35"}, {"end-of-day-concept", "16:40"},
+		{"end-of-day-stock", "16:30"}, {"end-of-day-stock", "16:35"}, {"end-of-day-stock", "16:40"},
+		{"end-of-day-events", "16:30"}, {"end-of-day-events", "16:35"}, {"end-of-day-events", "16:40"},
+		{"ths-account-data", "16:50"}, {"ths-account-data", "17:10"}, {"ths-account-data", "17:50"},
+		{"stock-kline", "16:45"}, {"stock-kline", "17:30"}, {"stock-kline", "20:00"},
 	}
 	for _, plan := range plans {
 		if !s.kindEnabled(plan.kind) {
@@ -212,8 +220,8 @@ func (s *Scheduler) enqueueReplayableJobs(ctx context.Context, now time.Time) {
 			{"proxy-prewarm-relations", "07:55"},
 			{"proxy-prewarm-boards", "09:26"},
 			{"proxy-prewarm-boards", "12:56"},
-			{"proxy-prewarm-end-of-day", "15:55"},
-			{"proxy-prewarm-stock-kline", "16:10"},
+			{"proxy-prewarm-end-of-day", "16:25"},
+			{"proxy-prewarm-stock-kline", "16:40"},
 			{"proxy-prewarm-stock-kline", "17:25"},
 			{"proxy-prewarm-stock-kline", "19:55"},
 		}
@@ -249,8 +257,12 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 		return
 	}
 	s.startEvents(ctx, current)
+	s.startThsAccountData(ctx, current)
 	s.checkPrewarm(ctx, current)
 	kind := jobKind(current)
+	if kind == "ths-account-data" {
+		return
+	}
 	if kind == "" || kind != "cleanup" && kind != "maintenance" && !s.calendar.IsTradingDay(current) {
 		return
 	}
@@ -272,13 +284,33 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 }
 
 func (s *Scheduler) startEvents(ctx context.Context, current time.Time) {
-	if current.Hour() != 16 || current.Minute() != 0 && current.Minute() != 5 && current.Minute() != 10 {
+	if current.Hour() != 16 || current.Minute() != 30 && current.Minute() != 35 && current.Minute() != 40 {
 		return
 	}
 	if !s.calendar.IsTradingDay(current) || !s.kindEnabled("end-of-day-events") {
 		return
 	}
 	s.startJob(ctx, "end-of-day-events", current, current.Format("2006-01-02"))
+}
+
+// startThsAccountData enqueues the restricted THS dataset job after the
+// end-of-day-events lane has produced the day's limit-up archive.
+func (s *Scheduler) startThsAccountData(ctx context.Context, current time.Time) {
+	if !(current.Hour() == 16 && current.Minute() == 50 ||
+		current.Hour() == 17 && (current.Minute() == 10 || current.Minute() == 50)) {
+		return
+	}
+	if !s.calendar.IsTradingDay(current) || !s.kindEnabled("ths-account-data") {
+		return
+	}
+	s.startJob(ctx, "ths-account-data", current, current.Format("2006-01-02"))
+}
+
+// thsAccountDataAvailable reports whether the wired collector can fetch the
+// restricted THS dataset (it requires an authenticated account source).
+func (s *Scheduler) thsAccountDataAvailable() bool {
+	_, ok := s.collector.(thsAccountCollector)
+	return ok
 }
 
 func (scheduler *Scheduler) checkPrewarm(ctx context.Context, current time.Time) {
@@ -295,16 +327,23 @@ func (scheduler *Scheduler) checkPrewarm(ctx context.Context, current time.Time)
 	scheduler.startJob(ctx, prewarmKind, current, current.Format("2006-01-02"))
 }
 
+type thsAccountCollector interface {
+	CollectThsAccountData(ctx context.Context, runAt time.Time) error
+}
+
 func (s *Scheduler) kindEnabled(kind string) bool {
 	if _, disabled := s.options.DisabledKinds[kind]; disabled {
 		return false
 	}
-	if kind == "end-of-day-events" {
+	if kind == "end-of-day-events" || kind == "ths-account-data" {
 		if !s.options.LimitUpArchiveEnabled {
 			return false
 		}
 		if _, disabled := s.options.DisabledKinds["end-of-day"]; disabled {
 			return false
+		}
+		if kind == "ths-account-data" {
+			return s.options.THSAccountDataEnabled && s.thsAccountDataAvailable()
 		}
 	}
 	if strings.HasPrefix(kind, "proxy-prewarm-") {
@@ -554,7 +593,7 @@ func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current ti
 					return partErr
 				}
 				if !exists {
-					if partErr = part.CollectEndOfDayPart(ctx, parseShanghaiTime(tradeDate, "16:00", current), rankType); partErr != nil {
+					if partErr = part.CollectEndOfDayPart(ctx, parseShanghaiTime(tradeDate, "16:30", current), rankType); partErr != nil {
 						return partErr
 					}
 				}
@@ -569,7 +608,7 @@ func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current ti
 			s.logger.Info("end-of-day archive already available; skipping retry", "trade_date", tradeDate, "at", current)
 			return nil
 		}
-		return s.collector.CollectEndOfDay(ctx, parseShanghaiTime(tradeDate, "16:00", current))
+		return s.collector.CollectEndOfDay(ctx, parseShanghaiTime(tradeDate, "16:30", current))
 	case "end-of-day-industry", "end-of-day-concept", "end-of-day-stock":
 		part, ok := s.collector.(archivePartCollector)
 		if !ok {
@@ -589,7 +628,7 @@ func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current ti
 		if exists {
 			return nil
 		}
-		return part.CollectEndOfDayPart(ctx, parseShanghaiTime(tradeDate, "16:00", current), rankType)
+		return part.CollectEndOfDayPart(ctx, parseShanghaiTime(tradeDate, "16:30", current), rankType)
 	case "end-of-day-events":
 		events, ok := s.collector.(limitUpCollector)
 		if !ok {
@@ -599,11 +638,26 @@ func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current ti
 		if err != nil {
 			return err
 		}
-		if exists {
-			s.logger.Info("limit-up event archive already available; skipping retry", "trade_date", tradeDate, "at", current)
-			return nil
+		runAt := parseShanghaiTime(tradeDate, "16:30", current)
+		var eventErr error
+		if !exists {
+			eventErr = events.CollectLimitUpEvents(ctx, runAt)
 		}
-		return events.CollectLimitUpEvents(ctx, parseShanghaiTime(tradeDate, "16:00", current))
+		var focusErr error
+		if supplementary, available := s.collector.(thsFocusCollector); available {
+			complete, checkErr := supplementary.HasThsFocusArchive(ctx, tradeDate)
+			focusErr = checkErr
+			if checkErr == nil && !complete {
+				focusErr = supplementary.CollectThsFocus(ctx, runAt)
+			}
+		}
+		return errors.Join(eventErr, focusErr)
+	case "ths-account-data":
+		account, ok := s.collector.(thsAccountCollector)
+		if !ok {
+			return fmt.Errorf("THS account data collector is unavailable")
+		}
+		return account.CollectThsAccountData(ctx, parseShanghaiTime(tradeDate, "16:50", current))
 	case "cleanup":
 		return s.collector.CleanupArchivedIntraday(ctx, tradeDate)
 	case "maintenance":
@@ -698,7 +752,7 @@ func (s *Scheduler) recoverArchive(ctx context.Context, tradeDate string, curren
 				s.logger.Info("startup archive part already available; skipping", "trade_date", tradeDate, "rank_type", rankType)
 				continue
 			}
-			if err := part.CollectEndOfDayPart(ctx, parseShanghaiTime(tradeDate, "16:00", current), rankType); err != nil {
+			if err := part.CollectEndOfDayPart(ctx, parseShanghaiTime(tradeDate, "16:30", current), rankType); err != nil {
 				// The other archive parts are independently retryable.
 				combined = errors.Join(combined, fmt.Errorf("recover %s archive: %w", rankType, err))
 			}
@@ -709,7 +763,7 @@ func (s *Scheduler) recoverArchive(ctx context.Context, tradeDate string, curren
 			combined = errors.Join(combined, err)
 		}
 		if err == nil && !exists {
-			if err := s.collector.CollectEndOfDay(ctx, parseShanghaiTime(tradeDate, "16:00", current)); err != nil {
+			if err := s.collector.CollectEndOfDay(ctx, parseShanghaiTime(tradeDate, "16:30", current)); err != nil {
 				combined = errors.Join(combined, err)
 			}
 		}
@@ -790,9 +844,12 @@ func jobKind(current time.Time) string {
 	switch {
 	case isTradingMinute(current):
 		return "minute"
-	case current.Hour() == 16 && (current.Minute() == 0 || current.Minute() == 5 || current.Minute() == 10):
+	case current.Hour() == 16 && (current.Minute() == 30 || current.Minute() == 35 || current.Minute() == 40):
 		return "end-of-day"
-	case current.Hour() == 16 && current.Minute() == 15,
+	case current.Hour() == 16 && current.Minute() == 50,
+		current.Hour() == 17 && (current.Minute() == 10 || current.Minute() == 50):
+		return "ths-account-data"
+	case current.Hour() == 16 && current.Minute() == 45,
 		current.Hour() == 17 && current.Minute() == 30,
 		current.Hour() == 20 && current.Minute() == 0:
 		return "stock-kline"
@@ -825,9 +882,9 @@ func prewarmJobKind(current time.Time) string {
 	case currentHour == 9 && currentMinute == 26,
 		currentHour == 12 && currentMinute == 56:
 		return "proxy-prewarm-boards"
-	case currentHour == 15 && currentMinute == 55:
+	case currentHour == 16 && currentMinute == 25:
 		return "proxy-prewarm-end-of-day"
-	case currentHour == 16 && currentMinute == 10,
+	case currentHour == 16 && currentMinute == 40,
 		currentHour == 17 && currentMinute == 25,
 		currentHour == 19 && currentMinute == 55:
 		return "proxy-prewarm-stock-kline"

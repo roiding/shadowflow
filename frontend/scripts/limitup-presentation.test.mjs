@@ -16,6 +16,7 @@ const {
   formatOpenCountDisplay,
   formatPoolStatus,
   formatEventRowKey,
+  eventTouchTimes,
   formatTimeText,
   filterStockCandidates,
   sortStockCandidates,
@@ -75,6 +76,60 @@ test('formatEventRowKey keeps two same-day pool rows unique', () => {
   assert.equal(limitDownKey, '2026-11-05:limit_down')
   assert.equal(limitUpKey, '2026-11-05:limit_up')
   assert.equal(new Set([openLimitKey, limitDownKey, limitUpKey]).size, 3)
+})
+
+test('event touch times use the down side only for limit-down rows', () => {
+  const sharedTimes = {
+    first_limit_at: '09:31:00',
+    last_limit_at: '14:59:00',
+    first_down_at: '10:12:00',
+    last_down_at: '15:00:00',
+  }
+  assert.deepEqual(eventTouchTimes({ pool: 'limit_down', ...sharedTimes }), {
+    first: '10:12:00',
+    last: '15:00:00',
+    firstLabel: '首次触及跌停',
+    lastLabel: '末次触及跌停',
+    side: 'down',
+  })
+  assert.deepEqual(eventTouchTimes({ pool: 'limit_up', ...sharedTimes }), {
+    first: '09:31:00',
+    last: '14:59:00',
+    firstLabel: '首次触及涨停',
+    lastLabel: '末次触及涨停',
+    side: 'up',
+  })
+  assert.deepEqual(eventTouchTimes({ pool: 'open_limit', ...sharedTimes }), {
+    first: '09:31:00',
+    last: '14:59:00',
+    firstLabel: '首次触及涨停',
+    lastLabel: '末次触及涨停',
+    side: 'up',
+  })
+})
+
+test('missing down-side times stay null and never fall back to limit-up times or zero', () => {
+  const downRecord = {
+    pool: 'limit_down',
+    first_limit_at: '09:31:00',
+    last_limit_at: null,
+    first_down_at: null,
+    last_down_at: null,
+  }
+  const downTimes = eventTouchTimes(downRecord)
+  assert.equal(downTimes.first, null)
+  assert.equal(downTimes.last, null)
+  assert.equal(formatTimeText(downTimes.first), '--')
+  assert.equal(formatTimeText(downTimes.last), '--')
+  assert.notEqual(downTimes.first, downRecord.first_limit_at)
+
+  const absentDownFields = eventTouchTimes({
+    pool: 'limit_down',
+    first_limit_at: '09:31:00',
+    last_limit_at: '14:59:00',
+  })
+  assert.equal(absentDownFields.first, null)
+  assert.equal(absentDownFields.last, null)
 })
 
 test('formatTimeText handles timestamps, standard time strings and invalid inputs', () => {

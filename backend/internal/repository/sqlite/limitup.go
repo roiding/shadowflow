@@ -46,6 +46,18 @@ CREATE TABLE IF NOT EXISTS limit_up_event (
 
 CREATE INDEX IF NOT EXISTS idx_limit_up_stock_dates ON limit_up_event (source, scope, code, trade_date);
 
+CREATE TABLE IF NOT EXISTS limit_up_day_correction (
+    source TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    reason TEXT NOT NULL CHECK (reason = 'broken_down_summary_undercount'),
+    source_broken_count INTEGER NOT NULL CHECK (source_broken_count >= 0),
+    source_touched_count INTEGER NOT NULL CHECK (source_touched_count >= 0),
+    codes_json TEXT NOT NULL,
+    PRIMARY KEY (source, scope, trade_date),
+    FOREIGN KEY (source, scope, trade_date) REFERENCES limit_up_day (source, scope, trade_date) ON DELETE CASCADE
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS limit_up_run_scope (
     run_id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
@@ -106,11 +118,21 @@ func (store *Store) LimitUpArchiveQuality(ctx context.Context, tradeDate, scope 
 	defer transaction.Rollback()
 	var day limitup.Day
 	var fetched string
-	err = transaction.QueryRowContext(ctx, `SELECT trade_date,fetched_at,sealed_count,broken_count,down_count,touched_count,content_hash
-FROM limit_up_day WHERE source=? AND scope=? AND trade_date=?`, limitup.SourceTHS, scope, tradeDate).
-		Scan(&day.TradeDate, &fetched, &day.SealedCount, &day.BrokenCount, &day.DownCount, &day.TouchedCount, &day.ContentHash)
+	var correctionReason, correctionCodes sql.NullString
+	var correctionSourceBroken, correctionSourceTouched sql.NullInt64
+	err = transaction.QueryRowContext(ctx, `SELECT day.trade_date,day.fetched_at,day.sealed_count,day.broken_count,day.down_count,
+day.touched_count,day.content_hash,correction.reason,correction.source_broken_count,correction.source_touched_count,correction.codes_json
+FROM limit_up_day day LEFT JOIN limit_up_day_correction correction
+ON correction.source=day.source AND correction.scope=day.scope AND correction.trade_date=day.trade_date
+WHERE day.source=? AND day.scope=? AND day.trade_date=?`, limitup.SourceTHS, scope, tradeDate).
+		Scan(&day.TradeDate, &fetched, &day.SealedCount, &day.BrokenCount, &day.DownCount, &day.TouchedCount, &day.ContentHash,
+			&correctionReason, &correctionSourceBroken, &correctionSourceTouched, &correctionCodes)
 	if err == nil {
 		day.FetchedAt, err = time.Parse(time.RFC3339Nano, fetched)
+		if err != nil {
+			return quality, err
+		}
+		day.CountCorrection, err = decodeCountCorrection(correctionReason, correctionSourceBroken, correctionSourceTouched, correctionCodes)
 		if err != nil {
 			return quality, err
 		}
@@ -199,6 +221,10 @@ func (store *Store) SaveLimitUpSnapshot(ctx context.Context, snapshot limitup.Sn
 			return fmt.Errorf("%w: cannot replace a newer limit-up snapshot", limitup.ErrInvalid)
 		}
 	}
+	if _, err := transaction.ExecContext(ctx, `DELETE FROM limit_up_day_correction WHERE source=? AND scope=? AND trade_date=?`,
+		snapshot.Source, snapshot.Scope, snapshot.TradeDate); err != nil {
+		return err
+	}
 	if _, err := transaction.ExecContext(ctx, `DELETE FROM limit_up_day WHERE source=? AND scope=? AND trade_date=?`,
 		snapshot.Source, snapshot.Scope, snapshot.TradeDate); err != nil {
 		return err
@@ -208,6 +234,18 @@ func (store *Store) SaveLimitUpSnapshot(ctx context.Context, snapshot limitup.Sn
 VALUES(?,?,?,?,?,?,?,?,?,?,?)`, snapshot.Source, snapshot.Scope, snapshot.TradeDate, formatTimestamp(snapshot.FetchedAt),
 		snapshot.SealedCount, snapshot.BrokenCount, snapshot.DownCount, snapshot.TouchedCount, hex.EncodeToString(digest[:]), rawPages, "ths-limit-events-v1"); err != nil {
 		return err
+	}
+	if snapshot.CountCorrection != nil {
+		codes, err := json.Marshal(snapshot.CountCorrection.Codes)
+		if err != nil {
+			return err
+		}
+		if _, err := transaction.ExecContext(ctx, `INSERT INTO limit_up_day_correction
+(source,scope,trade_date,reason,source_broken_count,source_touched_count,codes_json) VALUES(?,?,?,?,?,?,?)`,
+			snapshot.Source, snapshot.Scope, snapshot.TradeDate, snapshot.CountCorrection.Reason,
+			snapshot.CountCorrection.SourceBrokenCount, snapshot.CountCorrection.SourceTouchedCount, string(codes)); err != nil {
+			return err
+		}
 	}
 	statement, err := transaction.PrepareContext(ctx, `INSERT INTO limit_up_event
 (source,scope,trade_date,code,pool,payload_json,raw_json) VALUES(?,?,?,?,?,?,?)`)
@@ -245,8 +283,11 @@ func (store *Store) ReadLimitUpWindow(ctx context.Context, fromDate, asOf, scope
 		return dataset, err
 	}
 	defer transaction.Rollback()
-	rows, err := transaction.QueryContext(ctx, `SELECT trade_date,fetched_at,sealed_count,broken_count,down_count,touched_count,content_hash
-FROM limit_up_day WHERE source=? AND scope=? AND trade_date>=? AND trade_date<=? ORDER BY trade_date`,
+	rows, err := transaction.QueryContext(ctx, `SELECT day.trade_date,day.fetched_at,day.sealed_count,day.broken_count,day.down_count,
+day.touched_count,day.content_hash,correction.reason,correction.source_broken_count,correction.source_touched_count,correction.codes_json
+FROM limit_up_day day LEFT JOIN limit_up_day_correction correction
+ON correction.source=day.source AND correction.scope=day.scope AND correction.trade_date=day.trade_date
+WHERE day.source=? AND day.scope=? AND day.trade_date>=? AND day.trade_date<=? ORDER BY day.trade_date`,
 		limitup.SourceTHS, scope, fromDate, asOf)
 	if err != nil {
 		return dataset, err
@@ -255,11 +296,19 @@ FROM limit_up_day WHERE source=? AND scope=? AND trade_date>=? AND trade_date<=?
 	for rows.Next() {
 		var day limitup.Day
 		var fetched string
-		if err := rows.Scan(&day.TradeDate, &fetched, &day.SealedCount, &day.BrokenCount, &day.DownCount, &day.TouchedCount, &day.ContentHash); err != nil {
+		var correctionReason, correctionCodes sql.NullString
+		var correctionSourceBroken, correctionSourceTouched sql.NullInt64
+		if err := rows.Scan(&day.TradeDate, &fetched, &day.SealedCount, &day.BrokenCount, &day.DownCount, &day.TouchedCount,
+			&day.ContentHash, &correctionReason, &correctionSourceBroken, &correctionSourceTouched, &correctionCodes); err != nil {
 			rows.Close()
 			return dataset, err
 		}
 		day.FetchedAt, err = time.Parse(time.RFC3339Nano, fetched)
+		if err != nil {
+			rows.Close()
+			return dataset, err
+		}
+		day.CountCorrection, err = decodeCountCorrection(correctionReason, correctionSourceBroken, correctionSourceTouched, correctionCodes)
 		if err != nil {
 			rows.Close()
 			return dataset, err
@@ -304,4 +353,23 @@ WHERE source=? AND scope=? AND trade_date>=? AND trade_date<=? ORDER BY trade_da
 		return dataset, err
 	}
 	return dataset, transaction.Commit()
+}
+
+func decodeCountCorrection(reason sql.NullString, sourceBroken sql.NullInt64, sourceTouched sql.NullInt64, codes sql.NullString) (*limitup.CountCorrection, error) {
+	if !reason.Valid && !sourceBroken.Valid && !sourceTouched.Valid && !codes.Valid {
+		return nil, nil
+	}
+	if !reason.Valid || !sourceBroken.Valid || !sourceTouched.Valid || !codes.Valid {
+		return nil, errors.New("incomplete stored limit-up count correction")
+	}
+	var decodedCodes []string
+	if err := json.Unmarshal([]byte(codes.String), &decodedCodes); err != nil {
+		return nil, fmt.Errorf("decode stored limit-up correction codes: %w", err)
+	}
+	return &limitup.CountCorrection{
+		Reason:             reason.String,
+		SourceBrokenCount:  int(sourceBroken.Int64),
+		SourceTouchedCount: int(sourceTouched.Int64),
+		Codes:              decodedCodes,
+	}, nil
 }

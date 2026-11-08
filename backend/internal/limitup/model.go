@@ -35,6 +35,8 @@ type Event struct {
 	OpenCount      *int            `json:"open_count"`
 	FirstLimitAt   *time.Time      `json:"first_limit_at"`
 	LastLimitAt    *time.Time      `json:"last_limit_at"`
+	FirstDownAt    *time.Time      `json:"first_down_at,omitempty"`
+	LastDownAt     *time.Time      `json:"last_down_at,omitempty"`
 	LimitType      string          `json:"limit_type"`
 	HighDays       string          `json:"high_days"`
 	Reason         string          `json:"reason"`
@@ -45,26 +47,35 @@ type Event struct {
 }
 
 type Snapshot struct {
-	TradeDate    string            `json:"trade_date"`
-	Source       string            `json:"source"`
-	Scope        string            `json:"scope"`
-	FetchedAt    time.Time         `json:"fetched_at"`
-	SealedCount  int               `json:"sealed_count"`
-	BrokenCount  int               `json:"broken_count"`
-	DownCount    int               `json:"down_count"`
-	TouchedCount int               `json:"touched_count"`
-	Events       []Event           `json:"events"`
-	RawPages     []json.RawMessage `json:"-"`
+	TradeDate       string            `json:"trade_date"`
+	Source          string            `json:"source"`
+	Scope           string            `json:"scope"`
+	FetchedAt       time.Time         `json:"fetched_at"`
+	SealedCount     int               `json:"sealed_count"`
+	BrokenCount     int               `json:"broken_count"`
+	DownCount       int               `json:"down_count"`
+	TouchedCount    int               `json:"touched_count"`
+	CountCorrection *CountCorrection  `json:"count_correction,omitempty"`
+	Events          []Event           `json:"events"`
+	RawPages        []json.RawMessage `json:"-"`
 }
 
 type Day struct {
-	TradeDate    string    `json:"trade_date"`
-	FetchedAt    time.Time `json:"fetched_at"`
-	SealedCount  int       `json:"sealed_count"`
-	BrokenCount  int       `json:"broken_count"`
-	DownCount    int       `json:"down_count"`
-	TouchedCount int       `json:"touched_count"`
-	ContentHash  string    `json:"content_hash"`
+	TradeDate       string           `json:"trade_date"`
+	FetchedAt       time.Time        `json:"fetched_at"`
+	SealedCount     int              `json:"sealed_count"`
+	BrokenCount     int              `json:"broken_count"`
+	DownCount       int              `json:"down_count"`
+	TouchedCount    int              `json:"touched_count"`
+	CountCorrection *CountCorrection `json:"count_correction,omitempty"`
+	ContentHash     string           `json:"content_hash"`
+}
+
+type CountCorrection struct {
+	Reason             string   `json:"reason"`
+	SourceBrokenCount  int      `json:"source_broken_count"`
+	SourceTouchedCount int      `json:"source_touched_count"`
+	Codes              []string `json:"codes"`
 }
 
 type Dataset struct {
@@ -139,6 +150,8 @@ type Profile struct {
 	MeanOpenCount        *float64        `json:"mean_open_count"`
 	MedianFirstTime      string          `json:"median_first_time"`
 	FirstTimeSamples     int             `json:"first_time_samples"`
+	MedianFirstDownTime  string          `json:"median_first_down_time,omitempty"`
+	FirstDownTimeSamples int             `json:"first_down_time_samples,omitempty"`
 	LimitTypes           []CategoryCount `json:"limit_types"`
 	FirstTimeBuckets     []CategoryCount `json:"first_time_buckets"`
 }

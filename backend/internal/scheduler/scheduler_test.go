@@ -52,8 +52,9 @@ func TestScheduledJobBoundaries(t *testing.T) {
 		"07:59": "", "08:00": "relations", "08:01": "", "08:50": "", "08:51": "",
 		"08:59": "", "09:00": "cleanup", "09:01": "", "09:15": "", "09:16": "", "09:30": "",
 		"09:05": "maintenance",
-		"15:05": "", "15:30": "", "16:00": "end-of-day", "16:05": "end-of-day", "16:10": "end-of-day", "16:11": "",
-		"16:15": "stock-kline", "17:30": "stock-kline", "20:00": "stock-kline", "20:01": "",
+		"15:05": "", "15:30": "", "16:30": "end-of-day", "16:35": "end-of-day", "16:40": "end-of-day", "16:41": "",
+		"16:45": "stock-kline", "16:50": "ths-account-data", "17:10": "ths-account-data", "17:50": "ths-account-data",
+		"17:30": "stock-kline", "20:00": "stock-kline", "20:01": "",
 	}
 	for value, expected := range tests {
 		parsed, _ := time.ParseInLocation("15:04", value, location)
@@ -559,11 +560,11 @@ func TestProxyPrewarmBoundaries(testingT *testing.T) {
 		"12:56": "proxy-prewarm-boards",
 		"12:57": "",
 		"15:54": "",
-		"15:55": "proxy-prewarm-end-of-day",
-		"15:56": "",
-		"16:09": "",
-		"16:10": "proxy-prewarm-stock-kline",
-		"16:11": "",
+		"16:25": "proxy-prewarm-end-of-day",
+		"16:26": "",
+		"16:39": "",
+		"16:40": "proxy-prewarm-stock-kline",
+		"16:41": "",
 		"17:24": "",
 		"17:25": "proxy-prewarm-stock-kline",
 		"17:26": "",
@@ -683,7 +684,7 @@ func TestProxyPrewarmCallsCollectorWithCorrectPurpose(testingT *testing.T) {
 	}
 }
 
-func TestProxyPrewarm1610DoesNotCoverEndOfDay(testingT *testing.T) {
+func TestProxyPrewarm1640DoesNotCoverEndOfDay(testingT *testing.T) {
 	calendar, loadErr := tradingcalendar.Load(filepath.Join(testingT.TempDir(), "missing.json"))
 	if loadErr != nil {
 		testingT.Fatal(loadErr)
@@ -697,8 +698,8 @@ func TestProxyPrewarm1610DoesNotCoverEndOfDay(testingT *testing.T) {
 	if newErr != nil {
 		testingT.Fatal(newErr)
 	}
-	time1610 := time.Date(2026, 9, 7, 16, 10, 5, 0, scheduler.location)
-	scheduler.check(context.Background(), time1610)
+	time1640 := time.Date(2026, 9, 7, 16, 40, 5, 0, scheduler.location)
+	scheduler.check(context.Background(), time1640)
 	var foundEndOfDay bool
 	var foundPrewarmStockKline bool
 	for _, jobItem := range jobsStore.jobs {
@@ -710,10 +711,10 @@ func TestProxyPrewarm1610DoesNotCoverEndOfDay(testingT *testing.T) {
 		}
 	}
 	if !foundEndOfDay {
-		testingT.Fatal("16:10 check did not schedule original end-of-day collection")
+		testingT.Fatal("16:40 check did not schedule original end-of-day collection")
 	}
 	if !foundPrewarmStockKline {
-		testingT.Fatal("16:10 check did not schedule proxy-prewarm-stock-kline")
+		testingT.Fatal("16:40 check did not schedule proxy-prewarm-stock-kline")
 	}
 }
 

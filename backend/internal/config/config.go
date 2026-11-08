@@ -24,6 +24,13 @@ type Config struct {
 	SchedulerEnabled        bool
 	LimitUpArchiveEnabled   bool
 	LimitUpScope            string
+	THSAutoLogin            bool
+	THSCredentialsFile      string
+	THSSessionFile          string
+	THSHeadlessBrowser      string
+	THSUsername             string
+	THSPassword             string
+	THSChromeArgs           string
 	// SchedulerDisabledKinds turns individual scheduled job kinds off while
 	// the scheduler itself stays enabled, so a blocked upstream no longer
 	// drags unrelated collection lanes down with it.
@@ -77,6 +84,29 @@ func Load() (Config, error) {
 	limitUpScope := env("SHADOWFLOW_LIMIT_UP_SCOPE", "HS,GEM2STAR")
 	if limitUpScope != "HS,GEM2STAR" && limitUpScope != "HS,GEM2STAR,ST,NEW" {
 		return Config{}, fmt.Errorf("SHADOWFLOW_LIMIT_UP_SCOPE must be HS,GEM2STAR or HS,GEM2STAR,ST,NEW")
+	}
+	thsAutoLogin, err := envBool("SHADOWFLOW_THS_AUTO_LOGIN", false)
+	if err != nil {
+		return Config{}, err
+	}
+	thsCredentialsFile := strings.TrimSpace(os.Getenv("SHADOWFLOW_THS_CREDENTIALS_FILE"))
+	thsSessionFile := strings.TrimSpace(os.Getenv("SHADOWFLOW_THS_SESSION_FILE"))
+	thsHeadlessBrowser := strings.TrimSpace(os.Getenv("SHADOWFLOW_THS_HEADLESS_BROWSER"))
+	// Credentials may come from compose environment variables instead of a
+	// mounted file; the login session itself persists to the application
+	// database by default, so no session file is required anymore.
+	thsUsername := os.Getenv("SHADOWFLOW_THS_USERNAME")
+	thsPassword := os.Getenv("SHADOWFLOW_THS_PASSWORD")
+	thsChromeArgs := strings.TrimSpace(os.Getenv("SHADOWFLOW_THS_CHROME_ARGS"))
+	// Credentials are validated for consistency only here; whether the process
+	// can actually log in is enforced at wiring time (the server fails fast
+	// when credentials are configured without a browser). A deployment may run
+	// with AUTO_LOGIN and no credentials to reuse a stored database session.
+	if thsUsername != "" && thsPassword == "" {
+		return Config{}, fmt.Errorf("SHADOWFLOW_THS_USERNAME requires SHADOWFLOW_THS_PASSWORD")
+	}
+	if thsUsername != "" && thsCredentialsFile != "" {
+		return Config{}, fmt.Errorf("set either THS environment credentials or SHADOWFLOW_THS_CREDENTIALS_FILE, not both")
 	}
 	allowMissingQuotes, err := envBool("SHADOWFLOW_ALLOW_MISSING_QUOTES", false)
 	if err != nil {
@@ -220,6 +250,13 @@ func Load() (Config, error) {
 		SchedulerEnabled:        schedulerEnabled,
 		LimitUpArchiveEnabled:   limitUpArchiveEnabled,
 		LimitUpScope:            limitUpScope,
+		THSAutoLogin:            thsAutoLogin,
+		THSCredentialsFile:      thsCredentialsFile,
+		THSSessionFile:          thsSessionFile,
+		THSHeadlessBrowser:      thsHeadlessBrowser,
+		THSUsername:             thsUsername,
+		THSPassword:             thsPassword,
+		THSChromeArgs:           thsChromeArgs,
 		SchedulerDisabledKinds:  envList("SHADOWFLOW_SCHEDULER_DISABLED_KINDS", nil),
 		AllowMissingQuotes:      allowMissingQuotes,
 		SuccessRunRetentionDays: successRetentionDays,

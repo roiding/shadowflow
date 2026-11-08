@@ -27,12 +27,28 @@ func main() {
 }
 
 func run() error {
-	var task, date, at, scope string
-	flag.StringVar(&task, "task", "", "task: boards, end-of-day, stock-kline, daily-close, relations, limit-up, cleanup, maintenance, analytics, or is-trading-day")
+	var task, date, at, scope, codes string
+	flag.StringVar(&task, "task", "", "task: boards, end-of-day, stock-kline, daily-close, relations, limit-up, ths-focus, ths-login, ths-auth-status, ths-account-data, cleanup, maintenance, analytics, or is-trading-day")
 	flag.StringVar(&date, "date", "", "trade date in YYYY-MM-DD")
 	flag.StringVar(&at, "at", "15:00", "snapshot time in HH:MM for boards")
 	flag.StringVar(&scope, "scope", "HS,GEM2STAR", "market scope for limit-up: HS,GEM2STAR or HS,GEM2STAR,ST,NEW")
+	flag.StringVar(&codes, "codes", "", "comma-separated THS market:code identities for ths-account-data (maximum 20)")
 	flag.Parse()
+	if task == "ths-login" || task == "ths-auth-status" || task == "ths-account-data" {
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		var store *sqlite.Store
+		if cfg.THSSessionFile == "" || task == "ths-account-data" {
+			store, err = sqlite.OpenWithReadConns(cfg.DatabasePath, cfg.SQLiteReadConns)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+		}
+		return collectTHSAccount(cfg, store, task, date, codes)
+	}
 	if task == "" || date == "" {
 		flag.Usage()
 		os.Exit(2)
@@ -68,6 +84,9 @@ func run() error {
 	}
 	if task == "limit-up" {
 		return collectLimitUp(cfg, date, scope)
+	}
+	if task == "ths-focus" {
+		return collectThsFocus(cfg, date, scope)
 	}
 	store, err := sqlite.OpenWithReadConns(cfg.DatabasePath, cfg.SQLiteReadConns)
 	if err != nil {
@@ -109,10 +128,10 @@ func run() error {
 	case "boards":
 		return service.CollectBoards(ctx, snapshotAt)
 	case "end-of-day":
-		runAt := time.Date(tradeDate.Year(), tradeDate.Month(), tradeDate.Day(), 16, 0, 0, 0, location)
+		runAt := time.Date(tradeDate.Year(), tradeDate.Month(), tradeDate.Day(), 16, 30, 0, 0, location)
 		return service.CollectEndOfDay(ctx, runAt)
 	case "stock-kline":
-		runAt := time.Date(tradeDate.Year(), tradeDate.Month(), tradeDate.Day(), 16, 15, 0, 0, location)
+		runAt := time.Date(tradeDate.Year(), tradeDate.Month(), tradeDate.Day(), 16, 45, 0, 0, location)
 		return service.CollectStockKlines(ctx, runAt)
 	case "daily-close":
 		closeAt := time.Date(tradeDate.Year(), tradeDate.Month(), tradeDate.Day(), 15, 0, 0, 0, location)

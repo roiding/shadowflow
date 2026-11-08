@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/roiding/shadowflow/internal/config"
 	"github.com/roiding/shadowflow/internal/collector"
+	"github.com/roiding/shadowflow/internal/config"
 	"github.com/roiding/shadowflow/internal/datasource/ths"
 	"github.com/roiding/shadowflow/internal/repository/sqlite"
 )

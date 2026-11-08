@@ -117,8 +117,21 @@ func OpenWithReadConns(path string, readConns int) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("migrate database: %w", err)
 	}
+	if path != ":memory:" {
+		// The schema exec forces sqlite to create the file; the database stores
+		// the THS login session, so keep it private.
+		if chmodErr := os.Chmod(path, 0o600); chmodErr != nil {
+			return nil, fmt.Errorf("restrict database file permissions: %w", chmodErr)
+		}
+	}
 	if _, err := db.Exec(limitUpSchema); err != nil {
 		return nil, fmt.Errorf("migrate limit-up event tables: %w", err)
+	}
+	if _, err := db.Exec(thsFocusSchema); err != nil {
+		return nil, fmt.Errorf("migrate THS focus tables: %w", err)
+	}
+	if _, err := db.Exec(thsAuthSchema); err != nil {
+		return nil, fmt.Errorf("migrate THS auth tables: %w", err)
 	}
 	if err := migrateRunLeases(db); err != nil {
 		return nil, fmt.Errorf("migrate collection run leases: %w", err)
@@ -1761,7 +1774,16 @@ func (s *Store) readDB() *sql.DB {
 }
 
 func sqliteDSN(path string, pragmas ...string) string {
-	return (&url.URL{Scheme: "file", Path: path, RawQuery: strings.Join(pragmas, "&")}).String()
+	// A relative path would put the directories into the URI authority
+	// component ("file:./data/x.db" parses "./data" as authority); absolute
+	// paths keep the whole path inside the opaque part of the URI.
+	cleaned := path
+	if !strings.HasPrefix(path, "/") {
+		if absolute, err := filepath.Abs(path); err == nil {
+			cleaned = absolute
+		}
+	}
+	return (&url.URL{Scheme: "file", Path: cleaned, RawQuery: strings.Join(pragmas, "&")}).String()
 }
 
 func configureReaderSQLite(db *sql.DB) error {

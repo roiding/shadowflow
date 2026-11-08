@@ -75,6 +75,9 @@ func ValidateSnapshot(snapshot Snapshot) error {
 	if sealedCount != snapshot.SealedCount || brokenCount != snapshot.BrokenCount || downCount != snapshot.DownCount {
 		return fmt.Errorf("%w: daily pool totals do not match their records", ErrInvalid)
 	}
+	if err := validateCountCorrection(snapshot); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -102,13 +105,16 @@ func validateEvent(event Event, tradeDate string) error {
 	if event.OpenCount != nil && *event.OpenCount < 0 {
 		return fmt.Errorf("%w: negative open count for %s", ErrInvalid, event.Code)
 	}
-	for _, timestamp := range []*time.Time{event.FirstLimitAt, event.LastLimitAt} {
+	for _, timestamp := range []*time.Time{event.FirstLimitAt, event.LastLimitAt, event.FirstDownAt, event.LastDownAt} {
 		if timestamp != nil && timestamp.In(Shanghai()).Format("2006-01-02") != tradeDate {
 			return fmt.Errorf("%w: event timestamp has a different trade date for %s", ErrInvalid, event.Code)
 		}
 	}
 	if event.FirstLimitAt != nil && event.LastLimitAt != nil && event.LastLimitAt.Before(*event.FirstLimitAt) {
 		return fmt.Errorf("%w: last limit time precedes first for %s", ErrInvalid, event.Code)
+	}
+	if event.FirstDownAt != nil && event.LastDownAt != nil && event.LastDownAt.Before(*event.FirstDownAt) {
+		return fmt.Errorf("%w: last limit-down time precedes first for %s", ErrInvalid, event.Code)
 	}
 	for _, value := range []*float64{event.SourceSealRate, event.ChangePercent, event.TurnoverRate} {
 		if value != nil && (math.IsNaN(*value) || math.IsInf(*value, 0)) {

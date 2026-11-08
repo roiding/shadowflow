@@ -107,6 +107,9 @@ type Service struct {
 	allowMissingQuotes bool
 	limitUpSource      LimitUpSource
 	limitUpScope       string
+	thsFocusSource     ThsFocusSource
+	thsFocusScope      string
+	thsAccountSource   THSAccountSource
 }
 
 func New(source Source, store store, logger *slog.Logger) *Service {
