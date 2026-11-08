@@ -168,10 +168,14 @@ curl -X POST 'http://localhost:8080/api/v1/focus/scan' \
 
 建议系统为 64 位 Armbian，SQLite 数据目录必须放在 USB 外接 SSD。不要将高频数据库写入长期放在 N1 内置 eMMC。
 
+上线先比较**当前线上版本到目标版本**的完整变更：未涉及数据库结构、迁移、存储格式或数据改写时，**不执行上线前数据库备份**，只保留原 Compose/镜像并做健康与功能验证；涉及数据库变更时才做前置备份，启用冷库时必须成对备份。常规定时备份保持不变，不能把它与每次上线绑定。具体判定、操作和回滚见 [N1 上线流程](docs/N1_RELEASE.md)。
+
+服务器 `/mnt/data/docker-compose.yml` 中先将 `shadowflow.image` 设为已经通过 CI 的固定镜像摘要，再只更新该服务：
+
 ```bash
 echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-docker compose pull
-docker compose up -d
+docker compose -f /mnt/data/docker-compose.yml pull shadowflow
+docker compose -f /mnt/data/docker-compose.yml up -d --no-deps --pull never shadowflow
 ```
 
 仓库地址为 `github.com/roiding/shadowflow`。GHCR 私有包需要具有读取权限的 Personal Access Token；公开包可以省略登录。`compose.yaml` 使用发布镜像，没有 `build` 配置；日常部署应使用 Actions 产出的固定镜像标签或摘要。
