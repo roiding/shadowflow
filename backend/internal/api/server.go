@@ -31,6 +31,8 @@ import (
 type Server struct {
 	store                   repository.Store
 	quotes                  QuoteSnapshotSource
+	limitUpIntraday         limitup.IntradayReader
+	limitUpHistoryDays      limitup.LatestDayReader
 	calendar                *tradingcalendar.Calendar
 	logger                  *slog.Logger
 	location                *time.Location
@@ -57,6 +59,8 @@ type Options struct {
 	ProxyPool               *proxypool.Manager
 	LimitUpArchiveScheduled bool
 	LimitUpScope            string
+	LimitUpIntradaySource   limitup.IntradayReader
+	LimitUpHistoryReader    limitup.LatestDayReader
 }
 
 type QuoteSnapshotSource interface {
@@ -85,6 +89,11 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 		server.pool = options[0].ProxyPool
 		server.limitUpArchiveScheduled = options[0].LimitUpArchiveScheduled
 		server.limitUpScope = options[0].LimitUpScope
+		server.limitUpIntraday = options[0].LimitUpIntradaySource
+		server.limitUpHistoryDays = options[0].LimitUpHistoryReader
+	}
+	if server.limitUpHistoryDays == nil {
+		server.limitUpHistoryDays, _ = server.store.(limitup.LatestDayReader)
 	}
 	normalLimit := 120
 	exportLimit := 10
@@ -191,6 +200,7 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 			r.With(scanGate).Post("/focus/scan", server.focusScan)
 			r.With(limitUpGate).Get("/limit-up/overview", server.limitUpOverview)
 			r.With(limitUpGate).Get("/limit-up/stocks/{code}", server.limitUpStock)
+			r.With(limitUpGate).Get("/limit-up/today-network", server.limitUpTodayNetwork)
 			r.Get("/limit-up/quality", server.limitUpQuality)
 			r.Get("/limit-up/focus", server.thsFocus)
 			r.Get("/system/status", server.status)

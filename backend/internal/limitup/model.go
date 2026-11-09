@@ -60,6 +60,26 @@ type Snapshot struct {
 	RawPages        []json.RawMessage `json:"-"`
 }
 
+// IntradaySnapshot is a read-only view of the stocks currently sealed at the
+// limit. It deliberately excludes the broken and limit-down pools because the
+// source's daily archive is only a valid final snapshot after the close.
+// Callers must not persist this type into limit_up_day.
+type IntradaySnapshot struct {
+	TradeDate string `json:"trade_date"`
+	Source    string `json:"source"`
+	Scope     string `json:"scope"`
+	// ArchivedThrough is the newest complete archive day the caller resolved
+	// for this snapshot's source and scope. AnalyzeToday rejects history that
+	// extends past it, so a live snapshot can never silently combine members
+	// from one scope with a newer history window from another.
+	ArchivedThrough string    `json:"-"`
+	FetchedAt       time.Time `json:"fetched_at"`
+	TradeStatus     string    `json:"trade_status"`
+	TradeStatusName string    `json:"trade_status_name"`
+	SealedCount     int       `json:"sealed_count"`
+	Events          []Event   `json:"events"`
+}
+
 type Day struct {
 	TradeDate       string           `json:"trade_date"`
 	FetchedAt       time.Time        `json:"fetched_at"`
@@ -85,6 +105,18 @@ type Dataset struct {
 
 type Reader interface {
 	ReadLimitUpWindow(context.Context, string, string, string) (Dataset, error)
+}
+
+type IntradayReader interface {
+	FetchSealedToday(context.Context, string) (IntradaySnapshot, error)
+}
+
+// LatestDayReader finds the newest complete archive day strictly before a
+// date. It lets the intraday-only view exclude today from historical
+// relationship calculations even when today's closing archive has already
+// been written.
+type LatestDayReader interface {
+	LatestLimitUpDay(context.Context, string, string) (string, error)
 }
 
 type StockLimitStatsReader interface {
@@ -205,4 +237,52 @@ type Analysis struct {
 	Profile    Profile  `json:"profile"`
 	Links      []Link   `json:"links"`
 	Events     []Event  `json:"events"`
+}
+
+// TodayMember is one stock in the current intraday sealed pool. Historical
+// fields come only from complete archive days strictly before today.
+type TodayMember struct {
+	Code                 string     `json:"code"`
+	Name                 string     `json:"name"`
+	MarketType           string     `json:"market_type"`
+	FirstLimitAt         *time.Time `json:"first_limit_at"`
+	LastLimitAt          *time.Time `json:"last_limit_at"`
+	OpenCount            *int       `json:"open_count"`
+	LimitType            string     `json:"limit_type"`
+	HighDays             string     `json:"high_days"`
+	Reason               string     `json:"reason"`
+	ChangePercent        *float64   `json:"change_percent"`
+	TurnoverRate         *float64   `json:"turnover_rate"`
+	SealDays             int        `json:"seal_days"`
+	TouchDays            int        `json:"touch_days"`
+	BrokenDays           int        `json:"broken_days"`
+	DownDays             int        `json:"down_days"`
+	CoreScore            float64    `json:"core_score"`
+	Coverage             float64    `json:"coverage"`
+	Strength             float64    `json:"strength"`
+	EffectiveLinks       int        `json:"effective_links"`
+	StrongestPeerCode    string     `json:"strongest_peer_code"`
+	StrongestPeerName    string     `json:"strongest_peer_name"`
+	StrongestOverlapDays int        `json:"strongest_overlap_days"`
+}
+
+type TodayCore struct {
+	Member TodayMember `json:"member"`
+	Links  []Link      `json:"links"`
+}
+
+type TodayNetwork struct {
+	TradeDate        string        `json:"trade_date"`
+	SnapshotAt       time.Time     `json:"snapshot_at"`
+	TradeStatus      string        `json:"trade_status"`
+	TradeStatusName  string        `json:"trade_status_name"`
+	SealedCount      int           `json:"sealed_count"`
+	HistoryAsOf      string        `json:"history_as_of"`
+	LookbackDays     int           `json:"lookback_days"`
+	Scope            string        `json:"scope"`
+	MinOverlap       int           `json:"min_overlap"`
+	Coverage         Coverage      `json:"coverage"`
+	HistoryAvailable bool          `json:"history_available"`
+	Members          []TodayMember `json:"members"`
+	Cores            []TodayCore   `json:"cores"`
 }

@@ -106,6 +106,20 @@ func (store *Store) HasLimitUpDay(ctx context.Context, tradeDate, scope string) 
 	return exists, err
 }
 
+// LatestLimitUpDay returns the newest complete archive day strictly before
+// beforeDate. The intraday core view uses it so today's in-progress list can
+// never leak into its own historical graph.
+func (store *Store) LatestLimitUpDay(ctx context.Context, beforeDate, scope string) (string, error) {
+	parsed, err := time.Parse("2006-01-02", beforeDate)
+	if err != nil || parsed.Format("2006-01-02") != beforeDate || !limitup.ValidScope(scope) {
+		return "", fmt.Errorf("%w: invalid archive date or scope", limitup.ErrInvalid)
+	}
+	var latest string
+	err = store.reader.QueryRowContext(ctx, `SELECT coalesce(max(trade_date),'') FROM limit_up_day
+WHERE source=? AND scope=? AND trade_date<?`, limitup.SourceTHS, scope, beforeDate).Scan(&latest)
+	return latest, err
+}
+
 func (store *Store) LimitUpArchiveQuality(ctx context.Context, tradeDate, scope string) (limitup.ArchiveQuality, error) {
 	quality := limitup.ArchiveQuality{TradeDate: tradeDate, Source: limitup.SourceTHS, Scope: scope, Status: limitup.ArchiveStatusNotCollected}
 	parsed, err := time.Parse("2006-01-02", tradeDate)

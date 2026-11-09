@@ -79,7 +79,7 @@ func TestLimitUpAPIsRequireConfiguredToken(testingT *testing.T) {
 	if err != nil {
 		testingT.Fatal(err)
 	}
-	for _, path := range []string{"/api/v1/limit-up/overview", "/api/v1/limit-up/stocks/000001"} {
+	for _, path := range []string{"/api/v1/limit-up/overview", "/api/v1/limit-up/stocks/000001", "/api/v1/limit-up/today-network"} {
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		if response.Code != http.StatusUnauthorized {
@@ -121,6 +121,114 @@ func TestLimitUpDownOnlyStockAPI(testingT *testing.T) {
 	if response.Code != http.StatusOK || result.Data.Event != limitup.EventDown || result.Data.Profile.DownDays != 1 ||
 		result.Data.Profile.SealRate != nil || len(result.Data.Links) != 1 || result.Data.Links[0].Code != "000004" {
 		testingT.Fatalf("invalid down-only API result: %d %s", response.Code, response.Body.String())
+	}
+}
+
+type staticIntradaySource struct {
+	snapshot limitup.IntradaySnapshot
+	err      error
+}
+
+func (source staticIntradaySource) FetchSealedToday(context.Context, string) (limitup.IntradaySnapshot, error) {
+	return source.snapshot, source.err
+}
+
+func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
+	server, store := testServer(testingT, "")
+	defer store.Close()
+	ctx := context.Background()
+	for _, snapshot := range []limitup.Snapshot{
+		{
+			TradeDate: "2026-11-05", Source: limitup.SourceTHS, Scope: limitup.ScopeDefault,
+			FetchedAt: time.Date(2026, 11, 5, 16, 0, 0, 0, limitup.Shanghai()), SealedCount: 2, TouchedCount: 2,
+			Events: []limitup.Event{
+				{TradeDate: "2026-11-05", Code: "000001", Name: "甲", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
+				{TradeDate: "2026-11-05", Code: "000002", Name: "乙", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
+			},
+			RawPages: []json.RawMessage{json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`)},
+		},
+		{
+			TradeDate: "2026-11-06", Source: limitup.SourceTHS, Scope: limitup.ScopeDefault,
+			FetchedAt: time.Date(2026, 11, 6, 16, 0, 0, 0, limitup.Shanghai()), SealedCount: 3, TouchedCount: 3,
+			Events: []limitup.Event{
+				{TradeDate: "2026-11-06", Code: "000001", Name: "甲", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
+				{TradeDate: "2026-11-06", Code: "000002", Name: "乙", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
+				{TradeDate: "2026-11-06", Code: "000003", Name: "丙", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
+			},
+			RawPages: []json.RawMessage{json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`)},
+		},
+		{
+			// Today's closing archive may already exist when the page is opened
+			// after 15:30. It must never contribute to the intraday graph.
+			TradeDate: "2026-11-09", Source: limitup.SourceTHS, Scope: limitup.ScopeDefault,
+			FetchedAt: time.Date(2026, 11, 9, 16, 0, 0, 0, limitup.Shanghai()), SealedCount: 4, TouchedCount: 4,
+			Events: []limitup.Event{
+				{TradeDate: "2026-11-09", Code: "000001", Name: "甲", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
+				{TradeDate: "2026-11-09", Code: "000002", Name: "乙", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
+				{TradeDate: "2026-11-09", Code: "000003", Name: "丙", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
+				{TradeDate: "2026-11-09", Code: "000004", Name: "丁", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
+			},
+			RawPages: []json.RawMessage{json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`)},
+		},
+	} {
+		if err := store.SaveLimitUpSnapshot(ctx, snapshot); err != nil {
+			testingT.Fatal(err)
+		}
+	}
+	snapshotAt := time.Date(2026, 11, 9, 10, 42, 0, 0, limitup.Shanghai())
+	server, err := New(store, server.calendar, server.logger, Options{
+		ScanRatePerMinute: 10000,
+		LimitUpIntradaySource: staticIntradaySource{snapshot: limitup.IntradaySnapshot{
+			TradeDate: "2026-11-09", Source: limitup.SourceTHS, Scope: limitup.ScopeDefault, FetchedAt: snapshotAt,
+			TradeStatus: "open", TradeStatusName: "交易中", SealedCount: 3,
+			Events: []limitup.Event{
+				{TradeDate: "2026-11-09", Code: "000001", Name: "甲", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
+				{TradeDate: "2026-11-09", Code: "000002", Name: "乙", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
+				{TradeDate: "2026-11-09", Code: "000004", Name: "丁", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
+			},
+		}},
+	})
+	if err != nil {
+		testingT.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/limit-up/today-network?days=365&min_overlap=1&top=2", nil))
+	var result struct {
+		Data limitup.TodayNetwork `json:"data"`
+		Meta struct {
+			SnapshotOnly         bool   `json:"snapshot_only"`
+			HistoryExcludesToday bool   `json:"history_excludes_today"`
+			SnapshotFetchedAt    string `json:"snapshot_fetched_at"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		testingT.Fatal(err)
+	}
+	if response.Code != http.StatusOK || result.Data.SealedCount != 3 || result.Data.HistoryAsOf != "2026-11-06" ||
+		result.Data.Coverage.ObservedDays != 2 || !result.Meta.SnapshotOnly || !result.Meta.HistoryExcludesToday ||
+		result.Meta.SnapshotFetchedAt == "" {
+		testingT.Fatalf("unexpected today network result: %d %s", response.Code, response.Body.String())
+	}
+	for _, member := range result.Data.Members {
+		if member.Code == "000003" {
+			testingT.Fatal("a stock that is no longer sealed leaked into today's graph")
+		}
+		if member.Code != "000004" && member.SealDays != 2 {
+			testingT.Fatalf("today's archive leaked into member history: %+v", member)
+		}
+	}
+	if len(result.Data.Cores) != 2 || result.Data.Cores[0].Member.Code != "000001" {
+		testingT.Fatalf("unexpected today's core ranking: %+v", result.Data.Cores)
+	}
+}
+
+func TestLimitUpTodayNetworkRequiresIntradaySource(testingT *testing.T) {
+	server, store := testServer(testingT, "")
+	defer store.Close()
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/limit-up/today-network", nil))
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "limit_up_intraday_unavailable") {
+		testingT.Fatalf("missing intraday source must be explicit: %d %s", response.Code, response.Body.String())
 	}
 }
 

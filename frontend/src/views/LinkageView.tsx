@@ -10,10 +10,13 @@ import {
   Network,
   RefreshCw,
   Search,
+  Sparkles,
 } from 'lucide-react'
 
 import { api } from '../api/client'
+import { MetricHint } from '../MetricHint'
 import { ThsFocusPanel } from '../ThsFocusPanel'
+import { TodayCorePanel } from '../TodayCorePanel'
 import type {
   LimitUpCoverage,
   LimitUpDay,
@@ -97,6 +100,8 @@ export function LinkageView({
   const [stockSearchKeyword, setStockSearchKeyword] = useState<string>('')
   const [directStockInput, setDirectStockInput] = useState<string>(context.stockCode)
   const [candidatePickerOpen, setCandidatePickerOpen] = useState(false)
+  const [todayCoreOpen, setTodayCoreOpen] = useState(false)
+  const todayCoreReturnRef = useRef<HTMLButtonElement>(null)
   const [relationPage, setRelationPage] = useState<number>(1)
   const [eventPage, setEventPage] = useState<number>(1)
   const stockSearchRef = useRef<HTMLInputElement>(null)
@@ -317,6 +322,16 @@ export function LinkageView({
                 返回来源页
               </button>
             )}
+            <button
+              ref={todayCoreReturnRef}
+              type="button"
+              className="linkage-today-core-button"
+              onClick={() => setTodayCoreOpen(true)}
+              title="读取点击时仍封板的今日涨停股，并在这些成员之间分析历史收盘封板关系"
+            >
+              <Sparkles size={14} />
+              今日涨停核心
+            </button>
             <button
               type="button"
               className="linkage-refresh-button"
@@ -790,13 +805,62 @@ export function LinkageView({
                     <thead>
                       <tr>
                         <th>关联股票</th>
-                        <th>共同次数</th>
-                        <th>P(B|A) 条件共现率</th>
-                        <th>P(A|B) 反向共现率</th>
-                        <th>提升倍数 (Lift)</th>
-                        <th>Jaccard</th>
-                        <th>热度折算共现</th>
-                        <th>样本充分度</th>
+                        <th>
+                          <span className="linkage-column-label">
+                            共同次数
+                            <MetricHint label="共同次数" formula="c" align="start">
+                              A、B 在同一天发生同类事件的天数。先看它，再看比率；次数太少时，百分比和提升倍数容易失真。
+                            </MetricHint>
+                          </span>
+                        </th>
+                        <th>
+                          <span className="linkage-column-label">
+                            P(B|A) 条件共现率
+                            <MetricHint label="P(B|A) 条件共现率" formula="c / a" align="start">
+                              A 发生事件的日子里，B 也在同一天发生事件的比例。a 是 A 的事件天数，c 是共同事件天数。越高表示 A 一动，B 越常同步。
+                            </MetricHint>
+                          </span>
+                        </th>
+                        <th>
+                          <span className="linkage-column-label">
+                            P(A|B) 反向共现率
+                            <MetricHint label="P(A|B) 反向共现率" formula="c / b" align="start">
+                              B 发生事件的日子里，A 也在同一天发生事件的比例。b 是 B 的事件天数。它和 P(B|A) 分别回答“A 动时 B 在不在”和“B 动时 A 在不在”。
+                            </MetricHint>
+                          </span>
+                        </th>
+                        <th>
+                          <span className="linkage-column-label">
+                            提升倍数 (Lift)
+                            <MetricHint label="提升倍数 (Lift)" formula="(c / a) / (b / N) = cN / (ab)" align="start">
+                              B 在 A 事件日的出现率，是 B 平时基准出现率 b/N 的多少倍。大于 1 表示比平时更常同日出现，等于 1 接近独立，小于 1 表示反而更少同时出现。Lift 对调 A、B 结果不变，本身不分方向。
+                            </MetricHint>
+                          </span>
+                        </th>
+                        <th>
+                          <span className="linkage-column-label">
+                            Jaccard
+                            <MetricHint label="Jaccard" formula="c / (a + b - c)" align="start">
+                              A、B 事件日集合的交集除以并集，取值 0 到 1。越高表示两组事件日重合得越多，但它是集合相似度，不是条件概率。
+                            </MetricHint>
+                          </span>
+                        </th>
+                        <th>
+                          <span className="linkage-column-label">
+                            热度折算共现
+                            <MetricHint label="热度折算共现" formula="Σ 1 / max(1, 当天同池股票数 - 1)" align="start">
+                              每个共同事件日按当天同池股票数降权，减少全面普涨或普跌日对联动强度的放大。它是加权共现分，不是次数；共同次数高但集中在少数普涨日时，这一列可能不高。
+                            </MetricHint>
+                          </span>
+                        </th>
+                        <th>
+                          <span className="linkage-column-label">
+                            样本充分度
+                            <MetricHint label="样本充分度" formula="N ≥ 20 且 c ≥ 3" align="start">
+                              完整样本日至少有 20 天，且共同事件至少 3 次，才会标为充足。这是展示门槛，不代表统计显著性，也不证明因果。
+                            </MetricHint>
+                          </span>
+                        </th>
                         <th>共同发生日期</th>
                         <th>操作</th>
                       </tr>
@@ -1178,6 +1242,21 @@ export function LinkageView({
             </>
           )}
         </>
+      )}
+
+      {todayCoreOpen && (
+        <TodayCorePanel
+          authRequired={authRequired}
+          defaultDays={lookbackDays}
+          defaultScope={marketScope}
+          onClose={() => setTodayCoreOpen(false)}
+          returnFocusRef={todayCoreReturnRef}
+          onOpenStock={(code, name) => {
+            setTodayCoreOpen(false)
+            onContextChange({ ...context, stockCode: code, stockName: name })
+          }}
+          onOpenQuality={onOpenQuality}
+        />
       )}
     </section>
   )

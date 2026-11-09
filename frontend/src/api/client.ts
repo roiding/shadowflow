@@ -1,7 +1,7 @@
 import { getToken, notifyUnauthorized } from '../auth'
 import type { components } from './schema'
 import { loadCompleteBoardClose } from './boardClose'
-import type { LimitUpAnalysis, LimitUpArchiveQuality, LimitUpOverview, LimitUpQuery } from './limitup'
+import type { LimitUpAnalysis, LimitUpArchiveQuality, LimitUpOverview, LimitUpQuery, LimitUpTodayNetwork, LimitUpTodayQuery } from './limitup'
 import type { ThsFocusPayload } from './thsfocus'
 import { limitUpQualityParams } from './limitup'
 import type { ApiEnvelope, ArchiveRevision, BoardQuoteMeta, BoardStockQuote, CollectionRun, DailyFeature, FutureReturnLabel, FocusResult, FocusScanRequest, PageMeta, QualityMeta, QualitySummary, RankRecord, RankType, StockResearchPoint, SystemStatus } from './types'
@@ -74,6 +74,13 @@ export const api = {
 	thsFocus: (tradeDate: string, scope: string, signal?: AbortSignal) => request<ThsFocusPayload>(`/api/v1/limit-up/focus?${new URLSearchParams({ trade_date: tradeDate, scope })}`, { signal }),
   limitUpOverview: (query: LimitUpQuery, signal?: AbortSignal) => request<LimitUpOverview>(`/api/v1/limit-up/overview?${limitUpParams(query)}`, { signal }),
   limitUpStock: (code: string, query: LimitUpQuery, signal?: AbortSignal) => request<LimitUpAnalysis>(`/api/v1/limit-up/stocks/${encodeURIComponent(code)}?${limitUpParams(query)}`, { signal }),
+  limitUpTodayNetwork: (query: LimitUpTodayQuery, signal?: AbortSignal) => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== '') params.set(key, String(value))
+    }
+    return request<LimitUpTodayNetwork>(`/api/v1/limit-up/today-network?${params}`, { signal })
+  },
   limitUpQuality: (date: string, scope?: string, signal?: AbortSignal) => request<LimitUpArchiveQuality>(`/api/v1/limit-up/quality?${limitUpQualityParams(date, scope)}`, { signal }),
   latest: (type: Exclude<RankType, 'stock'>, signal?: AbortSignal) => request<RankRecord[], components['schemas']['LatestRankMeta']>(`/api/v1/ranks/latest?type=${type}`, { signal }),
   rankAt: (type: Exclude<RankType, 'stock'>, date: string, at: string, signal?: AbortSignal) =>

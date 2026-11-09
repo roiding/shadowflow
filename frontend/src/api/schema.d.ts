@@ -1109,6 +1109,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/limit-up/today-network": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 今日封板股票的联动核心
+         * @description 实时读取当前仍封住涨停的股票，只在这些成员之间建立历史收盘封板共现子图。历史严格截止到今日之前最近一个完整归档日，今日快照不写入历史，也不参与历史分母。结果依赖点击时的盘中快照，开板会使成员变化；共现为描述统计，不代表因果、带动或未来收益。
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description 含截止日在内的自然日回看长度；未采集日不纳入分母。 */
+                    days?: components["parameters"]["LimitUpDays"];
+                    /** @description 市场范围独立存储，不混合不同筛选口径；不保证北交所覆盖。 */
+                    scope?: components["parameters"]["LimitUpScope"];
+                    /** @description 历史收盘封板的最少共同天数。 */
+                    min_overlap?: number;
+                    /** @description 返回的核心股数量；无有效关系或并列时按核心度、关系数、封板天数及代码稳定排序。 */
+                    top?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 当前封板成员、历史关系子图及核心排名 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["LimitUpTodayNetwork"];
+                            meta?: {
+                                /** @constant */
+                                snapshot_only: true;
+                                /** @constant */
+                                history_excludes_today: true;
+                                /** Format: date-time */
+                                snapshot_fetched_at: string;
+                            };
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                429: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/status": {
         parameters: {
             query?: never;
@@ -1399,6 +1461,75 @@ export interface components {
             profile: components["schemas"]["LimitUpProfile"];
             links: components["schemas"]["LimitUpLink"][];
             events: components["schemas"]["LimitUpEvent"][];
+        };
+        LimitUpTodayMember: {
+            code: string;
+            name: string;
+            market_type: string;
+            /** Format: date-time */
+            first_limit_at: string | null;
+            /** Format: date-time */
+            last_limit_at: string | null;
+            /** @description 盘中快照的已知开板次数，未知保持null。 */
+            open_count: number | null;
+            limit_type: string;
+            high_days: string;
+            reason: string;
+            /** @description 快照时刻涨跌幅，10代表10%。 */
+            change_percent: number | null;
+            /** @description 快照时刻换手率，10代表10%。 */
+            turnover_rate: number | null;
+            /** @description 历史完整归档日中的收盘封板天数，不含今天。 */
+            seal_days: number;
+            /** @description 历史完整归档日中的触板天数（封板与炸板并集），不含今天。 */
+            touch_days: number;
+            /** @description 历史炸板池天数，不含今天。 */
+            broken_days: number;
+            /** @description 历史收盘跌停天数，不含今天。 */
+            down_days: number;
+            /** @description 0到100的可复现综合分：45%关系强度+30%关系覆盖+25%邻居强度，仅用于今日成员内部排序。 */
+            core_score: number;
+            /** @description 有效关系数/今日封板成员数减一。 */
+            coverage: number;
+            /** @description 与该成员相连的所有历史收盘封板边的热度折算共现之和。 */
+            strength: number;
+            /** @description 达到min_overlap的今日成员关系数。 */
+            effective_links: number;
+            /** @description 按热度折算共现、共同次数、代码排序后的首位关联股；无关系为空字符串。 */
+            strongest_peer_code: string;
+            strongest_peer_name: string;
+            strongest_overlap_days: number;
+        };
+        LimitUpTodayCore: {
+            member: components["schemas"]["LimitUpTodayMember"];
+            links: components["schemas"]["LimitUpLink"][];
+        };
+        LimitUpTodayNetwork: {
+            /** Format: date */
+            trade_date: string;
+            /**
+             * Format: date-time
+             * @description 实时封板快照的读取时刻；盘中成员和计数可能随后变化。
+             */
+            snapshot_at: string;
+            /** @description 上游交易状态ID，例如open、closed。 */
+            trade_status: string;
+            trade_status_name: string;
+            /** @description 快照时仍封住涨停的成员数。 */
+            sealed_count: number;
+            /** @description 历史关系使用的最近完整归档日；无历史为空字符串。始终早于trade_date。 */
+            history_as_of: string;
+            /** @description 历史窗口的自然日长度，以history_as_of为截止日。 */
+            lookback_days: number;
+            /** @enum {string} */
+            scope: "HS,GEM2STAR" | "HS,GEM2STAR,ST,NEW";
+            min_overlap: number;
+            coverage: components["schemas"]["LimitUpCoverage"];
+            history_available: boolean;
+            /** @description 今日快照全部封板成员，按核心度降序；没有有效关系时核心度为0。 */
+            members: components["schemas"]["LimitUpTodayMember"][];
+            /** @description 至少有一条有效关系的核心成员，最多top只。 */
+            cores: components["schemas"]["LimitUpTodayCore"][];
         };
         BoardQuoteMeta: {
             /** Format: date */

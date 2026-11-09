@@ -11,6 +11,7 @@ test('generated API schema tracks the OpenAPI contract', () => {
     '/api/v1/boards/{type}/{code}/quotes',
     '/api/v1/research/export',
     '/api/v1/focus/scan',
+    '/api/v1/limit-up/today-network',
   ]) {
     assert.ok(openapi.includes(`  ${path}:`), `OpenAPI is missing ${path}`)
     assert.ok(schema.includes(`"${path}"`), `generated schema is missing ${path}`)
@@ -20,4 +21,6 @@ test('generated API schema tracks the OpenAPI contract', () => {
   assert.match(schema, /previous_trade_date\?: string/)
   assert.match(schema, /quote_status\?: "ready" \| "warming" \| "stale" \| "unavailable"/)
   assert.match(schema, /source_version\?: number/)
+  assert.match(schema, /LimitUpTodayNetwork:/)
+  assert.match(schema, /history_excludes_today: true/)
 })

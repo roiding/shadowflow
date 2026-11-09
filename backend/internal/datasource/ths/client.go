@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/roiding/shadowflow/internal/limitup"
@@ -28,6 +29,7 @@ const (
 	defaultMinInterval    = 1 * time.Second
 	maxPageBudget         = limitup.MaxPoolPages
 	maxBodyLimit          = 4 << 20
+	maxIntradayCacheAge   = 15 * time.Second
 )
 
 type Client struct {
@@ -36,6 +38,8 @@ type Client struct {
 	minInterval time.Duration
 	pageLimit   int
 	clock       func() time.Time
+	intradayMu  sync.Mutex
+	intraday    *limitup.IntradaySnapshot
 }
 
 func NewClient(baseURL string, httpClient *http.Client) *Client {
@@ -346,6 +350,226 @@ type parsedPageMeta struct {
 	Count int
 	Page  int
 	Limit int
+}
+
+type sealedPageResult struct {
+	Events     []limitup.Event
+	Meta       parsedPageMeta
+	Status     string
+	StatusName string
+}
+
+// FetchSealedToday reads only the currently sealed limit-up pool. Unlike
+// FetchDay it accepts an intraday trade status and never writes a daily
+// archive: the pool can change between two requests, so the caller must treat
+// the returned count and members as a point-in-time observation.
+func (client *Client) FetchSealedToday(ctx context.Context, scope string) (limitup.IntradaySnapshot, error) {
+	if !limitup.ValidScope(scope) {
+		return limitup.IntradaySnapshot{}, fmt.Errorf("%w: unsupported market scope %s", limitup.ErrInvalid, scope)
+	}
+	now := client.clock().In(limitup.Shanghai())
+	client.intradayMu.Lock()
+	if client.intraday != nil && now.Sub(client.intraday.FetchedAt) >= 0 && now.Sub(client.intraday.FetchedAt) < maxIntradayCacheAge &&
+		client.intraday.Scope == scope && client.intraday.TradeDate == now.Format("2006-01-02") {
+		cached := *client.intraday
+		cached.Events = append([]limitup.Event{}, client.intraday.Events...)
+		client.intradayMu.Unlock()
+		return cached, nil
+	}
+	client.intradayMu.Unlock()
+
+	date := now.Format("2006-01-02")
+	dateDigits := now.Format("20060102")
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		result, err := client.readSealedPages(ctx, date, dateDigits, scope)
+		if err == nil {
+			if result.Meta.Total != len(result.Events) {
+				lastErr = fmt.Errorf("intraday sealed snapshot count does not match its records")
+				continue
+			}
+			snapshot := limitup.IntradaySnapshot{
+				TradeDate: date, Source: limitup.SourceTHS, Scope: scope, FetchedAt: client.clock().In(limitup.Shanghai()),
+				TradeStatus: result.Status, TradeStatusName: result.StatusName,
+				SealedCount: len(result.Events), Events: result.Events,
+			}
+			client.intradayMu.Lock()
+			client.intraday = &snapshot
+			client.intradayMu.Unlock()
+			return snapshot, nil
+		}
+		lastErr = err
+	}
+	return limitup.IntradaySnapshot{}, lastErr
+}
+
+func (client *Client) readSealedPages(ctx context.Context, date, dateDigits, scope string) (sealedPageResult, error) {
+	pageNumber := 1
+	var events []limitup.Event
+	seenCodes := make(map[string]struct{})
+	var firstMeta parsedPageMeta
+	var tradeStatus, tradeStatusName string
+	expectedPageCount := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return sealedPageResult{}, err
+		}
+		if pageNumber > 1 {
+			if err := client.sleep(ctx); err != nil {
+				return sealedPageResult{}, err
+			}
+		}
+		pageEvents, _, pageMeta, status, statusName, err := client.fetchSealedPage(ctx, pageNumber, date, dateDigits, scope)
+		if err != nil {
+			return sealedPageResult{}, err
+		}
+		if pageNumber == 1 {
+			if pageMeta.Total < 0 || pageMeta.Total > limitup.MaxDailyEvents || pageMeta.Limit <= 0 {
+				return sealedPageResult{}, fmt.Errorf("invalid intraday page metadata")
+			}
+			firstMeta, tradeStatus, tradeStatusName = pageMeta, status, statusName
+			if pageMeta.Total == 0 {
+				if len(pageEvents) != 0 {
+					return sealedPageResult{}, fmt.Errorf("empty intraday sealed pool has records")
+				}
+				return sealedPageResult{Events: []limitup.Event{}, Meta: pageMeta, Status: status, StatusName: statusName}, nil
+			}
+			expectedPageCount = (pageMeta.Total + pageMeta.Limit - 1) / pageMeta.Limit
+			if expectedPageCount > limitup.MaxPoolPages {
+				return sealedPageResult{}, fmt.Errorf("intraday sealed pool exceeds page budget")
+			}
+			if pageMeta.Count != expectedPageCount {
+				return sealedPageResult{}, fmt.Errorf("intraday page count does not match total and limit")
+			}
+		} else if pageMeta.Total != firstMeta.Total || pageMeta.Count != firstMeta.Count ||
+			pageMeta.Limit != firstMeta.Limit || status != tradeStatus {
+			return sealedPageResult{}, fmt.Errorf("intraday sealed pool changed while paginating")
+		}
+		expected := pageMeta.Limit
+		if pageNumber == expectedPageCount {
+			expected = pageMeta.Total - pageMeta.Limit*(expectedPageCount-1)
+		}
+		if len(pageEvents) != expected {
+			return sealedPageResult{}, fmt.Errorf("intraday sealed page %d has %d records, expected %d", pageNumber, len(pageEvents), expected)
+		}
+		for _, event := range pageEvents {
+			if _, duplicate := seenCodes[event.Code]; duplicate {
+				return sealedPageResult{}, fmt.Errorf("intraday sealed pool returned a duplicate stock while paginating")
+			}
+			seenCodes[event.Code] = struct{}{}
+		}
+		events = append(events, pageEvents...)
+		if pageNumber >= expectedPageCount {
+			break
+		}
+		pageNumber++
+	}
+	if len(events) != firstMeta.Total {
+		return sealedPageResult{}, fmt.Errorf("intraday sealed count changed during pagination")
+	}
+	return sealedPageResult{Events: events, Meta: firstMeta, Status: tradeStatus, StatusName: tradeStatusName}, nil
+}
+
+func (client *Client) fetchSealedPage(ctx context.Context, pageNumber int, date, dateDigits, scope string) (
+	[]limitup.Event, json.RawMessage, parsedPageMeta, string, string, error,
+) {
+	requestURL := fmt.Sprintf("%s/limit_up_pool?page=%d&limit=%d&field=%s&filter=%s&date=%s&order_field=%s&order_type=%s",
+		client.baseURL, pageNumber, client.pageLimit, url.QueryEscape(DefaultFieldList), url.QueryEscape(scope),
+		dateDigits, url.QueryEscape(DefaultOrderField), url.QueryEscape(DefaultOrderType))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, nil, parsedPageMeta{}, "", "", err
+	}
+	httpRequest.Header.Set("User-Agent", DefaultUserAgent)
+	httpRequest.Header.Set("Referer", DefaultReferer)
+	httpRequest.Header.Set("Accept", "application/json, text/plain, */*")
+	httpResponse, err := client.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, nil, parsedPageMeta{}, "", "", err
+	}
+	defer httpResponse.Body.Close()
+	if httpResponse.StatusCode != http.StatusOK {
+		return nil, nil, parsedPageMeta{}, "", "", fmt.Errorf("unexpected http status %d from intraday ths", httpResponse.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(httpResponse.Body, maxBodyLimit+1))
+	if err != nil {
+		return nil, nil, parsedPageMeta{}, "", "", err
+	}
+	if len(body) > maxBodyLimit || len(body) == 0 {
+		return nil, nil, parsedPageMeta{}, "", "", errors.New("invalid intraday response size")
+	}
+	if bytes.TrimSpace(body)[0] == '<' {
+		return nil, nil, parsedPageMeta{}, "", "", errors.New("ths returned html for intraday request")
+	}
+	var envelope struct {
+		StatusCode json.RawMessage `json:"status_code"`
+		StatusMsg  string          `json:"status_msg"`
+		Data       json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, nil, parsedPageMeta{}, "", "", fmt.Errorf("invalid intraday json: %w", err)
+	}
+	code, err := parseInteger(envelope.StatusCode)
+	if err != nil || code != 0 {
+		return nil, nil, parsedPageMeta{}, "", "", fmt.Errorf("intraday business error %d: %s", code, envelope.StatusMsg)
+	}
+	var data struct {
+		Date        json.RawMessage   `json:"date"`
+		Page        json.RawMessage   `json:"page"`
+		TradeStatus json.RawMessage   `json:"trade_status"`
+		Info        []json.RawMessage `json:"info"`
+	}
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		return nil, nil, parsedPageMeta{}, "", "", err
+	}
+	responseDate, err := parseStringValue(data.Date)
+	if err != nil || responseDate != dateDigits {
+		return nil, nil, parsedPageMeta{}, "", "", fmt.Errorf("intraday response date mismatch")
+	}
+	var status struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if len(data.TradeStatus) == 0 || string(data.TradeStatus) == "null" || json.Unmarshal(data.TradeStatus, &status) != nil || status.ID == "" {
+		return nil, nil, parsedPageMeta{}, "", "", errors.New("intraday response missing trade_status")
+	}
+	if status.ID == "non_trading_day" {
+		return nil, nil, parsedPageMeta{}, "", "", fmt.Errorf("%w: not a trading day or market is closed", limitup.ErrInvalid)
+	}
+	var page struct {
+		Total json.RawMessage `json:"total"`
+		Count json.RawMessage `json:"count"`
+		Page  json.RawMessage `json:"page"`
+		Limit json.RawMessage `json:"limit"`
+	}
+	if len(data.Page) == 0 || json.Unmarshal(data.Page, &page) != nil {
+		return nil, nil, parsedPageMeta{}, "", "", errors.New("intraday response missing page")
+	}
+	total, err1 := parseInteger(page.Total)
+	count, err2 := parseInteger(page.Count)
+	pageIndex, err3 := parseInteger(page.Page)
+	limit, err4 := parseInteger(page.Limit)
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return nil, nil, parsedPageMeta{}, "", "", errors.New("invalid intraday page integers")
+	}
+	if pageIndex != pageNumber && !(pageNumber == 1 && pageIndex == 0 && total == 0) {
+		return nil, nil, parsedPageMeta{}, "", "", fmt.Errorf("intraday page number mismatch")
+	}
+	meta := parsedPageMeta{Total: total, Count: count, Page: pageIndex, Limit: limit}
+	events := make([]limitup.Event, 0, len(data.Info))
+	seen := make(map[string]struct{}, len(data.Info))
+	for _, raw := range data.Info {
+		event, err := parseStockEvent(raw, date, limitup.PoolSealed)
+		if err != nil {
+			return nil, nil, parsedPageMeta{}, "", "", err
+		}
+		if _, duplicate := seen[event.Code]; duplicate {
+			return nil, nil, parsedPageMeta{}, "", "", fmt.Errorf("duplicate intraday stock %s", event.Code)
+		}
+		seen[event.Code] = struct{}{}
+		events = append(events, event)
+	}
+	return events, json.RawMessage(body), meta, status.ID, status.Name, nil
 }
 
 func (client *Client) fetchPage(

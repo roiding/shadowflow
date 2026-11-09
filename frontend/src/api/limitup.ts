@@ -23,6 +23,9 @@ export type LimitUpProfile = components['schemas']['LimitUpProfile'] & {
 }
 export type LimitUpLink = components['schemas']['LimitUpLink']
 export type LimitUpAnalysis = components['schemas']['LimitUpAnalysis']
+export type LimitUpTodayMember = components['schemas']['LimitUpTodayMember']
+export type LimitUpTodayCore = components['schemas']['LimitUpTodayCore']
+export type LimitUpTodayNetwork = components['schemas']['LimitUpTodayNetwork']
 export type LimitUpArchiveQuality = Omit<components['schemas']['LimitUpArchiveQuality'], 'day'> & {
   day: LimitUpDay | null
 }
@@ -74,4 +77,11 @@ export interface LimitUpQuery {
   min_overlap?: number
   limit?: number
   order?: 'heat' | 'overlap'
+}
+
+export interface LimitUpTodayQuery {
+  days?: number
+  scope?: string
+  min_overlap?: number
+  top?: number
 }

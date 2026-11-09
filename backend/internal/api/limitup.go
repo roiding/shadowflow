@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/roiding/shadowflow/internal/limitup"
@@ -76,6 +77,90 @@ func (server *Server) limitUpStock(response http.ResponseWriter, request *http.R
 		return
 	}
 	writeJSON(response, http.StatusOK, envelope{Data: result})
+}
+
+func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request *http.Request) {
+	values := request.URL.Query()
+	allowed := map[string]bool{"days": true, "scope": true, "min_overlap": true, "top": true}
+	for key, entries := range values {
+		if !allowed[key] || len(entries) != 1 {
+			writeError(response, http.StatusBadRequest, "invalid_limit_up_request", "unsupported or repeated query parameter")
+			return
+		}
+	}
+	days, minOverlap, top := 365, 1, 5
+	for key, target := range map[string]*int{"days": &days, "min_overlap": &minOverlap, "top": &top} {
+		if value := values.Get(key); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 1 {
+				writeError(response, http.StatusBadRequest, "invalid_limit_up_request", key+" must be a positive integer")
+				return
+			}
+			*target = parsed
+		}
+	}
+	if days > 366 || minOverlap > 20 || top > 20 {
+		writeError(response, http.StatusBadRequest, "invalid_limit_up_request", "days must be 1..366, min_overlap 1..20, top 1..20")
+		return
+	}
+	scope := values.Get("scope")
+	if scope == "" {
+		scope = server.limitUpScope
+		if scope == "" {
+			scope = limitup.ScopeDefault
+		}
+	}
+	if !limitup.ValidScope(scope) {
+		writeError(response, http.StatusBadRequest, "invalid_limit_up_request", "unsupported event scope")
+		return
+	}
+	if server.limitUpIntraday == nil {
+		writeError(response, http.StatusServiceUnavailable, "limit_up_intraday_unavailable", "盘中涨停快照数据源暂不可用")
+		return
+	}
+	if server.limitUpHistoryDays == nil {
+		writeError(response, http.StatusServiceUnavailable, "limit_up_history_unavailable", "历史涨停归档读取暂不可用")
+		return
+	}
+	snapshot, err := server.limitUpIntraday.FetchSealedToday(request.Context(), scope)
+	if err != nil {
+		server.limitUpError(response, err)
+		return
+	}
+	historyAsOf, err := server.limitUpHistoryDays.LatestLimitUpDay(request.Context(), snapshot.TradeDate, scope)
+	if err != nil {
+		server.internalError(response, err)
+		return
+	}
+	snapshot.ArchivedThrough = historyAsOf
+	history := limitup.Dataset{Days: []limitup.Day{}, Events: []limitup.Event{}}
+	historyFrom := ""
+	if historyAsOf != "" {
+		asOf, _ := time.ParseInLocation("2006-01-02", historyAsOf, server.location)
+		historyFrom = asOf.AddDate(0, 0, 1-days).Format("2006-01-02")
+		reader, available := server.store.(limitup.Reader)
+		if !available {
+			writeError(response, http.StatusServiceUnavailable, "limit_up_history_unavailable", "历史涨停归档读取暂不可用")
+			return
+		}
+		history, err = reader.ReadLimitUpWindow(request.Context(), historyFrom, historyAsOf, scope)
+		if err != nil {
+			server.limitUpError(response, err)
+			return
+		}
+	}
+	result, err := limitup.AnalyzeToday(request.Context(), limitup.TodayInput{
+		Snapshot: snapshot, History: history, HistoryFrom: historyFrom,
+		LookbackDays: days, MinOverlap: minOverlap, TopCores: top,
+	})
+	if err != nil {
+		server.limitUpError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, envelope{Data: result, Meta: map[string]any{
+		"snapshot_only": true, "history_excludes_today": true,
+		"snapshot_fetched_at": snapshot.FetchedAt,
+	}})
 }
 
 func (server *Server) limitUpError(response http.ResponseWriter, err error) {

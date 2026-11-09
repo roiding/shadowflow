@@ -105,6 +105,45 @@ WHEN NEW.code='000002' BEGIN SELECT RAISE(ABORT, 'simulated write error'); END`)
 	}
 }
 
+func TestLatestLimitUpDayIsStrictlyBeforeRequestedDate(testingT *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		testingT.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	for _, tradeDate := range []string{"2026-11-05", "2026-11-06", "2026-11-09"} {
+		snapshot := limitUpTestSnapshot()
+		snapshot.TradeDate = tradeDate
+		parsed, err := time.ParseInLocation("2006-01-02", tradeDate, limitup.Shanghai())
+		if err != nil {
+			testingT.Fatal(err)
+		}
+		snapshot.FetchedAt = parsed.Add(16 * time.Hour)
+		for index := range snapshot.Events {
+			snapshot.Events[index].TradeDate = tradeDate
+		}
+		if err := store.SaveLimitUpSnapshot(ctx, snapshot); err != nil {
+			testingT.Fatal(err)
+		}
+	}
+	latest, err := store.LatestLimitUpDay(ctx, "2026-11-09", limitup.ScopeDefault)
+	if err != nil || latest != "2026-11-06" {
+		testingT.Fatalf("today's archive must be excluded: %q %v", latest, err)
+	}
+	latest, err = store.LatestLimitUpDay(ctx, "2026-11-07", limitup.ScopeDefault)
+	if err != nil || latest != "2026-11-06" {
+		testingT.Fatalf("non-trading requested date should use the newest earlier archive: %q %v", latest, err)
+	}
+	latest, err = store.LatestLimitUpDay(ctx, "2026-11-05", limitup.ScopeDefault)
+	if err != nil || latest != "" {
+		testingT.Fatalf("no earlier archive must be explicit: %q %v", latest, err)
+	}
+	if _, err := store.LatestLimitUpDay(ctx, "2026-11-09", "unsupported"); err == nil {
+		testingT.Fatal("unsupported scope must be rejected")
+	}
+}
+
 func TestLimitUpIncompleteAndWrongDatesNeverPublish(testingT *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {

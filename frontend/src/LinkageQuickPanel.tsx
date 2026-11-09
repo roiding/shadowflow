@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ArrowUpRight, AlertTriangle, Network, RotateCcw, X } from 'lucide-react'
 
 import { api } from './api/client'
+import { MetricHint } from './MetricHint'
 import type { LimitUpAnalysis, LimitUpLink, LimitUpProfile } from './api/limitup'
 import {
   createLinkageContext,
@@ -396,8 +397,18 @@ export function LinkageQuickPanel({
                       </div>
                       <div className="linkage-quick-link-metrics">
                         <span><strong>协同 {linkItem.overlap_days} 次</strong></span>
-                        <span>P(B|A) {formatPercent(linkItem.conditional_probability)}</span>
-                        <span>Lift {formatNumber(linkItem.lift, 2)}</span>
+                        <span className="linkage-quick-metric">
+                          P(B|A) {formatPercent(linkItem.conditional_probability)}
+                          <MetricHint label="P(B|A) 条件共现率" formula="c / a">
+                            中心股票发生事件的日子里，该关联股票也在同一天发生事件的比例。越高表示中心股票一动，它越常同步。
+                          </MetricHint>
+                        </span>
+                        <span className="linkage-quick-metric">
+                          Lift {formatNumber(linkItem.lift, 2)}
+                          <MetricHint label="提升倍数 (Lift)" formula="(c / a) / (b / N)">
+                            该股在中心股票事件日的出现率，相对它平时基准出现率的倍数。大于 1 表示更常同步，等于 1 接近独立。
+                          </MetricHint>
+                        </span>
                       </div>
                       <div className="linkage-quick-link-dates">
                         {linkItem.shared_dates.slice(0, 4).join('、')}

@@ -579,6 +579,106 @@ func TestFetchDay_SameDayMarketNotClosed(testingT *testing.T) {
 	}
 }
 
+func TestFetchSealedTodayAcceptsOpenMarketAndCachesSnapshot(testingT *testing.T) {
+	pageOne := strings.Replace(string(loadFixtureBytes(testingT, "sealed_page1.json")), `"id": "closed"`, `"id": "open"`, 1)
+	pageOne = strings.Replace(pageOne, `"name": "已收盘"`, `"name": "交易中"`, 1)
+	pageTwo := strings.Replace(string(loadFixtureBytes(testingT, "sealed_page2.json")), `"id": "closed"`, `"id": "open"`, 1)
+	pageTwo = strings.Replace(pageTwo, `"name": "已收盘"`, `"name": "交易中"`, 1)
+	requests := 0
+	testServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, httpRequest *http.Request) {
+		requests++
+		if !strings.HasSuffix(httpRequest.URL.Path, "/limit_up_pool") {
+			testingT.Errorf("intraday fetch must not read other pools: %s", httpRequest.URL.Path)
+			responseWriter.WriteHeader(http.StatusNotFound)
+			return
+		}
+		responseWriter.Header().Set("Content-Type", "application/json")
+		if httpRequest.URL.Query().Get("page") == "1" {
+			_, _ = responseWriter.Write([]byte(pageOne))
+			return
+		}
+		_, _ = responseWriter.Write([]byte(pageTwo))
+	}))
+	defer testServer.Close()
+
+	mockNow := time.Date(2026, 11, 5, 10, 42, 0, 0, limitup.Shanghai())
+	thsClient := NewClient(testServer.URL, testServer.Client()).
+		WithMinInterval(0).
+		WithPageLimit(2).
+		WithClock(fixedClock(mockNow))
+
+	snapshot, fetchError := thsClient.FetchSealedToday(context.Background(), limitup.ScopeDefault)
+	if fetchError != nil {
+		testingT.Fatalf("expected intraday success, got %v", fetchError)
+	}
+	if snapshot.TradeDate != "2026-11-05" || snapshot.TradeStatus != "open" || snapshot.TradeStatusName != "交易中" ||
+		snapshot.SealedCount != 3 || len(snapshot.Events) != 3 {
+		testingT.Fatalf("unexpected intraday snapshot: %+v", snapshot)
+	}
+	for _, event := range snapshot.Events {
+		if event.Pool != limitup.PoolSealed {
+			testingT.Fatalf("intraday snapshot leaked a non-sealed pool: %+v", event)
+		}
+	}
+	if requests != 2 {
+		testingT.Fatalf("expected two page requests, got %d", requests)
+	}
+	cached, cacheError := thsClient.FetchSealedToday(context.Background(), limitup.ScopeDefault)
+	if cacheError != nil || cached.FetchedAt != snapshot.FetchedAt || requests != 2 {
+		testingT.Fatalf("expected a 15-second in-memory cache: %+v requests=%d err=%v", cached, requests, cacheError)
+	}
+}
+
+func TestFetchSealedTodayRejectsNonTradingDay(testingT *testing.T) {
+	page := strings.Replace(string(loadFixtureBytes(testingT, "sealed_page1.json")), `"id": "closed"`, `"id": "non_trading_day"`, 1)
+	page = strings.Replace(page, `"date": 20261105`, `"date": 20261107`, 1)
+	testServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, httpRequest *http.Request) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+		_, _ = responseWriter.Write([]byte(page))
+	}))
+	defer testServer.Close()
+	thsClient := NewClient(testServer.URL, testServer.Client()).
+		WithMinInterval(0).
+		WithClock(fixedClock(time.Date(2026, 11, 7, 10, 42, 0, 0, limitup.Shanghai())))
+	_, fetchError := thsClient.FetchSealedToday(context.Background(), limitup.ScopeDefault)
+	if fetchError == nil || !errors.Is(fetchError, limitup.ErrInvalid) {
+		testingT.Fatalf("non-trading day must be rejected as invalid: %v", fetchError)
+	}
+}
+
+func TestFetchSealedTodayRejectsUnstablePagination(testingT *testing.T) {
+	pageOne := strings.Replace(string(loadFixtureBytes(testingT, "sealed_page1.json")), `"id": "closed"`, `"id": "open"`, 1)
+	pageTwo := strings.Replace(string(loadFixtureBytes(testingT, "sealed_page2.json")), `"id": "closed"`, `"id": "open"`, 1)
+	// Same total and limit, but a different page count means the source's view
+	// of the pool changed between requests and must not be stitched together.
+	pageTwo = strings.Replace(pageTwo, `"count": 2`, `"count": 3`, 1)
+	requests := 0
+	testServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, httpRequest *http.Request) {
+		requests++
+		responseWriter.Header().Set("Content-Type", "application/json")
+		if httpRequest.URL.Query().Get("page") == "1" {
+			_, _ = responseWriter.Write([]byte(pageOne))
+			return
+		}
+		_, _ = responseWriter.Write([]byte(pageTwo))
+	}))
+	defer testServer.Close()
+	thsClient := NewClient(testServer.URL, testServer.Client()).
+		WithMinInterval(0).
+		WithPageLimit(2).
+		WithClock(fixedClock(time.Date(2026, 11, 5, 10, 42, 0, 0, limitup.Shanghai())))
+	if _, err := thsClient.FetchSealedToday(context.Background(), limitup.ScopeDefault); err == nil {
+		testingT.Fatal("unstable page metadata must be rejected")
+	}
+	if requests != 2 {
+		// One pagination attempt reads both pages; a second attempt is also
+		// allowed by the existing bounded retry policy.
+		if requests != 4 {
+			testingT.Fatalf("unexpected request count for unstable pagination: %d", requests)
+		}
+	}
+}
+
 func TestFetchDay_StockPoolOverlap(testingT *testing.T) {
 	sealedPageOneBytes := loadFixtureBytes(testingT, "sealed_page1.json")
 	sealedPageTwoBytes := loadFixtureBytes(testingT, "sealed_page2.json")

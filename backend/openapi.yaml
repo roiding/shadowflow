@@ -483,6 +483,42 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/limit-up/today-network:
+    get:
+      summary: 今日封板股票的联动核心
+      description: 实时读取当前仍封住涨停的股票，只在这些成员之间建立历史收盘封板共现子图。历史严格截止到今日之前最近一个完整归档日，今日快照不写入历史，也不参与历史分母。结果依赖点击时的盘中快照，开板会使成员变化；共现为描述统计，不代表因果、带动或未来收益。
+      parameters:
+        - $ref: "#/components/parameters/LimitUpDays"
+        - $ref: "#/components/parameters/LimitUpScope"
+        - name: min_overlap
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 20, default: 1 }
+          description: 历史收盘封板的最少共同天数。
+        - name: top
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 20, default: 5 }
+          description: 返回的核心股数量；无有效关系或并列时按核心度、关系数、封板天数及代码稳定排序。
+      responses:
+        "200":
+          description: 当前封板成员、历史关系子图及核心排名
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/LimitUpTodayNetwork" }
+                  meta:
+                    type: object
+                    required: [snapshot_only, history_excludes_today, snapshot_fetched_at]
+                    properties:
+                      snapshot_only: { type: boolean, const: true }
+                      history_excludes_today: { type: boolean, const: true }
+                      snapshot_fetched_at: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/system/status:
     get:
       summary: 系统和市场状态
@@ -841,6 +877,63 @@ components:
         events:
           type: array
           items: { $ref: "#/components/schemas/LimitUpEvent" }
+    LimitUpTodayMember:
+      type: object
+      required: [code, name, market_type, first_limit_at, last_limit_at, open_count, limit_type, high_days, reason, change_percent, turnover_rate, seal_days, touch_days, broken_days, down_days, core_score, coverage, strength, effective_links, strongest_peer_code, strongest_peer_name, strongest_overlap_days]
+      properties:
+        code: { type: string, pattern: '^[0-9]{6}$' }
+        name: { type: string }
+        market_type: { type: string }
+        first_limit_at: { type: [string, "null"], format: date-time }
+        last_limit_at: { type: [string, "null"], format: date-time }
+        open_count: { type: [integer, "null"], description: 盘中快照的已知开板次数，未知保持null。 }
+        limit_type: { type: string }
+        high_days: { type: string }
+        reason: { type: string }
+        change_percent: { type: [number, "null"], description: 快照时刻涨跌幅，10代表10%。 }
+        turnover_rate: { type: [number, "null"], description: 快照时刻换手率，10代表10%。 }
+        seal_days: { type: integer, description: 历史完整归档日中的收盘封板天数，不含今天。 }
+        touch_days: { type: integer, description: 历史完整归档日中的触板天数（封板与炸板并集），不含今天。 }
+        broken_days: { type: integer, description: 历史炸板池天数，不含今天。 }
+        down_days: { type: integer, description: 历史收盘跌停天数，不含今天。 }
+        core_score: { type: number, description: 0到100的可复现综合分：45%关系强度+30%关系覆盖+25%邻居强度，仅用于今日成员内部排序。 }
+        coverage: { type: number, description: 有效关系数/今日封板成员数减一。 }
+        strength: { type: number, description: 与该成员相连的所有历史收盘封板边的热度折算共现之和。 }
+        effective_links: { type: integer, description: 达到min_overlap的今日成员关系数。 }
+        strongest_peer_code: { type: string, description: 按热度折算共现、共同次数、代码排序后的首位关联股；无关系为空字符串。 }
+        strongest_peer_name: { type: string }
+        strongest_overlap_days: { type: integer }
+    LimitUpTodayCore:
+      type: object
+      required: [member, links]
+      properties:
+        member: { $ref: "#/components/schemas/LimitUpTodayMember" }
+        links:
+          type: array
+          items: { $ref: "#/components/schemas/LimitUpLink" }
+    LimitUpTodayNetwork:
+      type: object
+      required: [trade_date, snapshot_at, trade_status, trade_status_name, sealed_count, history_as_of, lookback_days, scope, min_overlap, coverage, history_available, members, cores]
+      properties:
+        trade_date: { type: string, format: date }
+        snapshot_at: { type: string, format: date-time, description: 实时封板快照的读取时刻；盘中成员和计数可能随后变化。 }
+        trade_status: { type: string, description: 上游交易状态ID，例如open、closed。 }
+        trade_status_name: { type: string }
+        sealed_count: { type: integer, description: 快照时仍封住涨停的成员数。 }
+        history_as_of: { type: string, description: 历史关系使用的最近完整归档日；无历史为空字符串。始终早于trade_date。 }
+        lookback_days: { type: integer, description: 历史窗口的自然日长度，以history_as_of为截止日。 }
+        scope: { type: string, enum: ["HS,GEM2STAR", "HS,GEM2STAR,ST,NEW"] }
+        min_overlap: { type: integer }
+        coverage: { $ref: "#/components/schemas/LimitUpCoverage" }
+        history_available: { type: boolean }
+        members:
+          type: array
+          description: 今日快照全部封板成员，按核心度降序；没有有效关系时核心度为0。
+          items: { $ref: "#/components/schemas/LimitUpTodayMember" }
+        cores:
+          type: array
+          description: 至少有一条有效关系的核心成员，最多top只。
+          items: { $ref: "#/components/schemas/LimitUpTodayCore" }
     BoardQuoteMeta:
       type: object
       properties:
