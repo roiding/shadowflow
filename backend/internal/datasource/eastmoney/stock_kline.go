@@ -312,19 +312,125 @@ func (c *Client) fetchStockKlineFromHistory(ctx context.Context, tradeDate strin
 	if len(seen) != 48 {
 		return nil, fmt.Errorf("historical kline has %d distinct points", len(seen))
 	}
-	// The historical five-minute series can carry the previous close as the
-	// first bar's open when the opening auction has no exact 09:30 print. The
-	// daily bar is authoritative for that auction price, so normalize the first
-	// open before the cross-check instead of rejecting the whole stock.
 	first := &points[0]
+	// When the opening auction prints no volume, the five-minute endpoint
+	// reuses the previous close as the first bar's open and low. The daily bar
+	// is authoritative for the auction price, and the one-minute series still
+	// carries the real first trades, so rebuild the bar from 09:31-09:35
+	// before normalizing the open.
+	corrected := false
+	if stock.PreviousClose > 0 &&
+		samePrice(first.OpenPrice, stock.PreviousClose) &&
+		!samePrice(stock.OpenPrice, stock.PreviousClose) {
+		if err := c.correctZeroAuctionFirstBar(ctx, tradeDate, stock, first); err == nil {
+			corrected = true
+		}
+	}
 	first.OpenPrice = stock.OpenPrice
 	if first.OpenPrice > first.HighPrice || first.OpenPrice < first.LowPrice {
 		return nil, fmt.Errorf("daily open is outside the first five-minute bar")
+	}
+	if corrected && stock.PreviousClose > 0 {
+		first.Amplitude = (first.HighPrice - first.LowPrice) / stock.PreviousClose
+		first.ChangeValue = first.ClosePrice - stock.PreviousClose
+		first.ChangePct = first.ChangeValue / stock.PreviousClose
 	}
 	if err := validateKlinePrices(points, stock); err != nil {
 		return nil, err
 	}
 	return points, nil
+}
+
+// correctZeroAuctionFirstBar rebuilds the first five-minute bar from the
+// one-minute series when the opening auction printed no volume. Eastmoney's
+// five-minute endpoint then reuses the previous close as the bar's open and
+// low, while the one-minute rows carry the real first trades.
+func (c *Client) correctZeroAuctionFirstBar(ctx context.Context, tradeDate string, stock graymarket.RankRecord, bar *graymarket.StockKlinePoint) error {
+	dateToken := strings.ReplaceAll(tradeDate, "-", "")
+	params := url.Values{
+		"secid": {fmt.Sprintf("%d.%s", stock.Market, stock.Code)},
+		"klt":   {"1"}, "fqt": {"0"}, "beg": {dateToken}, "end": {dateToken},
+		"fields1": {"f1,f2,f3,f4,f5,f6"},
+		"fields2": {"f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"},
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.stockKlineBaseURL+"?"+params.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", "Mozilla/5.0 ShadowFlow/0.1")
+	request.Header.Set("Referer", "https://quote.eastmoney.com/")
+	response, err := c.guard.Do(ctx, request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, response.Body)
+		return fmt.Errorf("one-minute kline returned HTTP %d", response.StatusCode)
+	}
+	var payload stockKlineResponse
+	if err := decodeKlineBody(response.Body, &payload); err != nil {
+		return err
+	}
+	if payload.ReturnCode != 0 || payload.Data == nil {
+		return fmt.Errorf("one-minute kline response has no data")
+	}
+	location := snapshotLocation(stock.SnapshotAt)
+	var openPrice, highPrice, lowPrice, closePrice float64
+	var volume, turnover int64
+	seen := 0
+	for _, raw := range payload.Data.Klines {
+		fields, err := csv.NewReader(strings.NewReader(raw)).Read()
+		if err != nil || len(fields) != 11 {
+			return fmt.Errorf("invalid one-minute kline row %q", raw)
+		}
+		at, err := time.ParseInLocation("2006-01-02 15:04", fields[0], location)
+		if err != nil || at.Format("2006-01-02") != tradeDate {
+			return fmt.Errorf("one-minute kline date mismatch %q", fields[0])
+		}
+		minutes := at.Hour()*60 + at.Minute()
+		if minutes < 9*60+31 || minutes > 9*60+35 {
+			continue
+		}
+		numbers, err := klineNumbers(fields, 1, 2, 3, 4, 5, 6)
+		if err != nil {
+			return err
+		}
+		barVolume, err := klineAmount(numbers[5], true)
+		if err != nil {
+			return fmt.Errorf("one-minute volume at %s: %w", fields[0], err)
+		}
+		barTurnover, err := klineAmount(numbers[6], false)
+		if err != nil {
+			return fmt.Errorf("one-minute turnover at %s: %w", fields[0], err)
+		}
+		if seen == 0 {
+			openPrice, highPrice, lowPrice = numbers[1], numbers[3], numbers[4]
+		} else {
+			highPrice = max(highPrice, numbers[3])
+			lowPrice = min(lowPrice, numbers[4])
+		}
+		closePrice = numbers[2]
+		volume += barVolume
+		turnover += barTurnover
+		seen++
+	}
+	if seen != 5 {
+		return fmt.Errorf("expected 5 one-minute bars in the opening five minutes, got %d", seen)
+	}
+	if !samePrice(openPrice, stock.OpenPrice) {
+		return fmt.Errorf("one-minute open %.4f does not match daily open %.4f", openPrice, stock.OpenPrice)
+	}
+	if !samePrice(highPrice, bar.HighPrice) || !samePrice(closePrice, bar.ClosePrice) {
+		return fmt.Errorf("one-minute OHLC does not match the five-minute bar")
+	}
+	if volume != bar.Volume {
+		return fmt.Errorf("one-minute volume %d does not match five-minute volume %d", volume, bar.Volume)
+	}
+	bar.OpenPrice, bar.HighPrice, bar.LowPrice, bar.ClosePrice = openPrice, highPrice, lowPrice, closePrice
+	bar.Volume, bar.Turnover = volume, turnover
+	return nil
 }
 
 func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -110,5 +111,55 @@ func TestHistoricalKlineUsesDailyOpeningAuctionOpen(t *testing.T) {
 	}
 	if !samePrice(points[0].OpenPrice, stock.OpenPrice) {
 		t.Fatalf("daily opening auction open was not applied: %v", points[0].OpenPrice)
+	}
+}
+
+func TestHistoricalKlineRebuildsZeroAuctionFirstBarFromOneMinute(t *testing.T) {
+	loc := time.FixedZone("Asia/Shanghai", 8*3600)
+	date := "2026-11-09"
+	fiveMinuteRows := make([]string, 0, 48)
+	for i := range 48 {
+		at := researchTimeForIndex(date, i, loc)
+		open, closePrice, high, low := "75.50", "75.50", "75.60", "75.16"
+		volume, turnover := "100", "1000"
+		if i == 0 {
+			open, closePrice, high, low = "75.35", "76.23", "76.84", "75.35"
+			volume, turnover = "422", "3217824"
+		}
+		if i == 47 {
+			open, closePrice, high, low = "75.50", "75.16", "75.50", "75.16"
+		}
+		fields := []string{at.Format("2006-01-02 15:04"), open, closePrice, high, low, volume, turnover, "2", "1", "0.5", "1"}
+		fiveMinuteRows = append(fiveMinuteRows, strings.Join(fields, ","))
+	}
+	oneMinuteRows := []string{
+		"2026-11-09 09:31,75.80,76.01,76.16,75.80,47,355418.00,0.48,0.88,0.66,0.02",
+		"2026-11-09 09:32,76.16,76.45,76.45,76.15,19,150000.00,0.38,0.29,0.22,0.01",
+		"2026-11-09 09:33,76.61,76.45,76.84,76.45,155,2000000.00,0.30,-0.16,-0.12,0.05",
+		"2026-11-09 09:34,76.17,76.17,76.17,76.17,5,30000.00,0.00,-0.28,-0.21,0.00",
+		"2026-11-09 09:35,76.22,76.23,76.23,76.22,196,682406.00,0.08,0.06,0.05,0.06",
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rows := fiveMinuteRows
+		if r.URL.Query().Get("klt") == "1" {
+			rows = oneMinuteRows
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"rc": 0, "data": map[string]any{"klines": rows}})
+	}))
+	defer server.Close()
+	stock := graymarket.RankRecord{Code: "301557", Market: 0, OpenPrice: 75.80, HighPrice: 76.84, LowPrice: 75.16, ClosePrice: 75.16, PreviousClose: 75.35, SnapshotAt: time.Date(2026, 11, 9, 15, 0, 0, 0, loc)}
+	points, err := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL).fetchStockKlineFromHistory(context.Background(), date, stock)
+	if err != nil || len(points) != 48 {
+		t.Fatalf("zero-auction curve rejected: %d %v", len(points), err)
+	}
+	first := points[0]
+	if !samePrice(first.OpenPrice, 75.80) || !samePrice(first.LowPrice, 75.80) || !samePrice(first.HighPrice, 76.84) || !samePrice(first.ClosePrice, 76.23) {
+		t.Fatalf("first bar was not rebuilt from one-minute rows: %+v", first)
+	}
+	if first.Volume != 422 || first.Turnover != 3217824 {
+		t.Fatalf("first bar volume or turnover was not rebuilt: %+v", first)
+	}
+	if math.Abs(first.Amplitude-(76.84-75.80)/75.35) > 1e-9 {
+		t.Fatalf("first bar amplitude was not recomputed: %v", first.Amplitude)
 	}
 }
