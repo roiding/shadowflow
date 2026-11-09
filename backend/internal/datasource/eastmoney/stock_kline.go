@@ -312,6 +312,15 @@ func (c *Client) fetchStockKlineFromHistory(ctx context.Context, tradeDate strin
 	if len(seen) != 48 {
 		return nil, fmt.Errorf("historical kline has %d distinct points", len(seen))
 	}
+	// The historical five-minute series can carry the previous close as the
+	// first bar's open when the opening auction has no exact 09:30 print. The
+	// daily bar is authoritative for that auction price, so normalize the first
+	// open before the cross-check instead of rejecting the whole stock.
+	first := &points[0]
+	first.OpenPrice = stock.OpenPrice
+	if first.OpenPrice > first.HighPrice || first.OpenPrice < first.LowPrice {
+		return nil, fmt.Errorf("daily open is outside the first five-minute bar")
+	}
 	if err := validateKlinePrices(points, stock); err != nil {
 		return nil, err
 	}

@@ -85,3 +85,30 @@ func TestTrendRejectsInvalidCumulativeQuantity(t *testing.T) {
 		t.Fatalf("invalid cumulative quantity accepted: %v", err)
 	}
 }
+
+func TestHistoricalKlineUsesDailyOpeningAuctionOpen(t *testing.T) {
+	loc := time.FixedZone("Asia/Shanghai", 8*3600)
+	date := "2026-11-09"
+	rows := make([]string, 0, 48)
+	for i := range 48 {
+		at := researchTimeForIndex(date, i, loc)
+		open := "75.35"
+		if i > 0 {
+			open = "75.80"
+		}
+		fields := []string{at.Format("2006-01-02 15:04"), open, "75.16", "76.84", "75.16", "100", "1000", "2", "1", "0.5", "1"}
+		rows = append(rows, strings.Join(fields, ","))
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"rc": 0, "data": map[string]any{"klines": rows}})
+	}))
+	defer server.Close()
+	stock := graymarket.RankRecord{Code: "301557", Market: 0, OpenPrice: 75.80, HighPrice: 76.84, LowPrice: 75.16, ClosePrice: 75.16, PreviousClose: 75.35, SnapshotAt: time.Date(2026, 11, 9, 15, 0, 0, 0, loc)}
+	points, err := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL).fetchStockKlineFromHistory(context.Background(), date, stock)
+	if err != nil || len(points) != 48 {
+		t.Fatalf("opening-auction curve rejected: %d %v", len(points), err)
+	}
+	if !samePrice(points[0].OpenPrice, stock.OpenPrice) {
+		t.Fatalf("daily opening auction open was not applied: %v", points[0].OpenPrice)
+	}
+}
