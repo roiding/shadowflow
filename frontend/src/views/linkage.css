@@ -498,7 +498,9 @@
 
 .linkage-quick-close:focus-visible,
 .linkage-quick-full-button:focus-visible,
-.linkage-quick-segmented button:focus-visible {
+.linkage-quick-events button:focus-visible,
+.linkage-quick-reset:focus-visible,
+.linkage-quick-control select:focus-visible {
   outline: 2px solid #9bbff1;
   outline-offset: 2px;
 }
@@ -506,7 +508,7 @@
 .linkage-quick-controls {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 8px;
   padding: 10px 20px;
@@ -515,29 +517,69 @@
   flex: 0 0 auto;
 }
 
-.linkage-quick-segmented {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--line, #e4e8ed);
-  border-radius: 5px;
-  background: #eef1f5;
+.linkage-quick-control {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted, #7b8795);
+  font-size: 9px;
 }
 
-.linkage-quick-segmented button {
-  height: 26px;
-  padding: 0 8px;
+.linkage-quick-control span {
+  white-space: nowrap;
+}
+
+.linkage-quick-control select {
+  height: 28px;
+  max-width: 136px;
+  padding: 0 6px;
+  border: 1px solid var(--line, #e4e8ed);
   border-radius: 4px;
-  background: transparent;
+  background: #ffffff;
+  color: var(--ink, #17212f);
+  font-size: 10px;
+}
+
+.linkage-quick-reset {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  border: 1px solid var(--line, #e4e8ed);
+  border-radius: 4px;
+  background: #ffffff;
+  color: var(--muted, #7b8795);
+}
+
+.linkage-quick-reset:hover {
+  color: var(--blue, #1d6ee8);
+  border-color: #bfd5f3;
+}
+
+.linkage-quick-events {
+  display: flex;
+  gap: 2px;
+  padding: 7px 20px;
+  border-bottom: 1px solid var(--line, #e4e8ed);
+  background: #ffffff;
+  flex: 0 0 auto;
+}
+
+.linkage-quick-events button {
+  flex: 1;
+  height: 27px;
+  border-radius: 4px;
+  background: #f2f5f8;
   color: var(--muted, #7b8795);
   font-size: 10px;
   font-weight: 600;
 }
 
-.linkage-quick-segmented button.active {
-  background: #ffffff;
+.linkage-quick-events button.active {
+  background: var(--blue-soft, #eaf2ff);
   color: var(--blue, #1d6ee8);
-  box-shadow: 0 1px 3px rgba(23, 33, 47, 0.08);
 }
 
 .linkage-quick-body {
@@ -549,7 +591,7 @@
 
 .linkage-quick-profile {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 7px;
 }
 
@@ -681,6 +723,10 @@
   color: var(--ink, #17212f);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
+}
+
+.linkage-quick-link-metrics strong {
+  color: var(--blue, #1d6ee8);
 }
 
 .linkage-quick-link-dates {
@@ -1466,6 +1512,7 @@
 
   .linkage-quick-head,
   .linkage-quick-controls,
+  .linkage-quick-events,
   .linkage-quick-body,
   .linkage-quick-footer {
     padding-left: 14px;
@@ -1473,7 +1520,16 @@
   }
 
   .linkage-quick-profile {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .linkage-quick-control {
+    flex: 1 1 calc(50% - 8px);
+  }
+
+  .linkage-quick-control select {
+    flex: 1;
+    max-width: none;
   }
 
   .linkage-current-subject {

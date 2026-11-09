@@ -150,7 +150,8 @@ kbd { padding: 1px 5px; border: 1px solid var(--line); border-radius: 3px; color
 .constituent-table tr:last-child td { border-bottom: 0; }
 .constituent-table tbody tr:hover { background: #f8fbff; }
 .constituent-table td strong { color: var(--ink); font-weight: 650; }
-.constituent-footer { display: flex; justify-content: space-between; gap: 10px; padding-top: 9px; color: var(--muted); font-size: 10px; }
+.constituent-table .limit-up-seal-cell strong { color: var(--red, #c74343); }
+.constituent-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 10px; padding-top: 9px; color: var(--muted); font-size: 10px; }
 .inline-notice { gap: 7px; margin: 0 24px 12px; padding: 9px 10px; border-radius: 5px; font-size: 11px; }
 .inline-notice.error { color: #a54242; background: #fff3f3; border: 1px solid #f1cccc; }
 .inline-notice.warning { color: #8a571f; background: #fff8ed; border: 1px solid #efd5ad; }

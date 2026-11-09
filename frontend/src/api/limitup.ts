@@ -73,4 +73,5 @@ export interface LimitUpQuery {
   event?: 'seal' | 'touch' | 'down'
   min_overlap?: number
   limit?: number
+  order?: 'heat' | 'overlap'
 }

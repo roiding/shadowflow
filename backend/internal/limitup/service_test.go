@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -195,6 +196,39 @@ func TestHotMarketDayContributesLessAndLimitsAreDeterministic(testingT *testing.
 		testingT.Fatalf("unexpected order or total: %+v, %v", result, err)
 	}
 	checkFloat(testingT, "hot day weight", result.Links[1].HeatAdjustedOverlap, 1.0/3)
+}
+
+func TestRawOverlapOrderPrioritizesCooccurrenceCount(testingT *testing.T) {
+	days := []string{"2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07"}
+	events := []Event{}
+	for _, day := range days[:2] {
+		events = append(events, testEvent(day, "000001", PoolSealed))
+		events = append(events, testEvent(day, "000002", PoolSealed))
+	}
+	for _, day := range days[2:] {
+		events = append(events, testEvent(day, "000001", PoolSealed))
+		events = append(events, testEvent(day, "000003", PoolSealed))
+		for peer := 0; peer < 9; peer++ {
+			events = append(events, testEvent(day, fmt.Sprintf("80000%d", peer), PoolSealed))
+		}
+	}
+	reader := &memoryReader{dataset: testDataset(days, events...)}
+	result, err := New(reader).Analyze(context.Background(), Query{AsOf: "2026-08-07", Days: 5, MinOverlap: 1, Order: "overlap"}, "000001")
+	if err != nil {
+		testingT.Fatal(err)
+	}
+	if len(result.Links) < 2 || result.Links[0].Code != "000003" || result.Links[0].OverlapDays != 3 {
+		testingT.Fatalf("raw overlap order ignored cooccurrence count: %+v", result.Links)
+	}
+	heatOrdered, err := New(reader).Analyze(context.Background(), Query{AsOf: "2026-08-07", Days: 5, MinOverlap: 1}, "000001")
+	if err != nil || heatOrdered.Links[0].Code != "000002" || heatOrdered.Links[0].OverlapDays != 2 {
+		testingT.Fatalf("heat order must remain the default and use hot-day weights: %+v %v", heatOrdered.Links, err)
+	}
+	for _, query := range []Query{{Order: "invalid"}, {Order: "overlap", MinOverlap: 21}} {
+		if _, err := New(reader).Overview(context.Background(), query); !errors.Is(err, ErrInvalid) {
+			testingT.Fatalf("accepted invalid order query %+v: %v", query, err)
+		}
+	}
 }
 
 func TestEmptyMissingAndInvalidDataset(testingT *testing.T) {

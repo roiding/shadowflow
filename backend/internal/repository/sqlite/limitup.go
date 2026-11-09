@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/roiding/shadowflow/internal/graymarket"
@@ -353,6 +354,83 @@ WHERE source=? AND scope=? AND trade_date>=? AND trade_date<=? ORDER BY trade_da
 		return dataset, err
 	}
 	return dataset, transaction.Commit()
+}
+
+func (store *Store) ReadLimitUpStockStats(ctx context.Context, fromDate, asOf, scope string, codes []string) (limitup.StockLimitStatsWindow, error) {
+	window := limitup.StockLimitStatsWindow{FromDate: fromDate, AsOf: asOf, Stocks: []limitup.StockLimitStats{}}
+	from, fromErr := time.Parse("2006-01-02", fromDate)
+	until, untilErr := time.Parse("2006-01-02", asOf)
+	if fromErr != nil || untilErr != nil || fromDate != from.Format("2006-01-02") || asOf != until.Format("2006-01-02") ||
+		from.After(until) || until.Sub(from) > 365*24*time.Hour || !limitup.ValidScope(scope) {
+		return window, fmt.Errorf("%w: invalid bounded stock statistics window", limitup.ErrInvalid)
+	}
+	unique := make([]string, 0, len(codes))
+	seen := make(map[string]struct{}, len(codes))
+	for _, code := range codes {
+		if !limitup.ValidCode(code) {
+			return window, fmt.Errorf("%w: stock statistics require six-digit codes", limitup.ErrInvalid)
+		}
+		if _, exists := seen[code]; exists {
+			continue
+		}
+		seen[code] = struct{}{}
+		unique = append(unique, code)
+	}
+
+	transaction, err := store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return window, err
+	}
+	defer transaction.Rollback()
+	if err := transaction.QueryRowContext(ctx, `SELECT count(*),coalesce(min(trade_date),''),coalesce(max(trade_date),'')
+FROM limit_up_day WHERE source=? AND scope=? AND trade_date>=? AND trade_date<=?`,
+		limitup.SourceTHS, scope, fromDate, asOf).Scan(&window.ObservedDays, &window.FirstDate, &window.LatestDate); err != nil {
+		return window, err
+	}
+	window.Available = window.ObservedDays > 0
+	statsByCode := make(map[string]limitup.StockLimitStats, len(unique))
+	for _, code := range unique {
+		statsByCode[code] = limitup.StockLimitStats{Code: code}
+	}
+	const batchSize = 500
+	for start := 0; start < len(unique); start += batchSize {
+		end := min(start+batchSize, len(unique))
+		batch := unique[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+		args := make([]any, 0, len(batch)+4)
+		args = append(args, limitup.SourceTHS, scope, fromDate, asOf)
+		for _, code := range batch {
+			args = append(args, code)
+		}
+		rows, err := transaction.QueryContext(ctx, `SELECT code,
+count(DISTINCT CASE WHEN pool='limit_up' THEN trade_date END),
+count(DISTINCT CASE WHEN pool IN ('limit_up','open_limit') THEN trade_date END),
+count(DISTINCT CASE WHEN pool='open_limit' THEN trade_date END),
+count(DISTINCT CASE WHEN pool='limit_down' THEN trade_date END)
+FROM limit_up_event
+WHERE source=? AND scope=? AND trade_date>=? AND trade_date<=? AND code IN (`+placeholders+`)
+GROUP BY code`, args...)
+		if err != nil {
+			return window, err
+		}
+		for rows.Next() {
+			var stats limitup.StockLimitStats
+			if err := rows.Scan(&stats.Code, &stats.SealDays, &stats.TouchDays, &stats.BrokenDays, &stats.DownDays); err != nil {
+				rows.Close()
+				return window, err
+			}
+			statsByCode[stats.Code] = stats
+		}
+		readErr := rows.Err()
+		closeErr := rows.Close()
+		if readErr != nil || closeErr != nil {
+			return window, errors.Join(readErr, closeErr)
+		}
+	}
+	for _, code := range unique {
+		window.Stocks = append(window.Stocks, statsByCode[code])
+	}
+	return window, transaction.Commit()
 }
 
 func decodeCountCorrection(reason sql.NullString, sourceBroken sql.NullInt64, sourceTouched sql.NullInt64, codes sql.NullString) (*limitup.CountCorrection, error) {

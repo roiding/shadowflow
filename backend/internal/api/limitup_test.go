@@ -60,6 +60,7 @@ func TestLimitUpAPIsReadIndependentEvents(testingT *testing.T) {
 		"/api/v1/limit-up/overview?days=30&days=90":                 http.StatusBadRequest,
 		"/api/v1/limit-up/overview?scope=HS":                        http.StatusBadRequest,
 		"/api/v1/limit-up/stocks/000001?event=minute":               http.StatusBadRequest,
+		"/api/v1/limit-up/stocks/000001?order=invalid":              http.StatusBadRequest,
 		"/api/v1/limit-up/stocks/000001?as_of=2026-08-03&limit=101": http.StatusBadRequest,
 	} {
 		response := httptest.NewRecorder()

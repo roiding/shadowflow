@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/roiding/shadowflow/internal/limitup"
@@ -12,13 +13,14 @@ import (
 
 func limitUpQuery(request *http.Request) (limitup.Query, error) {
 	values := request.URL.Query()
-	allowed := map[string]bool{"as_of": true, "days": true, "scope": true, "event": true, "min_overlap": true, "limit": true}
+	allowed := map[string]bool{"as_of": true, "days": true, "scope": true, "event": true, "min_overlap": true, "limit": true, "order": true}
 	for key, entries := range values {
 		if !allowed[key] || len(entries) != 1 {
 			return limitup.Query{}, fmt.Errorf("%w: unsupported or repeated query parameter", limitup.ErrInvalid)
 		}
 	}
-	query := limitup.Query{AsOf: values.Get("as_of"), Scope: values.Get("scope"), Event: values.Get("event")}
+	query := limitup.Query{AsOf: values.Get("as_of"), Scope: values.Get("scope"), Event: values.Get("event"),
+		Order: strings.TrimSpace(values.Get("order"))}
 	for key, target := range map[string]*int{"days": &query.Days, "min_overlap": &query.MinOverlap, "limit": &query.Limit} {
 		if !values.Has(key) {
 			continue

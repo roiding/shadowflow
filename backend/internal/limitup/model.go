@@ -87,6 +87,10 @@ type Reader interface {
 	ReadLimitUpWindow(context.Context, string, string, string) (Dataset, error)
 }
 
+type StockLimitStatsReader interface {
+	ReadLimitUpStockStats(context.Context, string, string, string, []string) (StockLimitStatsWindow, error)
+}
+
 type Writer interface {
 	SaveLimitUpSnapshot(context.Context, Snapshot) error
 }
@@ -98,6 +102,7 @@ type Query struct {
 	Event      string `json:"event"`
 	MinOverlap int    `json:"min_overlap"`
 	Limit      int    `json:"limit"`
+	Order      string `json:"order"`
 }
 
 type Coverage struct {
@@ -122,6 +127,24 @@ type StockSummary struct {
 	BrokenDays int    `json:"broken_days"`
 	DownDays   int    `json:"down_days"`
 	LastSeen   string `json:"last_seen"`
+}
+
+type StockLimitStats struct {
+	Code       string `json:"code"`
+	SealDays   int    `json:"seal_days"`
+	TouchDays  int    `json:"touch_days"`
+	BrokenDays int    `json:"broken_days"`
+	DownDays   int    `json:"down_days"`
+}
+
+type StockLimitStatsWindow struct {
+	FromDate     string            `json:"from_date"`
+	AsOf         string            `json:"as_of"`
+	FirstDate    string            `json:"first_date"`
+	LatestDate   string            `json:"latest_date"`
+	ObservedDays int               `json:"observed_days"`
+	Available    bool              `json:"available"`
+	Stocks       []StockLimitStats `json:"stocks"`
 }
 
 type Overview struct {

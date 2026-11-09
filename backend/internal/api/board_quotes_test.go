@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/roiding/shadowflow/internal/graymarket"
+	"github.com/roiding/shadowflow/internal/limitup"
 	"github.com/roiding/shadowflow/internal/quote"
 	"github.com/roiding/shadowflow/internal/repository"
 	"github.com/roiding/shadowflow/internal/repository/sqlite"
@@ -25,6 +26,11 @@ type boardQuotePayload struct {
 		QuoteError        string `json:"quote_error"`
 		DarkDataAvailable bool   `json:"dark_data_available"`
 		DarkDataCount     int    `json:"dark_data_count"`
+		LimitUpStatsDays  int    `json:"limit_up_stats_days"`
+		LimitUpStatsReady bool   `json:"limit_up_stats_available"`
+		LimitUpStatsFirst string `json:"limit_up_stats_first_date"`
+		LimitUpStatsLast  string `json:"limit_up_stats_latest_date"`
+		LimitUpStatsCount int    `json:"limit_up_stats_observed_days"`
 	} `json:"meta"`
 }
 
@@ -192,6 +198,83 @@ func TestBoardQuoteDarkAvailabilityRequiresCollectedMoney(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBoardQuoteIncludesBoundedLimitUpBehavior(t *testing.T) {
+	server, store := testServer(t, "")
+	defer store.Close()
+	seedQuoteRelations(t, store)
+	saveDay := func(tradeDate string, events ...limitup.Event) {
+		t.Helper()
+		at := time.Date(2026, 9, 14, 16, 0, 0, 0, server.location)
+		snapshot := limitup.Snapshot{
+			TradeDate: tradeDate, Source: limitup.SourceTHS, Scope: limitup.ScopeDefault, FetchedAt: at,
+			Events: append([]limitup.Event{}, events...),
+			RawPages: []json.RawMessage{
+				json.RawMessage(`{"status_code":0}`), json.RawMessage(`{"status_code":0}`), json.RawMessage(`{"status_code":0}`),
+			},
+		}
+		for _, event := range events {
+			if event.Pool == limitup.PoolSealed {
+				snapshot.SealedCount++
+			} else if event.Pool == limitup.PoolBroken {
+				snapshot.BrokenCount++
+			} else if event.Pool == limitup.PoolDown {
+				snapshot.DownCount++
+			}
+		}
+		snapshot.TouchedCount = snapshot.SealedCount + snapshot.BrokenCount
+		if err := store.SaveLimitUpSnapshot(context.Background(), snapshot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saveDay("2025-09-15",
+		limitup.Event{TradeDate: "2025-09-15", Code: "000001", Name: "甲", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed})
+	saveDay("2026-09-14",
+		limitup.Event{TradeDate: "2026-09-14", Code: "000001", Name: "甲", MarketID: 33, MarketType: "HS", Pool: limitup.PoolBroken},
+		limitup.Event{TradeDate: "2026-09-14", Code: "000002", Name: "乙", MarketID: 33, MarketType: "HS", Pool: limitup.PoolBroken},
+		limitup.Event{TradeDate: "2026-09-14", Code: "000002", Name: "乙", MarketID: 33, MarketType: "HS", Pool: limitup.PoolDown})
+
+	payload := getBoardQuotes(t, server, "industry")
+	if payload.Meta.LimitUpStatsDays != 365 || !payload.Meta.LimitUpStatsReady || payload.Meta.LimitUpStatsFirst != "2025-09-15" ||
+		payload.Meta.LimitUpStatsLast != "2026-09-14" || payload.Meta.LimitUpStatsCount != 2 {
+		t.Fatalf("unexpected stats meta: %+v", payload.Meta)
+	}
+	byCode := make(map[string]boardStockQuote, len(payload.Data))
+	for _, row := range payload.Data {
+		byCode[row.StockCode] = row
+	}
+	if first := byCode["000001"]; !first.LimitUpStatsReady || first.LimitUpSealDays != 1 || first.LimitUpTouchDays != 2 ||
+		first.LimitUpBrokenDays != 1 || first.LimitUpDownDays != 0 {
+		t.Fatalf("outer-window or distinct-day counting is wrong: %+v", first)
+	}
+	if second := byCode["000002"]; second.LimitUpSealDays != 0 || second.LimitUpTouchDays != 1 ||
+		second.LimitUpBrokenDays != 1 || second.LimitUpDownDays != 1 {
+		t.Fatalf("sealed and down pools were mixed: %+v", second)
+	}
+	saveDay("2025-09-14",
+		limitup.Event{TradeDate: "2025-09-14", Code: "000001", Name: "甲", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed})
+	payload = getBoardQuotes(t, server, "industry")
+	for _, row := range payload.Data {
+		if row.StockCode == "000001" && row.LimitUpSealDays != 1 {
+			t.Fatalf("day before the 365-day inclusive window leaked into statistics: %+v", row)
+		}
+	}
+}
+
+func TestBoardQuoteMissingLimitUpArchiveIsNotZero(t *testing.T) {
+	server, store := testServer(t, "")
+	defer store.Close()
+	seedQuoteRelations(t, store)
+	payload := getBoardQuotes(t, server, "industry")
+	if payload.Meta.LimitUpStatsReady || payload.Meta.LimitUpStatsCount != 0 {
+		t.Fatalf("missing event archive must stay unavailable: %+v", payload.Meta)
+	}
+	for _, row := range payload.Data {
+		if row.LimitUpStatsReady {
+			t.Fatalf("missing archive must not be presented as a measured zero: %+v", row)
+		}
 	}
 }
 

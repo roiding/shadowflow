@@ -11,7 +11,7 @@ import { chartMetricValue, metricAvailable } from './chartMetrics'
 import { compareControlRanks, compareMonitorRecords, controlRankChangeDisplay, controlRate, derivedBoardTurnover } from './monitorRankings'
 import type { ControlRankChange, MonitorSortKey } from './monitorRankings'
 import { quoteRefreshInterval, refreshMonitorQueries } from './monitorRefresh'
-import { compareConstituents, constituentSort, showConstituentDarkData } from './constituents'
+import { compareConstituents, constituentLimitUpRate, constituentLimitUpSort, constituentSort, showConstituentDarkData } from './constituents'
 import type { ConstituentSortKey } from './constituents'
 import { matchesSearchText } from './pinyinSearch'
 import { FocusView } from './views/FocusView'
@@ -142,6 +142,10 @@ function formatMoney(value: number) {
   const unit = abs >= 100000000 ? '亿' : abs >= 10000 ? '万' : ''
   const divisor = unit === '亿' ? 100000000 : unit === '万' ? 10000 : 1
   return `${value < 0 ? '-' : ''}${formatNumber(abs / divisor, unit ? 2 : 0)}${unit}`
+}
+
+function formatLimitUpRate(value: number | null) {
+  return value === null ? '--' : `${formatNumber(value * 100, 1)}%`
 }
 
 function metricValue(record: RankRecord, metric: Metric) {
@@ -763,9 +767,14 @@ function MonitorView(props: MonitorProps) {
 
 function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error, quoteMeta, status, linkageAsOf, onQuickLinkage, initialPage, onPageChange }: { board?: RankRecord; boardType: BoardType; tradeDate: string; stocks: BoardStockQuote[]; loading: boolean; error: Error | null; quoteMeta?: BoardQuoteMeta; status?: SystemStatus; linkageAsOf: string; onQuickLinkage: (stock: { code: string; name: string }, event: React.MouseEvent<HTMLButtonElement>) => void; initialPage: number; onPageChange: (page: number) => void }) {
   const [query, setQuery] = useState('')
-  const [sort, setSort] = useState<SortState<ConstituentSortKey>>({ key: 'dark_rank', direction: 'asc' })
+  const [sort, setSort] = useState<SortState<ConstituentSortKey>>(() => constituentLimitUpSort(Boolean(quoteMeta?.limit_up_stats_available)))
   const [page, setPage] = useState(initialPage)
   const darkReady = showConstituentDarkData(stocks, quoteMeta, status)
+  const limitUpReady = quoteMeta?.limit_up_stats_available === true
+  const limitUpScopeLabel = quoteMeta?.limit_up_stats_scope === 'HS,GEM2STAR,ST,NEW' ? '含ST/新股' : '沪深及双创'
+  useEffect(() => {
+    setSort(constituentLimitUpSort(limitUpReady))
+  }, [board?.code, limitUpReady])
   const displaySort = useMemo(() => constituentSort(sort, darkReady), [sort, darkReady])
   const previousConstituentFiltersRef = useRef({
     boardCode: board?.code,
@@ -810,8 +819,9 @@ function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error,
     : status?.market_status === 'pre_open' ? '盘前仅展示行情；个股暗盘及资金字段在盘后采集完成后显示。'
       : '盘中仅展示实时行情；个股暗盘及资金字段在盘后采集完成后显示。'
   return <section className="constituent-panel">
-    <div className="constituent-heading"><div><p className="eyebrow">级联成分股</p><h3>{board?.name ?? '选择一个板块'} · 个股</h3><span className="subline">{board ? `${board.code} · ${BOARD_LABELS[boardType]} · ${tradeDate} 归属` : '选择板块后加载成分股'}</span></div><span className={`quote-badge ${quoteReady || darkReady ? 'available' : ''}`}>{badgeLabel}</span></div>
+    <div className="constituent-heading"><div><p className="eyebrow">级联成分股</p><h3>{board?.name ?? '选择一个板块'} · 个股</h3><span className="subline">{board ? `${board.code} · ${BOARD_LABELS[boardType]} · ${tradeDate} 归属` : '选择板块后加载成分股'}</span>{board && <span className="subline">默认按近365日涨停次数降序 · 股性来自本地三池归档 · {limitUpScopeLabel}</span>}</div><span className={`quote-badge ${quoteReady || darkReady ? 'available' : ''}`}>{badgeLabel}</span></div>
     {quoteMeta?.quote_error && <InlineNotice kind="warning" text="实时行情更新失败，已保留可用缓存及成分股关系。" />}
+    {quoteMeta?.limit_up_stats_error && <InlineNotice kind="warning" text={quoteMeta.limit_up_stats_error} />}
     {error && <InlineNotice kind="error" text="成分股读取失败，请稍后重试。" />}
     {board && !darkReady && status && <InlineNotice kind="info" text={moneyNotice} />}
     <label className="constituent-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索成分股、代码或拼音" /></label>
@@ -820,6 +830,11 @@ function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error,
         <thead><tr>
           <SortHead label="股票" sortKey="stock_name" sort={displaySort} onSort={onSort} />
           <SortHead label="代码" sortKey="stock_code" sort={displaySort} onSort={onSort} />
+          <SortHead label="近365日涨停" sortKey="limit_up_seal_days" sort={displaySort} onSort={onSort} />
+          <SortHead label="触板" sortKey="limit_up_touch_days" sort={displaySort} onSort={onSort} />
+          <SortHead label="炸板" sortKey="limit_up_broken_days" sort={displaySort} onSort={onSort} />
+          <SortHead label="封板率" sortKey="limit_up_seal_rate" sort={displaySort} onSort={onSort} />
+          <SortHead label="跌停" sortKey="limit_up_down_days" sort={displaySort} onSort={onSort} />
           {darkReady && <>
             <SortHead label="暗盘排名" sortKey="dark_rank" sort={displaySort} onSort={onSort} />
             <SortHead label="暗盘资金" sortKey="dark_money" sort={displaySort} onSort={onSort} />
@@ -834,6 +849,11 @@ function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error,
         <tbody>{pageStocks.map((stock) => <tr key={stock.stock_code}>
           <td><strong>{stock.stock_name || '未命名'}</strong></td>
           <td className="stock-code">{stock.stock_code}</td>
+          <td className="limit-up-seal-cell"><strong>{stock.limit_up_stats_available ? stock.limit_up_seal_days : '--'}</strong></td>
+          <td>{stock.limit_up_stats_available ? stock.limit_up_touch_days : '--'}</td>
+          <td>{stock.limit_up_stats_available ? stock.limit_up_broken_days : '--'}</td>
+          <td>{stock.limit_up_stats_available ? formatLimitUpRate(constituentLimitUpRate(stock)) : '--'}</td>
+          <td>{stock.limit_up_stats_available ? stock.limit_up_down_days : '--'}</td>
           {darkReady && <>
             <td>{stock.dark_data_available ? stock.dark_rank : '--'}</td>
             <td className={stock.dark_data_available ? signedClass(stock.dark_money) : 'muted'}>{stock.dark_data_available ? formatMoney(stock.dark_money) : '--'}</td>
@@ -848,7 +868,7 @@ function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error,
               type="button"
               className="linkage-entry-button"
               disabled={!linkageAsOf}
-              title={linkageAsOf ? `查看 ${stock.stock_name} 历史强联动（样本截止 ${linkageAsOf}）` : '上一交易日尚未确定'}
+              title={linkageAsOf ? `查看 ${stock.stock_name} 近365日联动与股性（样本截止 ${linkageAsOf}）` : '上一交易日尚未确定'}
               onClick={(pointerEvent) => {
                 pointerEvent.stopPropagation()
                 onQuickLinkage({ code: stock.stock_code, name: stock.stock_name }, pointerEvent)
@@ -862,7 +882,7 @@ function ConstituentPanel({ board, boardType, tradeDate, stocks, loading, error,
       {!loading && !visibleStocks.length && <EmptyState icon={<Table2 size={19} />} title="暂无成分股" detail={board ? '当前截面日没有可展示的归属关系。' : '选择板块后查看成分股。'} />}
     </div>
     {pages > 1 && <Pagination page={page} pages={pages} setPage={setPage} compact />}
-    <div className="constituent-footer"><span>{visibleStocks.length}{query ? ` / ${stocks.length}` : ''} 只</span><span>{darkReady ? `暗盘榜 ${quoteMeta?.dark_data_count ?? 0} 只 · 暗盘活跃度 = |暗盘资金| / 成交额` : quoteRefreshing ? '正在查询最新价、涨跌幅和成交额…' : quoteReady ? '行情来自东方财富最新快照' : '行情服务未返回数据'}</span></div>
+    <div className="constituent-footer"><span>{visibleStocks.length}{query ? ` / ${stocks.length}` : ''} 只</span><span>{limitUpReady ? `近365日三池归档 ${quoteMeta?.limit_up_stats_first_date ?? '--'} ~ ${quoteMeta?.limit_up_stats_latest_date ?? '--'} · 完整样本日 ${quoteMeta?.limit_up_stats_observed_days ?? 0} 天 · 封板率 = 收盘涨停日 / 触板日` : '近365日涨停事件归档暂不可用'}</span><span>{darkReady ? `暗盘榜 ${quoteMeta?.dark_data_count ?? 0} 只 · 暗盘活跃度 = |暗盘资金| / 成交额` : quoteRefreshing ? '正在查询最新价、涨跌幅和成交额…' : quoteReady ? '行情来自东方财富最新快照' : '行情服务未返回数据'}</span></div>
   </section>
 }
 
@@ -1001,7 +1021,7 @@ function StockView({ date, setDate, records, total, query, setQuery, sort, onSor
               type="button"
               className="linkage-entry-button"
               disabled={!linkageAsOf}
-              title={linkageAsOf ? `查看 ${record.name} 历史强联动（样本截止 ${linkageAsOf}）` : '尚未确定所选收盘日期'}
+              title={linkageAsOf ? `查看 ${record.name} 联动与股性（样本截止 ${linkageAsOf}）` : '尚未确定所选收盘日期'}
               onClick={(pointerEvent) => {
                 pointerEvent.stopPropagation()
                 onQuickLinkage({ code: record.code, name: record.name }, pointerEvent)

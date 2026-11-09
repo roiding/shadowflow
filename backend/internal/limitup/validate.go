@@ -149,6 +149,9 @@ func NormalizeQuery(query Query) (Query, string, error) {
 	if query.Limit == 0 {
 		query.Limit = 30
 	}
+	if query.Order == "" {
+		query.Order = "heat"
+	}
 	asOf, err := time.ParseInLocation("2006-01-02", query.AsOf, Shanghai())
 	if err != nil || asOf.Format("2006-01-02") != query.AsOf {
 		return Query{}, "", fmt.Errorf("%w: as_of must use YYYY-MM-DD", ErrInvalid)
@@ -156,8 +159,9 @@ func NormalizeQuery(query Query) (Query, string, error) {
 	if query.Days < 1 || query.Days > 366 || query.Limit < 1 || query.Limit > 100 || query.MinOverlap < 1 || query.MinOverlap > 20 {
 		return Query{}, "", fmt.Errorf("%w: days must be 1..366, limit 1..100 and min_overlap 1..20", ErrInvalid)
 	}
-	if !ValidScope(query.Scope) || (query.Event != EventSealed && query.Event != EventTouched && query.Event != EventDown) {
-		return Query{}, "", fmt.Errorf("%w: unsupported scope or event", ErrInvalid)
+	if !ValidScope(query.Scope) || (query.Event != EventSealed && query.Event != EventTouched && query.Event != EventDown) ||
+		(query.Order != "heat" && query.Order != "overlap") {
+		return Query{}, "", fmt.Errorf("%w: unsupported scope, event, or order", ErrInvalid)
 	}
 	return query, asOf.AddDate(0, 0, 1-query.Days).Format("2006-01-02"), nil
 }

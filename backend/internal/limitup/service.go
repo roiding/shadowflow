@@ -341,6 +341,15 @@ func buildLinks(ctx context.Context, query Query, dataset Dataset, summaries map
 		links = append(links, link)
 	}
 	sort.Slice(links, func(left, right int) bool {
+		if query.Order == "overlap" {
+			if links[left].OverlapDays != links[right].OverlapDays {
+				return links[left].OverlapDays > links[right].OverlapDays
+			}
+			if links[left].HeatAdjustedOverlap != links[right].HeatAdjustedOverlap {
+				return links[left].HeatAdjustedOverlap > links[right].HeatAdjustedOverlap
+			}
+			return links[left].Code < links[right].Code
+		}
 		if links[left].HeatAdjustedOverlap != links[right].HeatAdjustedOverlap {
 			return links[left].HeatAdjustedOverlap > links[right].HeatAdjustedOverlap
 		}

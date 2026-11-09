@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowUpRight, AlertTriangle, Network, X } from 'lucide-react'
+import { ArrowUpRight, AlertTriangle, Network, RotateCcw, X } from 'lucide-react'
 
 import { api } from './api/client'
 import type { LimitUpAnalysis, LimitUpLink, LimitUpProfile } from './api/limitup'
@@ -16,13 +16,19 @@ import { formatNumber, formatPercent } from './limitupPresentation'
 import './views/linkage.css'
 
 const QUICK_EVENT_LABELS: Record<LinkageEventType, string> = {
-  seal: '同日封板',
+  seal: '同日涨停',
   touch: '同日触板',
   down: '同日跌停',
 }
 
-const QUICK_DAYS = 90
-const QUICK_MIN_OVERLAP = 3
+const QUICK_LOOKBACK_OPTIONS = [30, 90, 180, 365] as const
+const QUICK_MIN_OVERLAP_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const
+const QUICK_SCOPE_OPTIONS = [
+  { value: 'HS,GEM2STAR', label: '沪深及双创' },
+  { value: 'HS,GEM2STAR,ST,NEW', label: '含 ST、未开板新股' },
+] as const
+const QUICK_DEFAULT_DAYS = 365
+const QUICK_DEFAULT_MIN_OVERLAP = 1
 
 export function LinkageQuickPanel({
   authRequired,
@@ -38,6 +44,9 @@ export function LinkageQuickPanel({
   onOpenFull: (context: LinkageContext) => void
 }) {
   const [eventType, setEventType] = useState<LinkageEventType>('seal')
+  const [lookbackDays, setLookbackDays] = useState<number>(QUICK_DEFAULT_DAYS)
+  const [marketScope, setMarketScope] = useState<LinkageContext['scope']>('HS,GEM2STAR')
+  const [minOverlap, setMinOverlap] = useState<number>(QUICK_DEFAULT_MIN_OVERLAP)
   const [limit, setLimit] = useState<5 | 10>(5)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLElement>(null)
@@ -46,10 +55,10 @@ export function LinkageQuickPanel({
     stockCode: target.code,
     stockName: target.name,
     asOf: target.asOf,
-    days: QUICK_DAYS,
-    scope: 'HS,GEM2STAR',
+    days: lookbackDays,
+    scope: marketScope,
     event: eventType,
-    minOverlap: QUICK_MIN_OVERLAP,
+    minOverlap,
   })
 
   const analysisQuery = useQuery({
@@ -57,10 +66,10 @@ export function LinkageQuickPanel({
       'limit-up-quick',
       target.code,
       target.asOf,
-      QUICK_DAYS,
-      'HS,GEM2STAR',
+      lookbackDays,
+      marketScope,
       eventType,
-      QUICK_MIN_OVERLAP,
+      minOverlap,
       limit,
     ],
     queryFn: ({ signal }) =>
@@ -68,11 +77,12 @@ export function LinkageQuickPanel({
         target.code,
         {
           as_of: target.asOf,
-          days: QUICK_DAYS,
-          scope: 'HS,GEM2STAR',
+          days: lookbackDays,
+          scope: marketScope,
           event: eventType,
-          min_overlap: QUICK_MIN_OVERLAP,
+          min_overlap: minOverlap,
           limit,
+          order: 'overlap',
         },
         signal,
       ),
@@ -83,13 +93,13 @@ export function LinkageQuickPanel({
   const noEventFound = isNoEventError(analysisQuery.error)
 
   const overviewQuery = useQuery({
-    queryKey: ['limit-up-quick-coverage', target.asOf, QUICK_DAYS, 'HS,GEM2STAR'],
+    queryKey: ['limit-up-quick-coverage', target.asOf, lookbackDays, marketScope],
     queryFn: ({ signal }) =>
       api.limitUpOverview(
         {
           as_of: target.asOf,
-          days: QUICK_DAYS,
-          scope: 'HS,GEM2STAR',
+          days: lookbackDays,
+          scope: marketScope,
         },
         signal,
       ),
@@ -184,12 +194,12 @@ export function LinkageQuickPanel({
       >
         <header className="linkage-quick-head">
           <div>
-            <p className="linkage-eyebrow">历史强联动快查</p>
+            <p className="linkage-eyebrow">联动与股性快查</p>
             <h2 id="linkage-quick-title">
               {subjectName} <span>{target.code}</span>
             </h2>
             <p>
-              样本截止 {latestSampleDate || '等待交易日历'} · 回看 {QUICK_DAYS} 自然日
+              样本截止 {latestSampleDate || '等待交易日历'} · 回看 {lookbackDays} 自然日
               {coverage ? ` · 完整样本日 ${coverage.observed_days} 天` : ''} · 本地已归档事件
             </p>
             {coverage?.latest_date && target.asOf && coverage.latest_date < target.asOf && (
@@ -209,30 +219,59 @@ export function LinkageQuickPanel({
         </header>
 
         <div className="linkage-quick-controls">
-          <div className="linkage-quick-segmented" role="group" aria-label="共现事件">
-            {(Object.keys(QUICK_EVENT_LABELS) as LinkageEventType[]).map((eventOption) => (
-              <button
-                type="button"
-                key={eventOption}
-                className={eventType === eventOption ? 'active' : ''}
-                onClick={() => setEventType(eventOption)}
-              >
-                {QUICK_EVENT_LABELS[eventOption]}
-              </button>
-            ))}
-          </div>
-          <div className="linkage-quick-segmented" role="group" aria-label="关联股票数量">
-            {([5, 10] as const).map((limitOption) => (
-              <button
-                type="button"
-                key={limitOption}
-                className={limit === limitOption ? 'active' : ''}
-                onClick={() => setLimit(limitOption)}
-              >
-                Top {limitOption}
-              </button>
-            ))}
-          </div>
+          <label className="linkage-quick-control">
+            <span>回看</span>
+            <select value={lookbackDays} onChange={(selectEvent) => setLookbackDays(Number(selectEvent.target.value))}>
+              {QUICK_LOOKBACK_OPTIONS.map((daysOption) => <option value={daysOption} key={daysOption}>{daysOption} 自然日</option>)}
+            </select>
+          </label>
+          <label className="linkage-quick-control">
+            <span>范围</span>
+            <select value={marketScope} onChange={(selectEvent) => setMarketScope(selectEvent.target.value as LinkageContext['scope'])}>
+              {QUICK_SCOPE_OPTIONS.map((scopeOption) => <option value={scopeOption.value} key={scopeOption.value}>{scopeOption.label}</option>)}
+            </select>
+          </label>
+          <label className="linkage-quick-control">
+            <span>最少协同</span>
+            <select value={minOverlap} onChange={(selectEvent) => setMinOverlap(Number(selectEvent.target.value))}>
+              {QUICK_MIN_OVERLAP_OPTIONS.map((overlapOption) => <option value={overlapOption} key={overlapOption}>≥ {overlapOption} 次</option>)}
+            </select>
+          </label>
+          <label className="linkage-quick-control">
+            <span>展示</span>
+            <select value={limit} onChange={(selectEvent) => setLimit(Number(selectEvent.target.value) as 5 | 10)}>
+              <option value={5}>Top 5</option>
+              <option value={10}>Top 10</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            className="linkage-quick-reset"
+            title="恢复默认参数"
+            aria-label="恢复默认参数"
+            onClick={() => {
+              setLookbackDays(QUICK_DEFAULT_DAYS)
+              setMarketScope('HS,GEM2STAR')
+              setEventType('seal')
+              setMinOverlap(QUICK_DEFAULT_MIN_OVERLAP)
+              setLimit(5)
+            }}
+          >
+            <RotateCcw size={14} />
+          </button>
+        </div>
+
+        <div className="linkage-quick-events" role="group" aria-label="共现事件">
+          {(Object.keys(QUICK_EVENT_LABELS) as LinkageEventType[]).map((eventOption) => (
+            <button
+              type="button"
+              key={eventOption}
+              className={eventType === eventOption ? 'active' : ''}
+              onClick={() => setEventType(eventOption)}
+            >
+              {QUICK_EVENT_LABELS[eventOption]}
+            </button>
+          ))}
         </div>
 
         <div className="linkage-quick-body" aria-live="polite">
@@ -293,31 +332,40 @@ export function LinkageQuickPanel({
             <>
               <section className="linkage-quick-profile" aria-label="股性摘要">
                 <div>
-                  <span>封板率</span>
-                  <strong>{formatPercent(profile.seal_rate)}</strong>
+                  <span>涨停天数</span>
+                  <strong>{profile.seal_days}</strong>
                 </div>
                 <div>
                   <span>触板天数</span>
                   <strong>{profile.touch_days}</strong>
                 </div>
                 <div>
-                  <span>样本触板频率</span>
-                  <strong>{formatPercent(profile.event_frequency)}</strong>
+                  <span>封板率</span>
+                  <strong>{formatPercent(profile.seal_rate)}</strong>
+                </div>
+                <div>
+                  <span>炸板天数</span>
+                  <strong>{profile.broken_days}</strong>
                 </div>
                 <div>
                   <span>跌停天数</span>
                   <strong>{profile.down_days}</strong>
                 </div>
+                <div>
+                  <span>炸后收盘跌停</span>
+                  <strong>{profile.up_to_down_days}</strong>
+                </div>
               </section>
               <p className="linkage-quick-profile-note">
-                封板率与触板、开板指标只统计上涨侧；跌停天数独立统计，不进入封板率分母。
+                封板率 = 收盘涨停天数 / 触板天数；跌停独立统计，不进入封板率分母。样本触板频率{' '}
+                {formatPercent(profile.event_frequency)}，完整样本日 {analysisData.coverage.observed_days} 天。
               </p>
 
               <div className="linkage-quick-section-head">
                 <div>
-                  <strong>Top {limit} 历史强联动</strong>
+                  <strong>Top {limit} 联动股票</strong>
                   <span>
-                    {QUICK_EVENT_LABELS[eventType]} · 至少共同 {QUICK_MIN_OVERLAP} 次 · 符合条件{' '}
+                    {QUICK_EVENT_LABELS[eventType]} · 至少协同 {minOverlap} 次 · 按协同次数降序 · 符合条件{' '}
                     {analysisData.total_links} 只 · 完整样本日 {analysisData.coverage.observed_days} 天
                   </span>
                 </div>
@@ -329,8 +377,8 @@ export function LinkageQuickPanel({
               {links.length === 0 && (
                 <div className="linkage-quick-empty compact">
                   <Network size={20} />
-                  <strong>当前事件下没有符合条件的强联动股</strong>
-                  <span>可切换事件类型，或打开完整研究页降低最少共同次数。</span>
+                  <strong>当前事件下没有符合条件的联动股票</strong>
+                  <span>可切换事件类型，或降低“最少协同”次数后重试。</span>
                 </div>
               )}
 
@@ -347,7 +395,7 @@ export function LinkageQuickPanel({
                         )}
                       </div>
                       <div className="linkage-quick-link-metrics">
-                        <span>共同 {linkItem.overlap_days} 天</span>
+                        <span><strong>协同 {linkItem.overlap_days} 次</strong></span>
                         <span>P(B|A) {formatPercent(linkItem.conditional_probability)}</span>
                         <span>Lift {formatNumber(linkItem.lift, 2)}</span>
                       </div>

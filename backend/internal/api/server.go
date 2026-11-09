@@ -21,6 +21,7 @@ import (
 
 	"github.com/roiding/shadowflow/internal/focus"
 	"github.com/roiding/shadowflow/internal/graymarket"
+	"github.com/roiding/shadowflow/internal/limitup"
 	"github.com/roiding/shadowflow/internal/proxypool"
 	"github.com/roiding/shadowflow/internal/quote"
 	"github.com/roiding/shadowflow/internal/repository"
@@ -355,6 +356,11 @@ type boardStockQuote struct {
 	MainMoneyInflow   int64                `json:"main_money_inflow"`
 	DarkActivity      float64              `json:"dark_activity"`
 	DarkDataAvailable bool                 `json:"dark_data_available"`
+	LimitUpSealDays   int                  `json:"limit_up_seal_days"`
+	LimitUpTouchDays  int                  `json:"limit_up_touch_days"`
+	LimitUpBrokenDays int                  `json:"limit_up_broken_days"`
+	LimitUpDownDays   int                  `json:"limit_up_down_days"`
+	LimitUpStatsReady bool                 `json:"limit_up_stats_available"`
 }
 
 func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
@@ -402,6 +408,37 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 		"quote_source": "unavailable", "quote_available": false, "quote_status": "unavailable", "stale": false,
 		"quote_refreshing":    false,
 		"dark_data_available": darkCount > 0, "dark_data_count": darkCount,
+		"limit_up_stats_days": 365, "limit_up_stats_from_date": "", "limit_up_stats_as_of": asOf,
+		"limit_up_stats_first_date": "", "limit_up_stats_latest_date": "", "limit_up_stats_observed_days": 0,
+		"limit_up_stats_available": false, "limit_up_stats_scope": limitup.ScopeDefault,
+	}
+	statsScope := s.limitUpScope
+	if statsScope == "" {
+		statsScope = limitup.ScopeDefault
+	}
+	meta["limit_up_stats_scope"] = statsScope
+	statsByCode := make(map[string]limitup.StockLimitStats, len(relations))
+	statsAvailable := false
+	if statsReader, available := s.store.(limitup.StockLimitStatsReader); available && len(stockCodes) > 0 {
+		if asOfTime, parseErr := time.ParseInLocation("2006-01-02", asOf, s.location); parseErr == nil {
+			fromDate := asOfTime.AddDate(0, 0, 1-365).Format("2006-01-02")
+			statsWindow, statsErr := statsReader.ReadLimitUpStockStats(r.Context(), fromDate, asOf, statsScope, stockCodes)
+			if statsErr != nil {
+				s.logger.Error("read board limit-up statistics", "error", statsErr)
+				meta["limit_up_stats_error"] = "近365日涨停事件统计暂不可用"
+			} else {
+				statsAvailable = statsWindow.Available
+				meta["limit_up_stats_from_date"] = statsWindow.FromDate
+				meta["limit_up_stats_as_of"] = statsWindow.AsOf
+				meta["limit_up_stats_first_date"] = statsWindow.FirstDate
+				meta["limit_up_stats_latest_date"] = statsWindow.LatestDate
+				meta["limit_up_stats_observed_days"] = statsWindow.ObservedDays
+				meta["limit_up_stats_available"] = statsWindow.Available
+				for _, stats := range statsWindow.Stocks {
+					statsByCode[stats.Code] = stats
+				}
+			}
+		}
 	}
 	if s.quotes != nil && len(relations) > 0 {
 		snapshot, status := s.quotes.Snapshot(boardType, boardCode, relations)
@@ -433,6 +470,7 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 	for _, relation := range relations {
 		quote := quotes[relation.StockCode]
 		dark := darkByCode[relation.StockCode]
+		stats := statsByCode[relation.StockCode]
 		darkAvailable := dark.MoneyAvailable
 		turnover := quote.Turnover
 		if !quote.Available {
@@ -458,6 +496,9 @@ func (s *Server) boardQuotes(w http.ResponseWriter, r *http.Request) {
 			QuoteAvailable: quote.Available,
 			DarkRank:       dark.Rank, DarkMoney: dark.DarkMoney, MainMoneyInflow: dark.MainMoneyInflow,
 			DarkActivity: dark.DarkActivity, DarkDataAvailable: darkAvailable,
+			LimitUpSealDays: stats.SealDays, LimitUpTouchDays: stats.TouchDays,
+			LimitUpBrokenDays: stats.BrokenDays, LimitUpDownDays: stats.DownDays,
+			LimitUpStatsReady: statsAvailable,
 		})
 	}
 	writeJSON(w, http.StatusOK, envelope{Data: result, Meta: meta})

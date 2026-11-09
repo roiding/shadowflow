@@ -1057,7 +1057,7 @@ export interface paths {
         };
         /**
          * 个股涨跌停共现网络和股性
-         * @description 不按板块过滤，以完整采集日为共同分母。排序依据为热度折算共现，再按共同次数、代码。缺档不补零，常量序列的 phi 为 null。该结果是描述统计，不代表因果、收益相关或统计显著性。
+         * @description 不按板块过滤，以完整采集日为共同分母。默认排序依据为热度折算共现，再按共同次数、代码；order=overlap 时先按共同次数降序。缺档不补零，常量序列的 phi 为 null。该结果是描述统计，不代表因果、收益相关或统计显著性。
          */
         get: {
             parameters: {
@@ -1072,6 +1072,8 @@ export interface paths {
                     event?: "seal" | "touch" | "down";
                     min_overlap?: number;
                     limit?: number;
+                    /** @description heat 为热度折算共现排序；overlap 为原始共同事件次数降序，适合快速识别协同次数最高的股票。 */
+                    order?: "heat" | "overlap";
                 };
                 header?: never;
                 path: {
@@ -1417,6 +1419,32 @@ export interface components {
             /** @description 存在同日已采集的个股收盘资金数据 */
             dark_data_available?: boolean;
             dark_data_count?: number;
+            /** @constant */
+            limit_up_stats_days?: 365;
+            /** @enum {string} */
+            limit_up_stats_scope?: "HS,GEM2STAR" | "HS,GEM2STAR,ST,NEW";
+            /**
+             * Format: date
+             * @description 含截止日在内的365自然日窗口起点。
+             */
+            limit_up_stats_from_date?: string;
+            /** Format: date */
+            limit_up_stats_as_of?: string;
+            /**
+             * Format: date
+             * @description 窗口内最早完整事件日；无归档时为空。
+             */
+            limit_up_stats_first_date?: string;
+            /**
+             * Format: date
+             * @description 窗口内最近完整事件日；无归档时为空。
+             */
+            limit_up_stats_latest_date?: string;
+            /** @description 窗口内三池完整归档的交易日数。 */
+            limit_up_stats_observed_days?: number;
+            limit_up_stats_available?: boolean;
+            /** @description 事件统计读取失败时的非致命提示。 */
+            limit_up_stats_error?: string;
         };
         FocusCondition: {
             /** @enum {string} */
@@ -1615,6 +1643,16 @@ export interface components {
             /** @description 个股暗盘榜原始活跃度，口径为 abs(暗盘资金) / 成交额 */
             dark_activity: number;
             dark_data_available: boolean;
+            /** @description 近365自然日收盘涨停天数，按交易日去重。 */
+            limit_up_seal_days?: number;
+            /** @description 近365自然日曾触涨停天数（涨停池与炸板池并集）。 */
+            limit_up_touch_days?: number;
+            /** @description 近365自然日收盘炸板天数。 */
+            limit_up_broken_days?: number;
+            /** @description 近365自然日收盘跌停天数。 */
+            limit_up_down_days?: number;
+            /** @description 该板块的事件归档是否可读；false 时上述次数不表示真实零次。 */
+            limit_up_stats_available?: boolean;
         };
         CollectionRun: {
             run_id?: string;

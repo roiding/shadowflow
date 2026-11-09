@@ -445,7 +445,7 @@ paths:
   /api/v1/limit-up/stocks/{code}:
     get:
       summary: 个股涨跌停共现网络和股性
-      description: 不按板块过滤，以完整采集日为共同分母。排序依据为热度折算共现，再按共同次数、代码。缺档不补零，常量序列的 phi 为 null。该结果是描述统计，不代表因果、收益相关或统计显著性。
+      description: 不按板块过滤，以完整采集日为共同分母。默认排序依据为热度折算共现，再按共同次数、代码；order=overlap 时先按共同次数降序。缺档不补零，常量序列的 phi 为 null。该结果是描述统计，不代表因果、收益相关或统计显著性。
       parameters:
         - name: code
           in: path
@@ -464,6 +464,10 @@ paths:
         - name: limit
           in: query
           schema: { type: integer, minimum: 1, maximum: 100, default: 30 }
+        - name: order
+          in: query
+          schema: { type: string, enum: [heat, overlap], default: heat }
+          description: heat 为热度折算共现排序；overlap 为原始共同事件次数降序，适合快速识别协同次数最高的股票。
       responses:
         "200":
           description: 个股画像、共同事件日期、邻居与中心股票事件记录
@@ -853,6 +857,15 @@ components:
         quote_error: { type: string }
         dark_data_available: { type: boolean, description: 存在同日已采集的个股收盘资金数据 }
         dark_data_count: { type: integer }
+        limit_up_stats_days: { type: integer, const: 365 }
+        limit_up_stats_scope: { type: string, enum: ["HS,GEM2STAR", "HS,GEM2STAR,ST,NEW"] }
+        limit_up_stats_from_date: { type: string, format: date, description: 含截止日在内的365自然日窗口起点。 }
+        limit_up_stats_as_of: { type: string, format: date }
+        limit_up_stats_first_date: { type: string, format: date, description: 窗口内最早完整事件日；无归档时为空。 }
+        limit_up_stats_latest_date: { type: string, format: date, description: 窗口内最近完整事件日；无归档时为空。 }
+        limit_up_stats_observed_days: { type: integer, description: 窗口内三池完整归档的交易日数。 }
+        limit_up_stats_available: { type: boolean }
+        limit_up_stats_error: { type: string, description: 事件统计读取失败时的非致命提示。 }
     FocusCondition:
       type: object
       required: [field, operator, value]
@@ -1010,6 +1023,11 @@ components:
             main_money_inflow: { type: integer, format: int64 }
             dark_activity: { type: number, description: 个股暗盘榜原始活跃度，口径为 abs(暗盘资金) / 成交额 }
             dark_data_available: { type: boolean }
+            limit_up_seal_days: { type: integer, description: 近365自然日收盘涨停天数，按交易日去重。 }
+            limit_up_touch_days: { type: integer, description: 近365自然日曾触涨停天数（涨停池与炸板池并集）。 }
+            limit_up_broken_days: { type: integer, description: 近365自然日收盘炸板天数。 }
+            limit_up_down_days: { type: integer, description: 近365自然日收盘跌停天数。 }
+            limit_up_stats_available: { type: boolean, description: 该板块的事件归档是否可读；false 时上述次数不表示真实零次。 }
     CollectionRun:
       type: object
       properties:
