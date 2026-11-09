@@ -39,6 +39,7 @@ test('hint supports hover, keyboard focus, pinned tap and escape', () => {
     assert.ok(metricHintSource.includes(event), `missing ${event}`)
   }
   assert.ok(metricHintSource.includes("event.key === 'Escape'"))
+  assert.ok(metricHintSource.includes('event.stopPropagation()'))
   assert.ok(metricHintSource.includes('aria-describedby={open ? tooltipId : undefined}'))
   assert.ok(metricHintSource.includes('role="tooltip"'))
 })
@@ -69,7 +70,7 @@ test('sticky table headers outrank hints and constrained popovers stay usable', 
   const popoverBlock = linkageStyles.slice(popoverStart, linkageStyles.indexOf('\n}', popoverStart) + 2)
   assert.match(popoverBlock, /position:\s*fixed/)
   assert.match(popoverBlock, /z-index:\s*120/)
-  assert.match(popoverBlock, /max-width:\s*calc\(100vw - 16px\)/)
+  assert.match(popoverBlock, /max-width:\s*min\(360px, calc\(100vw - 16px\)\)/)
   assert.match(popoverBlock, /max-height:\s*60vh/)
   assert.match(popoverBlock, /white-space:\s*normal/)
   assert.ok(metricHintSource.includes('createPortal('))

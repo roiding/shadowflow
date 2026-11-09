@@ -113,6 +113,7 @@ export function MetricHint({
         onFocus={() => setFocused(true)}
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
+            event.stopPropagation()
             setPinned(false)
             setHovered(false)
             setFocused(false)

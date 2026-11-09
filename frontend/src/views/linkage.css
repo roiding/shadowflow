@@ -1930,7 +1930,7 @@
   flex-direction: column;
   gap: 5px;
   width: max-content;
-  max-width: calc(100vw - 16px);
+  max-width: min(360px, calc(100vw - 16px));
   max-height: 60vh;
   padding: 10px 12px;
   border: 1px solid #dbe4ef;
@@ -1962,6 +1962,8 @@
   color: var(--blue, #1d6ee8);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
+  max-width: 100%;
+  overflow-x: auto;
   white-space: nowrap;
 }
 
