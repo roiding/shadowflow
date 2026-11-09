@@ -193,6 +193,7 @@ func (s *Scheduler) enqueueReplayableJobs(ctx context.Context, now time.Time) {
 		{"end-of-day-concept", "16:30"}, {"end-of-day-concept", "16:35"}, {"end-of-day-concept", "16:40"},
 		{"end-of-day-stock", "16:30"}, {"end-of-day-stock", "16:35"}, {"end-of-day-stock", "16:40"},
 		{"end-of-day-events", "16:30"}, {"end-of-day-events", "16:35"}, {"end-of-day-events", "16:40"},
+		{"ths-focus", "16:45"},
 		{"ths-account-data", "16:50"}, {"ths-account-data", "17:10"}, {"ths-account-data", "17:50"},
 		{"stock-kline", "17:00"}, {"stock-kline", "17:30"}, {"stock-kline", "20:00"},
 	}
@@ -257,6 +258,7 @@ func (s *Scheduler) check(ctx context.Context, current time.Time) {
 		return
 	}
 	s.startEvents(ctx, current)
+	s.startThsFocus(ctx, current)
 	s.startThsAccountData(ctx, current)
 	s.checkPrewarm(ctx, current)
 	kind := jobKind(current)
@@ -293,6 +295,18 @@ func (s *Scheduler) startEvents(ctx context.Context, current time.Time) {
 	s.startJob(ctx, "end-of-day-events", current, current.Format("2006-01-02"))
 }
 
+// startThsFocus enqueues the standalone THS focus supplement after the
+// end-of-day event lane and before the stock-kline lane.
+func (s *Scheduler) startThsFocus(ctx context.Context, current time.Time) {
+	if current.Hour() != 16 || current.Minute() != 45 {
+		return
+	}
+	if !s.calendar.IsTradingDay(current) || !s.kindEnabled("ths-focus") {
+		return
+	}
+	s.startJob(ctx, "ths-focus", current, current.Format("2006-01-02"))
+}
+
 // startThsAccountData enqueues the restricted THS dataset job after the
 // end-of-day-events lane has produced the day's limit-up archive.
 func (s *Scheduler) startThsAccountData(ctx context.Context, current time.Time) {
@@ -310,6 +324,11 @@ func (s *Scheduler) startThsAccountData(ctx context.Context, current time.Time) 
 // restricted THS dataset (it requires an authenticated account source).
 func (s *Scheduler) thsAccountDataAvailable() bool {
 	_, ok := s.collector.(thsAccountCollector)
+	return ok
+}
+
+func (s *Scheduler) thsFocusAvailable() bool {
+	_, ok := s.collector.(thsFocusCollector)
 	return ok
 }
 
@@ -335,7 +354,7 @@ func (s *Scheduler) kindEnabled(kind string) bool {
 	if _, disabled := s.options.DisabledKinds[kind]; disabled {
 		return false
 	}
-	if kind == "end-of-day-events" || kind == "ths-account-data" {
+	if kind == "end-of-day-events" || kind == "ths-focus" || kind == "ths-account-data" {
 		if !s.options.LimitUpArchiveEnabled {
 			return false
 		}
@@ -344,6 +363,9 @@ func (s *Scheduler) kindEnabled(kind string) bool {
 		}
 		if kind == "ths-account-data" {
 			return s.options.THSAccountDataEnabled && s.thsAccountDataAvailable()
+		}
+		if kind == "ths-focus" {
+			return s.thsFocusAvailable()
 		}
 	}
 	if strings.HasPrefix(kind, "proxy-prewarm-") {
@@ -643,15 +665,20 @@ func (s *Scheduler) executeJob(ctx context.Context, job ScheduledJob, current ti
 		if !exists {
 			eventErr = events.CollectLimitUpEvents(ctx, runAt)
 		}
-		var focusErr error
-		if supplementary, available := s.collector.(thsFocusCollector); available {
-			complete, checkErr := supplementary.HasThsFocusArchive(ctx, tradeDate)
-			focusErr = checkErr
-			if checkErr == nil && !complete {
-				focusErr = supplementary.CollectThsFocus(ctx, runAt)
-			}
+		return eventErr
+	case "ths-focus":
+		supplementary, ok := s.collector.(thsFocusCollector)
+		if !ok {
+			return fmt.Errorf("THS focus collector is unavailable")
 		}
-		return errors.Join(eventErr, focusErr)
+		complete, err := supplementary.HasThsFocusArchive(ctx, tradeDate)
+		if err != nil {
+			return err
+		}
+		if complete {
+			return nil
+		}
+		return supplementary.CollectThsFocus(ctx, parseShanghaiTime(tradeDate, "16:45", current))
 	case "ths-account-data":
 		account, ok := s.collector.(thsAccountCollector)
 		if !ok {
@@ -846,6 +873,8 @@ func jobKind(current time.Time) string {
 		return "minute"
 	case current.Hour() == 16 && (current.Minute() == 30 || current.Minute() == 35 || current.Minute() == 40):
 		return "end-of-day"
+	case current.Hour() == 16 && current.Minute() == 45:
+		return "ths-focus"
 	case current.Hour() == 16 && current.Minute() == 50,
 		current.Hour() == 17 && (current.Minute() == 10 || current.Minute() == 50):
 		return "ths-account-data"

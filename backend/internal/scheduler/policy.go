@@ -30,6 +30,8 @@ func policyFor(kind string) jobPolicy {
 		return jobPolicy{timeout: 30 * time.Minute, maxAttempts: 5, retryAfter: time.Minute}
 	case "end-of-day-events":
 		return jobPolicy{timeout: 10 * time.Minute, maxAttempts: 3, retryAfter: time.Minute}
+	case "ths-focus":
+		return jobPolicy{timeout: 10 * time.Minute, maxAttempts: 3, retryAfter: time.Minute}
 	case "ths-account-data":
 		// The dataset fans out over the day's limit-up archive in batches of
 		// 20 identities; budget covers a full archive with slack for retries.

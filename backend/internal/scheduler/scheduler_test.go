@@ -53,7 +53,7 @@ func TestScheduledJobBoundaries(t *testing.T) {
 		"08:59": "", "09:00": "cleanup", "09:01": "", "09:15": "", "09:16": "", "09:30": "",
 		"09:05": "maintenance",
 		"15:05": "", "15:30": "", "16:30": "end-of-day", "16:35": "end-of-day", "16:40": "end-of-day", "16:41": "",
-		"16:50": "ths-account-data", "17:00": "stock-kline", "17:10": "ths-account-data", "17:50": "ths-account-data",
+		"16:45": "ths-focus", "16:50": "ths-account-data", "17:00": "stock-kline", "17:10": "ths-account-data", "17:50": "ths-account-data",
 		"17:30": "stock-kline", "20:00": "stock-kline", "20:01": "",
 	}
 	for value, expected := range tests {

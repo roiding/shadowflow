@@ -36,7 +36,7 @@
 
 主事件仍由三池决定。新增独立 `ths_focus_day` 保存题材、梯队、市场概览与两日晋级对照、抓取时间、原始响应和覆盖限制。三个事件池和补充数据分别发布，补充源失败不删除已经完整的事件归档。
 
-- 原 `end-of-day-events` 盘后任务会分别检查事件归档和补充归档，重试时跳过已完成分项。Compose中的事件开关按部署选择默认开启；直接运行Go程序时默认关闭，实际运行以配置为准。
+- `end-of-day-events` 只负责涨停事件；同花顺题材补充由独立的 `ths-focus` 盘后任务在 `16:45` 执行，重试时跳过已完成分项。Compose中的事件开关按部署选择默认开启；直接运行Go程序时默认关闭，实际运行以配置为准。
 - 手动补充入口：`collect -task ths-focus -date YYYY-MM-DD -scope HS,GEM2STAR`。不会自动回补全年。
 - `GET /api/v1/limit-up/focus?trade_date=YYYY-MM-DD&scope=HS,GEM2STAR` 只读本地。没有数据返回`not_collected`，不在打开页面时采集上游。
 - 股票联动页提供辅助题材、来源解释和梯队信息；连线继续使用同日事件共现，不因题材相同自动加边。
@@ -94,7 +94,7 @@ SHADOWFLOW_THS_AUTO_LOGIN=true go run ./cmd/collect -task ths-auth-status
 SHADOWFLOW_THS_AUTO_LOGIN=true go run ./cmd/collect -task ths-account-data -date 2026-11-06 -codes 33:002578,17:603381
 ```
 
-线上部署不再需要挂载凭据或会话文件：凭据由 compose 环境变量提供，登录态保存在 `/data/shadowflow.db` 中并跨进程共享。每日盘后调度：`end-of-day-events`（涨停事件+同花顺题材补充）在 `16:30/16:35/16:40`，受限账号数据 `ths-account-data` 在 `16:50/17:10/17:50` 自动按当日涨停名单分批（每批≤20只）采集入库。不要把真实密码放进 Git 或聊天记录；compose 环境变量的可见范围由部署方自行评估。
+线上部署不再需要挂载凭据或会话文件：凭据由 compose 环境变量提供，登录态保存在 `/data/shadowflow.db` 中并跨进程共享。每日盘后调度：`end-of-day-events`（涨停事件）在 `16:30/16:35/16:40`，同花顺题材补充 `ths-focus` 在 `16:45`，受限账号数据 `ths-account-data` 在 `16:50/17:10/17:50` 自动按当日涨停名单分批（每批≤20只）采集入库；个股五分钟 K 从 `17:00` 起，排在上述同花顺任务之后。不要把真实密码放进 Git 或聊天记录；compose 环境变量的可见范围由部署方自行评估。
 
 账号调度只在服务实际接入账号数据源后启用，并继续尊重事件开关、`ths-account-data`及父级`end-of-day`的禁用配置。未配置凭据/浏览器或未开启自动登录时，不排队也不领取旧账号任务，公开事件归档仍可独立运行。上表的自动登录默认值指Compose配置；直接运行Go程序时默认`false`。
 
