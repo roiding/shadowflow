@@ -462,6 +462,19 @@ func TestCollectStockArchiveUsesDarktradeUniverse(t *testing.T) {
 	}
 }
 
+func TestEligibleStockRecordsExcludeBSEBeforeMoneyFetch(t *testing.T) {
+	at := time.Date(2026, 8, 14, 15, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	records := []graymarket.RankRecord{
+		{TradeDate: "2026-08-14", SnapshotAt: at, RankType: graymarket.RankStock, Market: 0, Code: "920071", QuoteAvailable: true},
+		{TradeDate: "2026-08-14", SnapshotAt: at, RankType: graymarket.RankStock, Market: 0, Code: "002565", QuoteAvailable: true},
+		{TradeDate: "2026-08-14", SnapshotAt: at, RankType: graymarket.RankStock, Market: 1, Code: "600000", QuoteAvailable: false},
+	}
+	eligible := eligibleStockRecords(records)
+	if len(eligible) != 1 || eligible[0].Code != "002565" {
+		t.Fatalf("BSE and unavailable quotes must not enter the money fetch universe: %+v", eligible)
+	}
+}
+
 func TestCollectStockKlinesUsesPersistedEligibleStocks(t *testing.T) {
 	location := time.FixedZone("Asia/Shanghai", 8*60*60)
 	closeAt := time.Date(2026, 8, 14, 15, 0, 0, 0, location)

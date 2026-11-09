@@ -775,7 +775,7 @@ func (s *Service) collectStockArchive(ctx context.Context, requestedDate string,
 func eligibleStockRecords(records []graymarket.RankRecord) []graymarket.RankRecord {
 	eligible := make([]graymarket.RankRecord, 0, len(records))
 	for _, record := range records {
-		if record.QuoteAvailable {
+		if record.QuoteAvailable && !(record.Market == 0 && strings.HasPrefix(record.Code, "92")) {
 			eligible = append(eligible, record)
 		}
 	}
