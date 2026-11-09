@@ -7,6 +7,7 @@ import { TokenGate } from './TokenGate'
 import { BoardCombobox } from './BoardCombobox'
 import type { BoardQuoteMeta, BoardStockQuote, FocusResult, FocusScanRequest, RankRecord, RankType, SystemStatus } from './api/types'
 import { continuousMetricValues } from './continuousSeries'
+import { firstArchivedDayInRange, latestArchivedDay, shiftISODate } from './historyWindow'
 import { chartMetricValue, metricAvailable } from './chartMetrics'
 import { compareControlRanks, compareMonitorRecords, controlRankChangeDisplay, controlRate, derivedBoardTurnover } from './monitorRankings'
 import type { ControlRankChange, MonitorSortKey } from './monitorRankings'
@@ -263,8 +264,7 @@ function App() {
   const [qualityDate, setQualityDate] = useState('')
   const [qualityScope, setQualityScope] = useState('')
   const [focusRequest, setFocusRequest] = useState<FocusScanRequest>(DEFAULT_FOCUS_REQUEST)
-  const [historyFrom, setHistoryFrom] = useState(localDate(new Date(Date.now() - 30 * 86400000)))
-  const [historyTo, setHistoryTo] = useState(localDate())
+  const [historyFrom, setHistoryFrom] = useState('')
   const [historyDate, setHistoryDate] = useState('')
   const [historyAt, setHistoryAt] = useState('15:00')
   const [historyCode, setHistoryCode] = useState('')
@@ -331,22 +331,27 @@ function App() {
     refetchInterval: (query) => quoteRefreshInterval(query.state.data?.meta, query.state.status === 'error'),
     refetchIntervalInBackground: false,
   })
+  const historyToday = localDate()
+  const historyArchiveStart = shiftISODate(historyToday, -365)
+  const historyArchiveDaysQuery = useQuery({
+    queryKey: ['history-archive-days', historyArchiveStart, historyToday],
+    queryFn: async ({ signal }) => (await api.tradingDays(historyArchiveStart, historyToday, signal)).data ?? [],
+    enabled: !authRequired && view === 'history',
+    staleTime: 5 * 60_000,
+  })
+  const historyArchiveDays = useMemo(() => historyArchiveDaysQuery.data ?? [], [historyArchiveDaysQuery.data])
+  const latestArchivedHistoryDay = latestArchivedDay(historyArchiveDays)
   const trendQuery = useQuery({
-    queryKey: ['trend', boardType, historyCode, historyFrom, historyTo],
-    queryFn: async ({ signal }) => (await api.trend(boardType, historyCode, historyFrom, historyTo, undefined, signal)).data ?? [],
-    enabled: !authRequired && Boolean(historyCode && historyFrom && historyTo) && view === 'history',
+    queryKey: ['trend', boardType, historyCode, historyFrom, historyDate],
+    queryFn: async ({ signal }) => (await api.trend(boardType, historyCode, historyFrom, historyDate, undefined, signal)).data ?? [],
+    enabled: !authRequired && Boolean(historyCode && historyFrom && historyDate && historyFrom <= historyDate) && view === 'history',
   })
   const historyRanksQuery = useQuery({
     queryKey: ['history-ranks', boardType, historyDate, historyAt],
     queryFn: async ({ signal }) => (await api.rankAt(boardType, historyDate, historyAt, signal)).data ?? [],
     enabled: !authRequired && view === 'history' && Boolean(historyDate),
   })
-  const historyTradingDaysQuery = useQuery({
-    queryKey: ['history-trading-days', historyFrom, historyTo],
-    queryFn: async ({ signal }) => (await api.tradingDays(historyFrom, historyTo, signal)).data ?? [],
-    enabled: !authRequired && view === 'history' && Boolean(historyFrom && historyTo),
-  })
-  const historyStartDate = historyTradingDaysQuery.data?.[0] ?? ''
+  const historyStartDate = firstArchivedDayInRange(historyArchiveDays, historyFrom, historyDate)
   const historyStartRanksQuery = useQuery({
     queryKey: ['history-start-ranks', boardType, historyStartDate, historyAt],
     queryFn: async ({ signal }) => (await api.rankAt(boardType, historyStartDate, historyAt, signal)).data ?? [],
@@ -387,9 +392,18 @@ function App() {
     if (!latestTradingDay) return
     setStockDate((current) => current || latestTradingDay)
     setQualityDate((current) => current || latestTradingDay)
-    setHistoryDate((current) => current || latestTradingDay)
     setFocusRequest((current) => current.as_of ? current : { ...current, as_of: latestTradingDay })
   }, [latestTradingDay])
+
+  useEffect(() => {
+    if (!latestArchivedHistoryDay || historyDate) return
+    setHistoryDate(latestArchivedHistoryDay)
+    setHistoryFrom((current) => current || firstArchivedDayInRange(historyArchiveDays, shiftISODate(latestArchivedHistoryDay, -30), latestArchivedHistoryDay) || latestArchivedHistoryDay)
+  }, [latestArchivedHistoryDay, historyDate, historyArchiveDays])
+
+  useEffect(() => {
+    if (historyFrom && historyDate && historyFrom > historyDate) setHistoryFrom(historyDate)
+  }, [historyFrom, historyDate])
 
   useEffect(() => {
     if (initialState.linkageContext.asOf) {
@@ -648,7 +662,7 @@ function App() {
         </div>
       )}
       {view === 'linkage' && <LinkageView authRequired={authRequired} context={linkageContext} onContextChange={setLinkageContext} onBackToSource={linkageSourceView ? returnToSourcePage : undefined} onOpenQuality={() => { if (linkageContext.asOf) { setQualityDate(linkageContext.asOf); setQualityScope(linkageContext.scope); } navigateToView('quality', { source: linkageSourceView }); }} />}
-      {view === 'history' && <HistoryView boardType={boardType} setBoardType={setBoardType} selected={historicalSelected} historyRanks={historyRanksQuery.data ?? []} historyCode={historyCode} setHistoryCode={setHistoryCode} historyDate={historyDate} setHistoryDate={setHistoryDate} historyAt={historyAt} setHistoryAt={setHistoryAt} metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} series={trendQuery.data ?? []} loading={trendQuery.isLoading || historyRanksQuery.isLoading} error={trendQuery.error ?? historyRanksQuery.error} from={historyFrom} to={historyTo} setFrom={setHistoryFrom} setTo={setHistoryTo} />}
+      {view === 'history' && <HistoryView boardType={boardType} setBoardType={setBoardType} selected={historicalSelected} historyRanks={historyRanksQuery.data ?? []} historyCode={historyCode} setHistoryCode={setHistoryCode} historyDate={historyDate} setHistoryDate={setHistoryDate} historyAt={historyAt} setHistoryAt={setHistoryAt} metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} series={trendQuery.data ?? []} loading={trendQuery.isLoading || historyRanksQuery.isLoading || historyArchiveDaysQuery.isLoading} error={trendQuery.error ?? historyRanksQuery.error ?? historyArchiveDaysQuery.error} from={historyFrom} setFrom={setHistoryFrom} to={historyDate} historyDays={historyArchiveDays} latestHistoryDay={latestArchivedHistoryDay} historyDaysLoading={historyArchiveDaysQuery.isLoading} />}
       {view === 'stocks' && <StockView date={stockDate} setDate={(value) => { setStockDate(value); setStockPage(1) }} records={stockRecords} total={stockMeta?.total ?? 0} query={stockQuery} setQuery={setStockQuery} sort={stockSort} onSort={onStockSort} page={stockPage} pages={stockMeta?.pages ?? 0} setPage={setStockPage} loading={stocksQuery.isLoading || stocksQuery.isFetching} error={stocksQuery.error} linkageAsOf={stockLinkageAsOf} onQuickLinkage={(stock, event) => openQuickLinkage(stock, 'stocks', event)} />}
       {view === 'quality' && <QualityView date={qualityDate} setDate={setQualityDate} limitUpScope={qualityScope} setLimitUpScope={setQualityScope} quality={(qualityQuery.data?.data ?? []).filter((item): item is NonNullable<typeof item> & { rank_type: BoardType } => item.rank_type !== 'stock')} stockQuality={qualityQuery.data?.meta?.stock_archive} manifest={qualityQuery.data?.meta?.archive_manifest} runs={runsQuery.data ?? []} loading={qualityQuery.isLoading || runsQuery.isLoading} error={qualityQuery.error ?? runsQuery.error} />}
     </main>
@@ -974,8 +988,15 @@ function TrendStats({ selected, series, status }: { selected?: RankRecord; serie
   return <div className="stat-strip"><div><span>当前排名</span><strong>{selected?.rank ?? '--'}</strong></div><div><span>暗盘资金</span><strong className={signedClass(selected?.dark_money ?? 0)}>{selected ? formatMoney(selected.dark_money) : '--'}</strong></div><div><span>日内变化</span><strong className={signedClass(delta)}>{series.length ? `${delta > 0 ? '+' : ''}${formatMoney(delta)}` : '--'}</strong></div><div><span>有效点数</span><strong>{series.length || '--'}<small> / {expectedPoints}</small></strong></div><div><span>市场状态</span><strong>{status?.market_status === 'open' ? '交易中' : status?.market_status === 'lunch_break' ? '午休' : '已收市'}</strong></div></div>
 }
 
-function HistoryView({ boardType, setBoardType, selected, historyRanks, historyCode, setHistoryCode, historyDate, setHistoryDate, historyAt, setHistoryAt, metric, setMetric, secondaryMetric, setSecondaryMetric, series, loading, error, from, to, setFrom, setTo }: { boardType: BoardType; setBoardType: (value: BoardType) => void; selected?: RankRecord; historyRanks: RankRecord[]; historyCode: string; setHistoryCode: (value: string) => void; historyDate: string; setHistoryDate: (value: string) => void; historyAt: string; setHistoryAt: (value: string) => void; metric: Metric; setMetric: (value: Metric) => void; secondaryMetric: Metric | 'none'; setSecondaryMetric: (value: Metric | 'none') => void; series: RankRecord[]; loading: boolean; error: Error | null; from: string; to: string; setFrom: (value: string) => void; setTo: (value: string) => void }) {
+function HistoryView({ boardType, setBoardType, selected, historyRanks, historyCode, setHistoryCode, historyDate, setHistoryDate, historyAt, setHistoryAt, metric, setMetric, secondaryMetric, setSecondaryMetric, series, loading, error, from, setFrom, to, historyDays, latestHistoryDay, historyDaysLoading }: { boardType: BoardType; setBoardType: (value: BoardType) => void; selected?: RankRecord; historyRanks: RankRecord[]; historyCode: string; setHistoryCode: (value: string) => void; historyDate: string; setHistoryDate: (value: string) => void; historyAt: string; setHistoryAt: (value: string) => void; metric: Metric; setMetric: (value: Metric) => void; secondaryMetric: Metric | 'none'; setSecondaryMetric: (value: Metric | 'none') => void; series: RankRecord[]; loading: boolean; error: Error | null; from: string; setFrom: (value: string) => void; to: string; historyDays: string[]; latestHistoryDay: string; historyDaysLoading: boolean }) {
   const historyOptions = useMemo(() => historyRanks.map((item) => ({ value: item.code, name: item.name, code: item.code })), [historyRanks])
+  const archivedDayCount = historyDays.filter((day) => day >= from && day <= historyDate).length
+  const unavailableDay = Boolean(historyDate && latestHistoryDay && historyDate > latestHistoryDay)
+  const emptyNotice = unavailableDay
+    ? `所选 ${historyDate} 没有已归档的历史数据，最近可用交易日为 ${latestHistoryDay}。`
+    : historyDate && !historyRanks.length && !loading
+      ? `${historyDate} 没有完整的${historyAt === '15:00' ? '日终榜单' : ` ${historyAt} 快照`}；请改选有数据的交易日。`
+      : ''
 	useEffect(() => {
 		if (!RESEARCH_METRICS.includes(metric)) setMetric('dark_money')
 		if (secondaryMetric !== 'none' && !RESEARCH_METRICS.includes(secondaryMetric)) {
@@ -984,7 +1005,7 @@ function HistoryView({ boardType, setBoardType, selected, historyRanks, historyC
 			setSecondaryMetric(RESEARCH_METRICS.find((item) => item !== metric) ?? 'none')
 		}
 	}, [metric, secondaryMetric, setMetric, setSecondaryMetric])
-	  return <section className="history-page panel-section"><div className="section-heading"><div><p className="eyebrow">研究数据</p><h1>板块趋势回看</h1><span className="subline">多日累计资金以前一交易日收盘为基准连续增减；单日原值保留在 tooltip 中。</span></div><div className="section-actions"><ExportLink href={selected ? api.exportURL(boardType, selected.code, from, to) : undefined}><Download size={15} />研究序列</ExportLink><ExportLink href={api.dailyCloseExportURL(historyDate)}><Download size={15} />日终三榜</ExportLink></div></div><div className="history-controls"><label>榜单<select value={boardType} onChange={(event) => setBoardType(event.target.value as BoardType)}><option value="industry">行业</option><option value="concept">概念</option></select></label><label>交易日<input type="date" value={historyDate} onChange={(event) => setHistoryDate(event.target.value)} /></label><label>快照<select value={historyAt} onChange={(event) => setHistoryAt(event.target.value)}><option value="09:35">09:35</option><option value="10:00">10:00</option><option value="11:30">11:30</option><option value="13:05">13:05</option><option value="14:00">14:00</option><option value="15:00">15:00（日终截面）</option></select></label><label>板块<BoardCombobox value={historyCode} options={historyOptions} onChange={setHistoryCode} /></label><label>趋势起点<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>趋势终点<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><span className="history-hint">{selected ? `${historyAt === '15:00' ? '日终截面' : '资金点'}排名 ${selected.rank > 0 ? selected.rank : '--'} · ${selected.money_available ? formatMoney(selected.dark_money) : '--'}` : '请选择已归档交易日和板块'}</span></div>{error && <InlineNotice kind="error" text="历史数据读取失败。" />}<MetricToolbar metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} metrics={RESEARCH_METRICS} /><Chart series={series} metric={metric} secondaryMetric={secondaryMetric} loading={loading} emptyLabel="暂无历史研究数据" /><div className="history-summary"><span><CalendarDays size={15} />{from} 至 {to}</span><span>{series.length} 个盘后修订五分钟资金点</span></div></section>
+	  return <section className="history-page panel-section"><div className="section-heading"><div><p className="eyebrow">研究数据</p><h1>板块趋势回看</h1><span className="subline">交易日决定查看哪一天的榜单和日终快照；趋势起点决定资金曲线向前回看多远，趋势终点固定跟随所选交易日。</span></div><div className="section-actions"><ExportLink href={selected ? api.exportURL(boardType, selected.code, from, to) : undefined}><Download size={15} />研究序列</ExportLink><ExportLink href={api.dailyCloseExportURL(historyDate)}><Download size={15} />日终三榜</ExportLink></div></div><div className="history-controls"><label>榜单<select value={boardType} onChange={(event) => setBoardType(event.target.value as BoardType)}><option value="industry">行业</option><option value="concept">概念</option></select></label><label>交易日<select value={historyDate} onChange={(event) => setHistoryDate(event.target.value)} disabled={historyDaysLoading || !latestHistoryDay} aria-label="交易日">{historyDays.slice().reverse().map((day) => <option key={day} value={day}>{day}{day === latestHistoryDay ? '（最近归档）' : ''}</option>)}</select></label><label>快照<select value={historyAt} onChange={(event) => setHistoryAt(event.target.value)}><option value="09:35">09:35</option><option value="10:00">10:00</option><option value="11:30">11:30</option><option value="13:05">13:05</option><option value="14:00">14:00</option><option value="15:00">15:00（日终截面）</option></select></label><label>板块<BoardCombobox value={historyCode} options={historyOptions} onChange={setHistoryCode} placeholder={loading ? '正在读取历史榜单' : '输入名称、代码或拼音筛选'} /></label><label>趋势起点<input type="date" value={from} max={historyDate} onChange={(event) => setFrom(event.target.value)} aria-label="趋势起点" /></label><span className="history-hint">{selected ? `${historyAt === '15:00' ? '日终截面' : '资金点'}排名 ${selected.rank > 0 ? selected.rank : '--'} · ${selected.money_available ? formatMoney(selected.dark_money) : '--'} · 覆盖 ${archivedDayCount} 个交易日` : latestHistoryDay ? `最近归档交易日 ${latestHistoryDay}${unavailableDay ? `，当前所选日期无数据` : '，正在读取榜单'}` : historyDaysLoading ? '正在读取归档交易日' : '暂无可回看的完整归档'}</span></div>{error && <InlineNotice kind="error" text="历史数据读取失败。" />}{emptyNotice && <InlineNotice kind="warning" text={emptyNotice} />}{latestHistoryDay && historyDate < latestHistoryDay && historyAt === '15:00' && <InlineNotice kind="info" text={`当前查看历史日期 ${historyDate}；如需最新完整日终快照，请选择 ${latestHistoryDay}。`} />}<MetricToolbar metric={metric} setMetric={setMetric} secondaryMetric={secondaryMetric} setSecondaryMetric={setSecondaryMetric} metrics={RESEARCH_METRICS} /><Chart series={series} metric={metric} secondaryMetric={secondaryMetric} loading={loading} emptyLabel={unavailableDay ? '所选日期没有归档数据' : '暂无历史研究数据'} /><div className="history-summary"><span><CalendarDays size={15} />趋势 {from} 至 {to}</span><span>{series.length} 个盘后修订五分钟资金点</span></div></section>
 }
 
 function StockView({ date, setDate, records, total, query, setQuery, sort, onSort, page, pages, setPage, loading, error, linkageAsOf, onQuickLinkage }: { date: string; setDate: (value: string) => void; records: RankRecord[]; total: number; query: string; setQuery: (value: string) => void; sort: SortState<keyof RankRecord>; onSort: (key: keyof RankRecord) => void; page: number; pages: number; setPage: (value: number) => void; loading: boolean; error: Error | null; linkageAsOf: string; onQuickLinkage: (stock: { code: string; name: string }, event: React.MouseEvent<HTMLButtonElement>) => void }) {
