@@ -255,6 +255,14 @@ func TestAnalyzeTodayRanksNonSealedCoSealCandidates(t *testing.T) {
 	if len(network.Candidates) != 2 {
 		t.Fatalf("expected two non-sealed candidates, got %+v", network.Candidates)
 	}
+	if network.MainlineThemes == nil {
+		t.Fatal("mainline themes must be a non-nil empty array when no theme lookup is configured")
+	}
+	for _, candidate := range network.Candidates {
+		if candidate.Themes == nil {
+			t.Fatalf("candidate themes must be a non-nil empty array: %+v", candidate)
+		}
+	}
 	first := network.Candidates[0]
 	if first.Code != "000010" || first.EffectiveLinks != 2 || first.SealDays != 3 ||
 		first.StrongestCoreCode != "000001" || first.StrongestOverlapDays != 3 ||
@@ -275,5 +283,98 @@ func TestAnalyzeTodayRanksNonSealedCoSealCandidates(t *testing.T) {
 	})
 	if err != nil || len(limited.Candidates) != 1 || limited.Candidates[0].Code != "000010" {
 		t.Fatalf("candidate limit was not applied: %+v %v", limited.Candidates, err)
+	}
+}
+
+func TestAnalyzeTodayAppliesMainlineThemeAlignment(t *testing.T) {
+	snapshot := IntradaySnapshot{
+		TradeDate: "2026-11-09", Source: SourceTHS, Scope: ScopeDefault, SealedCount: 2,
+		FetchedAt: time.Date(2026, 11, 9, 10, 42, 0, 0, Shanghai()), TradeStatus: "open",
+		Events: []Event{
+			todayEvent("2026-11-09", "000001", PoolSealed),
+			todayEvent("2026-11-09", "000002", PoolSealed),
+		},
+	}
+	history := Dataset{
+		Days: []Day{
+			{TradeDate: "2026-11-06"}, {TradeDate: "2026-11-05"},
+			{TradeDate: "2026-11-04"}, {TradeDate: "2026-11-03"},
+		},
+		Events: []Event{
+			todayEvent("2026-11-06", "000001", PoolSealed), todayEvent("2026-11-06", "000002", PoolSealed),
+			todayEvent("2026-11-06", "000010", PoolSealed), todayEvent("2026-11-06", "000020", PoolSealed),
+			todayEvent("2026-11-05", "000001", PoolSealed), todayEvent("2026-11-05", "000002", PoolSealed),
+			todayEvent("2026-11-05", "000010", PoolSealed),
+			todayEvent("2026-11-04", "000001", PoolSealed), todayEvent("2026-11-04", "000010", PoolSealed),
+			todayEvent("2026-11-03", "000020", PoolSealed),
+		},
+	}
+	themes := map[string][]ThemeRef{
+		"000001": {
+			{Code: "BK0001", Name: "主线行业", Type: "industry"},
+			{Code: "BK9001", Name: "融资融券", Type: "concept"},
+			{Code: "BK9002", Name: "昨日高振幅", Type: "concept"},
+		},
+		"000002": {
+			{Code: "BK0001", Name: "主线行业", Type: "industry"},
+			{Code: "BK9001", Name: "融资融券", Type: "concept"},
+		},
+		"000010": {
+			{Code: "BK0001", Name: "主线行业", Type: "industry"},
+			{Code: "BK9002", Name: "昨日高振幅", Type: "concept"},
+		},
+		"000020": {{Code: "BK0002", Name: "旁支行业", Type: "industry"}},
+	}
+	network, err := AnalyzeToday(context.Background(), TodayInput{
+		Snapshot: snapshot, History: history, HistoryFrom: "2025-11-10",
+		LookbackDays: 365, MinOverlap: 1, TopCores: 2, CandidateLimit: 5,
+		ThemeLookup: func(codes []string) (map[string][]ThemeRef, error) {
+			result := make(map[string][]ThemeRef, len(codes))
+			for _, code := range codes {
+				result[code] = themes[code]
+			}
+			return result, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(network.MainlineThemes) != 1 || network.MainlineThemes[0].Code != "BK0001" ||
+		network.MainlineThemes[0].MemberCount != 2 || network.MainlineThemes[0].Weight != 1 {
+		t.Fatalf("unexpected mainline themes: %+v", network.MainlineThemes)
+	}
+	byCode := make(map[string]TodayCandidate, len(network.Candidates))
+	for _, candidate := range network.Candidates {
+		byCode[candidate.Code] = candidate
+	}
+	themed := byCode["000010"]
+	if themed.ThemeScore != 1 || len(themed.Themes) != 1 || themed.Themes[0].Code != "BK0001" {
+		t.Fatalf("mainline candidate did not receive theme alignment: %+v", themed)
+	}
+	unthemed := byCode["000020"]
+	if unthemed.ThemeScore != 0 || len(unthemed.Themes) != 0 {
+		t.Fatalf("non-mainline candidate received theme alignment: %+v", unthemed)
+	}
+	if themed.Score <= unthemed.Score {
+		t.Fatalf("theme alignment did not lift the mainline candidate: %+v", network.Candidates)
+	}
+}
+
+func TestIsThematicConceptFiltersBroadMarketAttributes(t *testing.T) {
+	for _, name := range []string{
+		"融资融券", "昨日高振幅", "连续亏损", "QFII重仓", "2026中报预增",
+		"专精特新", "央国企改革", "小盘股", "标准普尔", "历史新高",
+	} {
+		if isThematicConcept(name) {
+			t.Errorf("broad concept %q was treated as thematic", name)
+		}
+	}
+	for _, name := range []string{
+		"机器人概念", "人形机器人", "新能源车", "华为概念", "人工智能",
+		"AI眼镜", "影视概念", "短剧互动游戏", "券商概念", "参股保险",
+	} {
+		if !isThematicConcept(name) {
+			t.Errorf("thematic concept %q was filtered out", name)
+		}
 	}
 }

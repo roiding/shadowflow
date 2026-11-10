@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/roiding/shadowflow/internal/graymarket"
 	"github.com/roiding/shadowflow/internal/limitup"
 )
 
@@ -152,6 +154,25 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 	result, err := limitup.AnalyzeToday(request.Context(), limitup.TodayInput{
 		Snapshot: snapshot, History: history, HistoryFrom: historyFrom,
 		LookbackDays: days, MinOverlap: minOverlap, TopCores: top, CandidateLimit: candidates,
+		ThemeLookup: func(codes []string) (map[string][]limitup.ThemeRef, error) {
+			reader, ok := server.store.(interface {
+				StockBoardRelationsBatch(context.Context, []string, string) ([]graymarket.StockBoardRelation, error)
+			})
+			if !ok {
+				return nil, nil
+			}
+			relations, err := reader.StockBoardRelationsBatch(request.Context(), codes, snapshot.TradeDate)
+			if err != nil {
+				return nil, err
+			}
+			byCode := make(map[string][]limitup.ThemeRef, len(codes))
+			for _, relation := range relations {
+				byCode[relation.StockCode] = append(byCode[relation.StockCode], limitup.ThemeRef{
+					Code: relation.BoardCode, Name: relation.BoardName, Type: string(relation.BoardType),
+				})
+			}
+			return byCode, nil
+		},
 	})
 	if err != nil {
 		server.limitUpError(response, err)

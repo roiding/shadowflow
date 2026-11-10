@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -279,6 +280,54 @@ WHERE trade_date=? AND status='success')`, tradeDate).Scan(&exists)
 
 func (s *Store) StockBoardRelations(ctx context.Context, stockCode, asOf string) ([]graymarket.StockBoardRelation, error) {
 	return s.relationsAsOf(ctx, asOf, "stock_code=?", []any{stockCode}, "board_type,source_order,board_code")
+}
+
+func (s *Store) StockBoardRelationsBatch(ctx context.Context, stockCodes []string, asOf string) ([]graymarket.StockBoardRelation, error) {
+	const batchSize = 400
+	unique := make([]string, 0, len(stockCodes))
+	seen := make(map[string]struct{}, len(stockCodes))
+	for _, code := range stockCodes {
+		if code == "" {
+			continue
+		}
+		if _, exists := seen[code]; exists {
+			continue
+		}
+		seen[code] = struct{}{}
+		unique = append(unique, code)
+	}
+	if len(unique) == 0 {
+		return []graymarket.StockBoardRelation{}, nil
+	}
+	result := make([]graymarket.StockBoardRelation, 0, len(unique)*2)
+	for start := 0; start < len(unique); start += batchSize {
+		end := min(start+batchSize, len(unique))
+		chunk := unique[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, 0, len(chunk))
+		for _, code := range chunk {
+			args = append(args, code)
+		}
+		relations, err := s.relationsAsOf(ctx, asOf, "stock_code IN ("+placeholders+")",
+			args, "stock_code,board_type,source_order,board_code")
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, relations...)
+	}
+	sort.SliceStable(result, func(left, right int) bool {
+		if result[left].StockCode != result[right].StockCode {
+			return result[left].StockCode < result[right].StockCode
+		}
+		if result[left].BoardType != result[right].BoardType {
+			return result[left].BoardType < result[right].BoardType
+		}
+		if result[left].SourceOrder != result[right].SourceOrder {
+			return result[left].SourceOrder < result[right].SourceOrder
+		}
+		return result[left].BoardCode < result[right].BoardCode
+	})
+	return result, nil
 }
 
 func (s *Store) BoardStockRelations(ctx context.Context, boardType graymarket.BoardType, boardCode, asOf string) ([]graymarket.StockBoardRelation, error) {

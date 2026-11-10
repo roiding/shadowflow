@@ -55,6 +55,8 @@ test('today core explains its score and historical relationship metrics', () => 
     'Phi 相关系数',
     '热度折算共现',
     '样本充分度',
+    '题材贴合度',
+    '今日主线',
   ]) {
     assert.ok(todayCoreSource.includes(`<MetricHint label="${label}"`), `missing today-core hint for ${label}`)
   }

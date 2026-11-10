@@ -1535,6 +1535,24 @@ export interface components {
             /** @description 与今日封板成员历史共现、但今日未封板的待选股，按综合分降序。 */
             candidates: components["schemas"]["LimitUpTodayCandidate"][];
             candidate_limit: number;
+            /** @description 今日封板成员集中度最高的行业/概念板块，作为题材主线；每个板块至少 2 只今日封板成员。融资融券、昨日高振幅、连续亏损等宽泛风格或状态标签不参与。 */
+            mainline_themes: components["schemas"]["LimitUpMainlineTheme"][];
+        };
+        LimitUpThemeRef: {
+            code: string;
+            name: string;
+            /** @enum {string} */
+            type: "industry" | "concept";
+            /** @description 该主线板块的归一化权重。 */
+            weight: number;
+        };
+        LimitUpMainlineTheme: {
+            code: string;
+            name: string;
+            /** @enum {string} */
+            type: "industry" | "concept";
+            weight: number;
+            member_count: number;
         };
         LimitUpCandidateLink: {
             core_code: string;
@@ -1550,7 +1568,7 @@ export interface components {
             code: string;
             name: string;
             market_type: string;
-            /** @description 综合分 = 100 × (60% 主线关联度 + 15% 覆盖度 + 25% 最近度)。 */
+            /** @description 基础分按 100 × (60% 主线关联度 + 15% 覆盖度 + 25% 最近度) 计算后压缩到 75%，再加 25% 题材贴合度。 */
             score: number;
             /** @description 主线关联度：与最强 3 个今日成员的核心度加权 φ 均值，并按共现次数收缩稀疏样本；已扣除候选股自身封板频率。 */
             strength: number;
@@ -1571,6 +1589,10 @@ export interface components {
             strongest_overlap_days: number;
             strongest_heat: number;
             strongest_phi: number;
+            /** @description 题材贴合度：匹配到的今日主线板块权重之和，上限 1；宽泛风格或状态标签不参与，未匹配为 0。 */
+            theme_score: number;
+            /** @description 命中的今日主线板块，按权重降序，最多 5 个。 */
+            themes: components["schemas"]["LimitUpThemeRef"][];
             top_links: components["schemas"]["LimitUpCandidateLink"][];
         };
         BoardQuoteMeta: {

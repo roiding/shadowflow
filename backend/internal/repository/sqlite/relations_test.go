@@ -122,6 +122,43 @@ func TestRelationHistoryTracksNewBoardsAndIndustryChanges(t *testing.T) {
 	}
 }
 
+func TestStockBoardRelationsBatchChunksLargeInputs(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	tradeDate := "2026-08-20"
+	const count = 450
+	baseline := make([]graymarket.StockBoardRelation, 0, count)
+	codes := make([]string, 0, count+1)
+	for index := 0; index < count; index++ {
+		code := fmt.Sprintf("%06d", index)
+		baseline = append(baseline, testRelation(code, "stock", "BK001", "概念", graymarket.BoardConcept, 1))
+		codes = append(codes, code)
+	}
+	codes = append(codes, codes[0])
+	applyTestRelationRun(t, store, ctx, "batch-baseline", tradeDate, baseline)
+
+	relations, err := store.StockBoardRelationsBatch(ctx, codes, tradeDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(relations) != count {
+		t.Fatalf("batch query lost or duplicated relations: got %d, want %d", len(relations), count)
+	}
+	for index, relation := range relations {
+		if relation.StockCode != fmt.Sprintf("%06d", index) {
+			t.Fatalf("batch result is not sorted and deduplicated at %d: %+v", index, relation)
+		}
+	}
+	empty, err := store.StockBoardRelationsBatch(ctx, nil, tradeDate)
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("empty batch must return a non-nil empty slice: records=%+v err=%v", empty, err)
+	}
+}
+
 func TestFailedRelationRunDoesNotChangeCurrentState(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {

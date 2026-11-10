@@ -280,6 +280,21 @@ type CandidateLink struct {
 	LastSharedDate string  `json:"last_shared_date"`
 }
 
+type ThemeRef struct {
+	Code   string  `json:"code"`
+	Name   string  `json:"name"`
+	Type   string  `json:"type"`
+	Weight float64 `json:"weight"`
+}
+
+type MainlineTheme struct {
+	Code        string  `json:"code"`
+	Name        string  `json:"name"`
+	Type        string  `json:"type"`
+	Weight      float64 `json:"weight"`
+	MemberCount int     `json:"member_count"`
+}
+
 type TodayCandidate struct {
 	Code                 string          `json:"code"`
 	Name                 string          `json:"name"`
@@ -297,6 +312,8 @@ type TodayCandidate struct {
 	StrongestOverlapDays int             `json:"strongest_overlap_days"`
 	StrongestHeat        float64         `json:"strongest_heat"`
 	StrongestPhi         float64         `json:"strongest_phi"`
+	ThemeScore           float64         `json:"theme_score"`
+	Themes               []ThemeRef      `json:"themes"`
 	TopLinks             []CandidateLink `json:"top_links"`
 }
 
@@ -316,4 +333,5 @@ type TodayNetwork struct {
 	Cores            []TodayCore      `json:"cores"`
 	Candidates       []TodayCandidate `json:"candidates"`
 	CandidateLimit   int              `json:"candidate_limit"`
+	MainlineThemes   []MainlineTheme  `json:"mainline_themes"`
 }

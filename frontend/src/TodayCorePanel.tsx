@@ -371,8 +371,16 @@ function CandidateTable({
               <th>
                 <span className="linkage-column-label">
                   综合分
-                  <MetricHint label="外溢综合分" formula="100 × (60% 主线关联度 + 15% 覆盖度 + 25% 最近度)">
-                    主线关联度用 φ 相关系数衡量候选股是否专门跟随今日核心，已扣除候选股与今日成员各自的封板频率，并按共现次数收缩稀疏样本；再按今日核心度加权，取最强 3 条关系的均值。覆盖度是关联到的今日封板成员数占今日封板总数的比例；最近度按最后一次同日封板距今天数衰减。
+                  <MetricHint label="外溢综合分" formula="75% × 基础分 + 25% 题材贴合度">
+                    基础分按 60% 主线关联度、15% 覆盖度、25% 最近度计算，再压缩到 75%；主线关联度用 φ 相关系数衡量候选股是否专门跟随今日核心，已扣除候选股与今日成员各自的封板频率，并按共现次数收缩稀疏样本，取最强 3 条关系的均值。题材贴合度是候选股命中的今日主线行业/概念板块权重之和，上限 1。
+                  </MetricHint>
+                </span>
+              </th>
+              <th>
+                <span className="linkage-column-label">
+                  题材贴合
+                  <MetricHint label="题材贴合度" formula="Σ 命中主线权重，上限 1">
+                    今日主线取今日封板成员中至少 2 只共同所属的行业/概念板块，按成员核心度加权，行业/概念各取前 5；融资融券、昨日高振幅、连续亏损等宽泛风格或状态标签不参与。候选命中主线板块的归一化权重之和即题材贴合度，未命中为 0。
                   </MetricHint>
                 </span>
               </th>
@@ -392,6 +400,14 @@ function CandidateTable({
                   <small>{candidate.code}</small>
                 </td>
                 <td><strong>{formatNumber(candidate.score, 1)}</strong></td>
+                <td>
+                  <strong>{formatNumber((candidate.theme_score ?? 0) * 100, 0)}</strong>
+                  <small>
+                    {(candidate.themes ?? []).length > 0
+                      ? (candidate.themes ?? []).slice(0, 2).map((theme) => theme.name).join('、')
+                      : '未匹配主线'}
+                  </small>
+                </td>
                 <td>
                   <strong>{candidate.strongest_core_name || '--'}</strong>
                   <small>
@@ -663,6 +679,27 @@ export function TodayCorePanel({
                   <small>至少 1 条 ≥{network.min_overlap} 次关系</small>
                 </div>
               </div>
+
+              {(network.mainline_themes ?? []).length > 0 && (
+                <div className="today-core-mainlines">
+                  <span className="today-core-mainlines-label">
+                    今日主线
+                    <MetricHint label="今日主线" formula="至少 2 只今日封板成员共同所属，按核心度加权">
+                      今日封板成员中至少 2 只共同所属的行业/概念板块；行业与概念各取加权成员数前 5。融资融券、昨日高振幅、连续亏损等宽泛风格或状态标签会被剔除，避免几乎所有股票都命中主线。
+                    </MetricHint>
+                  </span>
+                  {(network.mainline_themes ?? []).map((theme) => (
+                    <span
+                      key={`${theme.type}:${theme.code}`}
+                      className={`today-core-mainline ${theme.type}`}
+                      title={`${theme.type === 'industry' ? '行业' : '概念'} · 权重 ${formatNumber(theme.weight, 2)}`}
+                    >
+                      {theme.name}
+                      <small>{theme.member_count} 只封板</small>
+                    </span>
+                  ))}
+                </div>
+              )}
 
               <div className="today-core-caveat">
                 <Info size={14} />

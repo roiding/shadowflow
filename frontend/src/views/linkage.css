@@ -1275,6 +1275,48 @@
   font-size: 9px;
 }
 
+.today-core-mainlines {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0 2px;
+}
+
+.today-core-mainlines > span:first-child {
+  color: var(--muted, #7b8795);
+  font-size: 9px;
+}
+
+.today-core-mainlines-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.today-core-mainline {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 3px 7px;
+  border: 1px solid #d8c8f3;
+  border-radius: 999px;
+  background: #faf7ff;
+  color: #5b3fa0;
+  font-size: 9px;
+}
+
+.today-core-mainline.concept {
+  border-color: #cfe3f7;
+  background: #f5faff;
+  color: #2f6fa8;
+}
+
+.today-core-mainline small {
+  color: var(--muted, #7b8795);
+  font-size: 8px;
+}
+
 .today-core-candidate-table td strong {
   display: block;
   font-size: 10px;
@@ -1285,6 +1327,10 @@
   margin-top: 2px;
   color: var(--muted, #7b8795);
   font-size: 9px;
+}
+
+.today-core-candidate-table {
+  min-width: 920px;
 }
 
 .today-core-candidate-open {
