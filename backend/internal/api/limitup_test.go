@@ -220,6 +220,10 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 	if len(result.Data.Cores) != 2 || result.Data.Cores[0].Member.Code != "000001" {
 		testingT.Fatalf("unexpected today's core ranking: %+v", result.Data.Cores)
 	}
+	if len(result.Data.Candidates) != 1 || result.Data.Candidates[0].Code != "000003" ||
+		result.Data.Candidates[0].EffectiveLinks != 2 {
+		testingT.Fatalf("unexpected non-sealed candidates: %+v", result.Data.Candidates)
+	}
 }
 
 func TestLimitUpTodayNetworkRequiresIntradaySource(testingT *testing.T) {

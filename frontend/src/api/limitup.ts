@@ -84,4 +84,5 @@ export interface LimitUpTodayQuery {
   scope?: string
   min_overlap?: number
   top?: number
+  candidates?: number
 }

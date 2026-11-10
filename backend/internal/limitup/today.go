@@ -16,6 +16,12 @@ const (
 	TodayCoreWeightStrength  = 0.45
 	TodayCoreWeightCoverage  = 0.30
 	TodayCoreWeightNeighbors = 0.25
+
+	// TodayCandidateWeight* rank stocks that are not sealed today by how
+	// strongly they co-sealed with today's core members in the lookback window.
+	TodayCandidateWeightStrength = 0.55
+	TodayCandidateWeightCoverage = 0.30
+	TodayCandidateWeightRecency  = 0.15
 )
 
 type todayPair struct {
@@ -25,12 +31,13 @@ type todayPair struct {
 }
 
 type TodayInput struct {
-	Snapshot     IntradaySnapshot
-	History      Dataset
-	HistoryFrom  string
-	LookbackDays int
-	MinOverlap   int
-	TopCores     int
+	Snapshot       IntradaySnapshot
+	History        Dataset
+	HistoryFrom    string
+	LookbackDays   int
+	MinOverlap     int
+	TopCores       int
+	CandidateLimit int
 }
 
 // AnalyzeToday computes a relationship graph whose nodes are the stocks sealed
@@ -56,6 +63,9 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 	}
 	if input.LookbackDays < 1 {
 		input.LookbackDays = 365
+	}
+	if input.CandidateLimit < 1 {
+		input.CandidateLimit = 20
 	}
 	historyDays := append([]Day(nil), input.History.Days...)
 	sort.Slice(historyDays, func(left, right int) bool {
@@ -122,7 +132,30 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 		brokenDates[code] = make(map[string]struct{})
 		downDates[code] = make(map[string]struct{})
 	}
+	allSealDates := make(map[string]map[string]struct{})
+	allTouchDates := make(map[string]map[string]struct{})
+	addDate := func(container map[string]map[string]struct{}, code, date string) {
+		if container[code] == nil {
+			container[code] = make(map[string]struct{})
+		}
+		container[code][date] = struct{}{}
+	}
+	lastSealDate := make(map[string]string)
+	stockMeta := make(map[string]Event)
 	for _, event := range input.History.Events {
+		if current, ok := stockMeta[event.Code]; !ok || event.TradeDate >= current.TradeDate {
+			stockMeta[event.Code] = event
+		}
+		switch event.Pool {
+		case PoolSealed:
+			addDate(allSealDates, event.Code, event.TradeDate)
+			addDate(allTouchDates, event.Code, event.TradeDate)
+			if event.TradeDate > lastSealDate[event.Code] {
+				lastSealDate[event.Code] = event.TradeDate
+			}
+		case PoolBroken:
+			addDate(allTouchDates, event.Code, event.TradeDate)
+		}
 		if _, ok := members[event.Code]; !ok {
 			continue
 		}
@@ -155,6 +188,7 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 	sort.Strings(dates)
 
 	pairs := make(map[string]*todayPair)
+	candidatePairs := make(map[string]*todayPair)
 	addPair := func(left, right string, heat float64, date string) {
 		key := left + ":" + right
 		if left > right {
@@ -169,25 +203,47 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 		pair.heat += heat
 		pair.dates = append(pair.dates, date)
 	}
+	addCandidatePair := func(candidate, member string, heat float64, date string) {
+		key := candidate + ":" + member
+		pair := candidatePairs[key]
+		if pair == nil {
+			pair = &todayPair{}
+			candidatePairs[key] = pair
+		}
+		pair.overlap++
+		pair.heat += heat
+		pair.dates = append(pair.dates, date)
+	}
 	for _, date := range dates {
 		fullSealedCount := len(sealedByDate[date])
 		peers := make([]string, 0, fullSealedCount)
+		others := make([]string, 0, fullSealedCount)
 		for code := range sealedByDate[date] {
 			if _, member := members[code]; member {
 				peers = append(peers, code)
+			} else {
+				others = append(others, code)
 			}
 		}
-		if len(peers) < 2 {
+		if len(peers) == 0 {
 			continue
 		}
 		sort.Strings(peers)
+		sort.Strings(others)
 		// The graph is induced by today's members, but the heat denominator
 		// stays on the complete archived sealed pool so scores remain
 		// comparable with the stock linkage view.
 		weight := 1 / float64(max(1, fullSealedCount-1))
-		for i := 0; i < len(peers); i++ {
-			for j := i + 1; j < len(peers); j++ {
-				addPair(peers[i], peers[j], weight, date)
+		if len(peers) >= 2 {
+			for i := 0; i < len(peers); i++ {
+				for j := i + 1; j < len(peers); j++ {
+					addPair(peers[i], peers[j], weight, date)
+				}
+			}
+		}
+		for _, candidate := range others {
+			for _, member := range peers {
+				addCandidatePair(candidate, member, weight, date)
 			}
 		}
 	}
@@ -285,6 +341,12 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 			TodayCoreWeightCoverage*member.Coverage +
 			TodayCoreWeightNeighbors*normalise(neighborStrength, maxNeighborStrength))
 	}
+	coreByCode := make(map[string]float64, len(membersOut))
+	for _, member := range membersOut {
+		coreByCode[member.Code] = member.CoreScore
+	}
+	candidatesOut := buildTodayCandidates(candidatePairs, members, coreByCode, len(membersOut),
+		input.MinOverlap, input.CandidateLimit, parsedDate, allSealDates, allTouchDates, lastSealDate, stockMeta)
 	sort.SliceStable(membersOut, func(left, right int) bool {
 		if membersOut[left].CoreScore != membersOut[right].CoreScore {
 			return membersOut[left].CoreScore > membersOut[right].CoreScore
@@ -330,7 +392,152 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 		LookbackDays: input.LookbackDays, Scope: input.Snapshot.Scope, MinOverlap: input.MinOverlap,
 		Coverage: coverage, HistoryAvailable: len(historyDays) > 0,
 		Members: membersOut, Cores: cores,
+		Candidates: candidatesOut, CandidateLimit: input.CandidateLimit,
 	}, ctx.Err()
+}
+
+type candidateRawLink struct {
+	memberCode string
+	overlap    int
+	heat       float64
+	dates      []string
+}
+
+// buildTodayCandidates ranks stocks that are not sealed today by their
+// historical co-sealing with today's members. A member's core score weights
+// each edge so links to today's leading stocks count more than links to the
+// tail of the sealed pool.
+func buildTodayCandidates(
+	candidatePairs map[string]*todayPair,
+	members map[string]Event,
+	coreByCode map[string]float64,
+	sealedCount, minOverlap, limit int,
+	snapshotDate time.Time,
+	allSealDates, allTouchDates map[string]map[string]struct{},
+	lastSealDate map[string]string,
+	stockMeta map[string]Event,
+) []TodayCandidate {
+	byCandidate := make(map[string][]candidateRawLink)
+	for key, pair := range candidatePairs {
+		if pair.overlap < minOverlap {
+			continue
+		}
+		separator := strings.IndexByte(key, ':')
+		if separator < 0 {
+			continue
+		}
+		candidate, member := key[:separator], key[separator+1:]
+		if _, isMember := members[candidate]; isMember {
+			continue
+		}
+		if _, isMember := members[member]; !isMember {
+			continue
+		}
+		byCandidate[candidate] = append(byCandidate[candidate], candidateRawLink{
+			memberCode: member, overlap: pair.overlap, heat: pair.heat,
+			dates: append([]string(nil), pair.dates...),
+		})
+	}
+	type scoredCandidate struct {
+		candidate  TodayCandidate
+		strength   float64
+		lastShared string
+	}
+	items := make([]scoredCandidate, 0, len(byCandidate))
+	maxStrength := 0.0
+	for code, links := range byCandidate {
+		sort.Slice(links, func(left, right int) bool {
+			if links[left].heat != links[right].heat {
+				return links[left].heat > links[right].heat
+			}
+			if links[left].overlap != links[right].overlap {
+				return links[left].overlap > links[right].overlap
+			}
+			return links[left].memberCode < links[right].memberCode
+		})
+		strength := 0.0
+		lastShared := ""
+		for _, link := range links {
+			// Every sealed member is a valid seed: the base weight keeps
+			// candidates linked only to isolated members from disappearing,
+			// while the core score doubles the weight of today's leaders.
+			strength += (1 + coreByCode[link.memberCode]/100) * link.heat
+			for _, date := range link.dates {
+				if date > lastShared {
+					lastShared = date
+				}
+			}
+		}
+		if strength <= 0 || lastShared == "" {
+			continue
+		}
+		maxStrength = math.Max(maxStrength, strength)
+		topLinks := make([]CandidateLink, 0, min(5, len(links)))
+		for _, link := range links {
+			if len(topLinks) >= 5 {
+				break
+			}
+			linkLast := ""
+			for _, date := range link.dates {
+				if date > linkLast {
+					linkLast = date
+				}
+			}
+			member := members[link.memberCode]
+			topLinks = append(topLinks, CandidateLink{
+				CoreCode: link.memberCode, CoreName: member.Name,
+				OverlapDays: link.overlap, Heat: link.heat, LastSharedDate: linkLast,
+			})
+		}
+		meta := stockMeta[code]
+		items = append(items, scoredCandidate{
+			strength: strength, lastShared: lastShared,
+			candidate: TodayCandidate{
+				Code: code, Name: meta.Name, MarketType: meta.MarketType,
+				Strength: strength, EffectiveLinks: len(links),
+				Coverage: float64(len(links)) / float64(max(1, sealedCount)),
+				SealDays: len(allSealDates[code]), TouchDays: len(allTouchDates[code]),
+				LastSealDate: lastSealDate[code], LastSharedDate: lastShared,
+				StrongestCoreCode: topLinks[0].CoreCode, StrongestCoreName: topLinks[0].CoreName,
+				StrongestOverlapDays: topLinks[0].OverlapDays, StrongestHeat: topLinks[0].Heat,
+				TopLinks: topLinks,
+			},
+		})
+	}
+	for index := range items {
+		item := &items[index]
+		recency := 0.0
+		if parsed, err := time.ParseInLocation("2006-01-02", item.lastShared, Shanghai()); err == nil {
+			days := snapshotDate.Sub(parsed).Hours() / 24
+			if days < 0 {
+				days = 0
+			}
+			recency = 1 / (1 + days/30)
+		}
+		item.candidate.Score = 100 * (TodayCandidateWeightStrength*normalise(item.strength, maxStrength) +
+			TodayCandidateWeightCoverage*item.candidate.Coverage +
+			TodayCandidateWeightRecency*recency)
+	}
+	sort.SliceStable(items, func(left, right int) bool {
+		if items[left].candidate.Score != items[right].candidate.Score {
+			return items[left].candidate.Score > items[right].candidate.Score
+		}
+		if items[left].strength != items[right].strength {
+			return items[left].strength > items[right].strength
+		}
+		if items[left].candidate.EffectiveLinks != items[right].candidate.EffectiveLinks {
+			return items[left].candidate.EffectiveLinks > items[right].candidate.EffectiveLinks
+		}
+		return items[left].candidate.Code < items[right].candidate.Code
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	result := make([]TodayCandidate, 0, len(items))
+	for _, item := range items {
+		result = append(result, item.candidate)
+	}
+	return result
 }
 
 func normalise(value, maximum float64) float64 {

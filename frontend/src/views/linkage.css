@@ -1236,6 +1236,75 @@
   line-height: 1.5;
 }
 
+.today-core-candidates {
+  margin-top: 14px;
+  padding: 10px 12px 8px;
+  border: 1px solid var(--line, #e4e8ed);
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.today-core-candidates-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line, #e4e8ed);
+}
+
+.today-core-candidates-head h3 {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: var(--ink, #17212f);
+  font-size: 12px;
+}
+
+.today-core-candidates-head p {
+  margin: 3px 0 0;
+  color: var(--muted, #7b8795);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.today-core-candidates-head > span {
+  flex: none;
+  color: var(--muted, #7b8795);
+  font-size: 9px;
+}
+
+.today-core-candidate-table td strong {
+  display: block;
+  font-size: 10px;
+}
+
+.today-core-candidate-table td small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted, #7b8795);
+  font-size: 9px;
+}
+
+.today-core-candidate-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 6px;
+  border: 1px solid var(--line, #e4e8ed);
+  border-radius: 5px;
+  background: #ffffff;
+  color: var(--ink, #17212f);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.today-core-candidate-open:hover {
+  border-color: #b9a7dd;
+  color: #6f4fb3;
+}
+
 .today-core-roster {
   margin-top: 14px;
   border: 1px solid var(--line, #e4e8ed);

@@ -107,6 +107,8 @@ func TestAnalyzeTodayDeduplicatesRepeatedHistoryEvents(t *testing.T) {
 			todayEvent("2026-11-06", "000001", PoolSealed),
 			todayEvent("2026-11-06", "000001", PoolSealed),
 			todayEvent("2026-11-06", "000002", PoolSealed),
+			todayEvent("2026-11-06", "000010", PoolSealed),
+			todayEvent("2026-11-06", "000010", PoolSealed),
 			todayEvent("2026-11-05", "000001", PoolSealed),
 			todayEvent("2026-11-05", "000002", PoolSealed),
 		},
@@ -129,8 +131,13 @@ func TestAnalyzeTodayDeduplicatesRepeatedHistoryEvents(t *testing.T) {
 	}
 	link := network.Cores[0].Links[0]
 	if link.OverlapDays != 2 || link.AnchorDays != 2 || link.PeerDays != 2 ||
-		link.ConditionalProbability != 1 || link.Lift != 1 || link.HeatAdjustedOverlap != 2 {
+		link.ConditionalProbability != 1 || link.Lift != 1 || link.HeatAdjustedOverlap != 1.5 {
 		t.Fatalf("duplicate dates must not inflate link metrics: %+v", link)
+	}
+	if len(network.Candidates) != 1 || network.Candidates[0].Code != "000010" ||
+		network.Candidates[0].SealDays != 1 || network.Candidates[0].EffectiveLinks != 2 ||
+		network.Candidates[0].Strength <= 0 {
+		t.Fatalf("duplicate events must not inflate candidate history: %+v", network.Candidates)
 	}
 }
 
@@ -209,5 +216,62 @@ func TestAnalyzeTodayNeighborStrengthUsesMembersByCode(t *testing.T) {
 	}
 	if network.Cores[1].Member.CoreScore <= network.Cores[2].Member.CoreScore {
 		t.Fatalf("outer nodes must retain distinct stable scores: %+v", network.Cores)
+	}
+}
+
+func TestAnalyzeTodayRanksNonSealedCoSealCandidates(t *testing.T) {
+	snapshot := IntradaySnapshot{
+		TradeDate: "2026-11-09", Source: SourceTHS, Scope: ScopeDefault, SealedCount: 2,
+		FetchedAt: time.Date(2026, 11, 9, 10, 42, 0, 0, Shanghai()), TradeStatus: "open",
+		Events: []Event{
+			todayEvent("2026-11-09", "000001", PoolSealed),
+			todayEvent("2026-11-09", "000002", PoolSealed),
+		},
+	}
+	history := Dataset{
+		Days: []Day{
+			{TradeDate: "2026-11-06"}, {TradeDate: "2026-11-05"},
+			{TradeDate: "2026-11-04"}, {TradeDate: "2026-11-03"},
+		},
+		Events: []Event{
+			todayEvent("2026-11-06", "000001", PoolSealed), todayEvent("2026-11-06", "000002", PoolSealed),
+			todayEvent("2026-11-06", "000010", PoolSealed), todayEvent("2026-11-06", "000020", PoolSealed),
+			todayEvent("2026-11-05", "000001", PoolSealed), todayEvent("2026-11-05", "000002", PoolSealed),
+			todayEvent("2026-11-05", "000010", PoolSealed),
+			todayEvent("2026-11-04", "000001", PoolSealed), todayEvent("2026-11-04", "000010", PoolSealed),
+			todayEvent("2026-11-04", "000020", PoolSealed),
+			todayEvent("2026-11-03", "000030", PoolSealed),
+		},
+	}
+	network, err := AnalyzeToday(context.Background(), TodayInput{
+		Snapshot: snapshot, History: history, HistoryFrom: "2025-11-10",
+		LookbackDays: 365, MinOverlap: 1, TopCores: 2, CandidateLimit: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(network.Candidates) != 2 {
+		t.Fatalf("expected two non-sealed candidates, got %+v", network.Candidates)
+	}
+	first := network.Candidates[0]
+	if first.Code != "000010" || first.EffectiveLinks != 2 || first.SealDays != 3 ||
+		first.StrongestCoreCode != "000001" || first.StrongestOverlapDays != 3 ||
+		len(first.TopLinks) != 2 || first.TopLinks[0].CoreCode != "000001" || first.TopLinks[0].OverlapDays != 3 {
+		t.Fatalf("unexpected strongest candidate: %+v", first)
+	}
+	if first.Score <= network.Candidates[1].Score || first.Score <= 0 || first.Score > 100 {
+		t.Fatalf("candidate scores must be ordered and bounded: %+v", network.Candidates)
+	}
+	for _, candidate := range network.Candidates {
+		if candidate.Code == "000001" || candidate.Code == "000002" {
+			t.Fatalf("a sealed member leaked into candidates: %+v", candidate)
+		}
+	}
+	limited, err := AnalyzeToday(context.Background(), TodayInput{
+		Snapshot: snapshot, History: history, HistoryFrom: "2025-11-10",
+		LookbackDays: 365, MinOverlap: 1, TopCores: 2, CandidateLimit: 1,
+	})
+	if err != nil || len(limited.Candidates) != 1 || limited.Candidates[0].Code != "000010" {
+		t.Fatalf("candidate limit was not applied: %+v %v", limited.Candidates, err)
 	}
 }

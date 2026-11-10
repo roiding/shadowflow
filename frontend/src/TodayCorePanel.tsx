@@ -35,6 +35,7 @@ import './views/linkage.css'
 const CORE_TOP_OPTIONS = [3, 5, 8, 10] as const
 const CORE_LOOKBACK_OPTIONS = [30, 90, 180, 365] as const
 const CORE_MIN_OVERLAP_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const
+const CORE_CANDIDATE_OPTIONS = [10, 20, 30, 50] as const
 const CORE_LINK_PAGE_SIZE = 8
 
 function formatSnapshotTime(value: string | undefined): string {
@@ -341,6 +342,91 @@ function MemberRoster({ network }: { network: LimitUpTodayNetwork }) {
   )
 }
 
+function CandidateTable({
+  network,
+  onOpenStock,
+}: {
+  network: LimitUpTodayNetwork
+  onOpenStock: (code: string, name: string) => void
+}) {
+  const candidates = network.candidates ?? []
+  if (candidates.length === 0) {
+    return null
+  }
+  return (
+    <section className="today-core-candidates" aria-labelledby="today-core-candidates-title">
+      <div className="today-core-candidates-head">
+        <div>
+          <h3 id="today-core-candidates-title"><Network size={15} />外溢待选</h3>
+          <p>历史上与今日封板成员同日封板、但今日未封板的股票；按核心度加权共现排序，不是推荐。</p>
+        </div>
+        <span>{candidates.length} 只</span>
+      </div>
+      <div className="linkage-table-wrap">
+        <table className="linkage-table today-core-table today-core-candidate-table" aria-label="今日核心外溢待选股">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>股票</th>
+              <th>
+                <span className="linkage-column-label">
+                  综合分
+                  <MetricHint label="外溢综合分" formula="100 × (55% 关联强度 + 30% 覆盖度 + 15% 最近度)">
+                    关联强度按今日核心度加权；覆盖度是关联到的今日封板成员数占今日封板总数的比例；最近度按最后一次同日封板距今天数衰减。
+                  </MetricHint>
+                </span>
+              </th>
+              <th>最强关联核心</th>
+              <th>关联覆盖</th>
+              <th>历史股性</th>
+              <th>最近共现</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {candidates.map((candidate, index) => (
+              <tr key={candidate.code}>
+                <td>{index + 1}</td>
+                <td>
+                  <strong>{candidate.name}</strong>
+                  <small>{candidate.code}</small>
+                </td>
+                <td><strong>{formatNumber(candidate.score, 1)}</strong></td>
+                <td>
+                  <strong>{candidate.strongest_core_name || '--'}</strong>
+                  <small>共同 {candidate.strongest_overlap_days} 次</small>
+                </td>
+                <td>
+                  <strong>{candidate.effective_links} 只</strong>
+                  <small>{formatPercent(candidate.coverage, 0)}</small>
+                </td>
+                <td>
+                  <strong>封 {candidate.seal_days} · 触 {candidate.touch_days}</strong>
+                  <small>{candidate.last_seal_date || '--'}</small>
+                </td>
+                <td>{candidate.last_shared_date || '--'}</td>
+                <td>
+                  <button
+                    type="button"
+                    className="today-core-candidate-open"
+                    onClick={() => onOpenStock(candidate.code, candidate.name)}
+                  >
+                    联动
+                    <ArrowUpRight size={12} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="today-core-card-note">
+        外溢待选只表示历史共现关系，不包含今日实时涨幅或资金确认；请结合盘口自行判断。
+      </div>
+    </section>
+  )
+}
+
 export function TodayCorePanel({
   authRequired,
   defaultDays,
@@ -364,6 +450,7 @@ export function TodayCorePanel({
   const [marketScope, setMarketScope] = useState<LimitUpTodayNetwork['scope']>(defaultScope)
   const [minOverlap, setMinOverlap] = useState(1)
   const [top, setTop] = useState<number>(5)
+  const [candidateLimit, setCandidateLimit] = useState<number>(20)
   const [selectedCode, setSelectedCode] = useState('')
   const panelRef = useRef<HTMLElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
@@ -418,9 +505,10 @@ export function TodayCorePanel({
     scope: marketScope,
     min_overlap: minOverlap,
     top,
+    candidates: candidateLimit,
   }
   const networkQuery = useQuery({
-    queryKey: ['limit-up-today-network', lookbackDays, marketScope, minOverlap, top],
+    queryKey: ['limit-up-today-network', lookbackDays, marketScope, minOverlap, top, candidateLimit],
     queryFn: ({ signal }) => api.limitUpTodayNetwork(queryParams, signal),
     enabled: !authRequired,
     retry: false,
@@ -494,6 +582,12 @@ export function TodayCorePanel({
             <span>核心数</span>
             <select value={top} onChange={(event) => setTop(Number(event.target.value))}>
               {CORE_TOP_OPTIONS.map((option) => <option key={option} value={option}>Top {option}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>待选数</span>
+            <select value={candidateLimit} onChange={(event) => setCandidateLimit(Number(event.target.value))}>
+              {CORE_CANDIDATE_OPTIONS.map((option) => <option key={option} value={option}>Top {option}</option>)}
             </select>
           </label>
           <button
@@ -620,6 +714,8 @@ export function TodayCorePanel({
                   {activeCore && <CoreDetail key={activeCore.member.code} core={activeCore} rank={activeRank} />}
                 </>
               )}
+
+              <CandidateTable network={network} onOpenStock={onOpenStock} />
 
               <div className="today-core-actions">
                 <span>想看某只股自己的完整股性？可直接打开股票联动。</span>

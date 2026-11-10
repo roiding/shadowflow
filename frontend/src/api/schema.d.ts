@@ -1118,7 +1118,7 @@ export interface paths {
         };
         /**
          * 今日封板股票的联动核心
-         * @description 实时读取当前仍封住涨停的股票，只在这些成员之间建立历史收盘封板共现子图。历史严格截止到今日之前最近一个完整归档日，今日快照不写入历史，也不参与历史分母。结果依赖点击时的盘中快照，开板会使成员变化；共现为描述统计，不代表因果、带动或未来收益。
+         * @description 实时读取当前仍封住涨停的股票，在这些成员之间建立历史收盘封板共现子图，并把与今日成员历史高频共现、但今日未封板的股票列为外溢待选。历史严格截止到今日之前最近一个完整归档日，今日快照不写入历史，也不参与历史分母。结果依赖点击时的盘中快照，开板会使成员变化；共现为描述统计，不代表因果、带动或未来收益。
          */
         get: {
             parameters: {
@@ -1131,6 +1131,8 @@ export interface paths {
                     min_overlap?: number;
                     /** @description 返回的核心股数量；无有效关系或并列时按核心度、关系数、封板天数及代码稳定排序。 */
                     top?: number;
+                    /** @description 返回的非封板外溢待选股数量，按综合分降序。 */
+                    candidates?: number;
                 };
                 header?: never;
                 path?: never;
@@ -1530,6 +1532,43 @@ export interface components {
             members: components["schemas"]["LimitUpTodayMember"][];
             /** @description 至少有一条有效关系的核心成员，最多top只。 */
             cores: components["schemas"]["LimitUpTodayCore"][];
+            /** @description 与今日封板成员历史共现、但今日未封板的待选股，按综合分降序。 */
+            candidates: components["schemas"]["LimitUpTodayCandidate"][];
+            candidate_limit: number;
+        };
+        LimitUpCandidateLink: {
+            core_code: string;
+            core_name: string;
+            overlap_days: number;
+            heat_adjusted_overlap: number;
+            /** Format: date */
+            last_shared_date: string;
+        };
+        LimitUpTodayCandidate: {
+            code: string;
+            name: string;
+            market_type: string;
+            /** @description 综合分 = 100 × (55% 关联强度 + 30% 覆盖度 + 15% 最近度)。 */
+            score: number;
+            /** @description 按今日成员核心度加权的热度折算共现之和：每只成员基础权重 1，核心度最高再加 1 倍。 */
+            strength: number;
+            /** @description 关联到的今日封板成员数除以今日封板总数。 */
+            coverage: number;
+            effective_links: number;
+            seal_days: number;
+            touch_days: number;
+            /** Format: date */
+            last_seal_date: string;
+            /**
+             * Format: date
+             * @description 与今日封板成员最后一次同日收盘封板的日期。
+             */
+            last_shared_date: string;
+            strongest_core_code: string;
+            strongest_core_name: string;
+            strongest_overlap_days: number;
+            strongest_heat: number;
+            top_links: components["schemas"]["LimitUpCandidateLink"][];
         };
         BoardQuoteMeta: {
             /** Format: date */

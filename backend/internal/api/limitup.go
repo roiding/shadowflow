@@ -81,15 +81,15 @@ func (server *Server) limitUpStock(response http.ResponseWriter, request *http.R
 
 func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request *http.Request) {
 	values := request.URL.Query()
-	allowed := map[string]bool{"days": true, "scope": true, "min_overlap": true, "top": true}
+	allowed := map[string]bool{"days": true, "scope": true, "min_overlap": true, "top": true, "candidates": true}
 	for key, entries := range values {
 		if !allowed[key] || len(entries) != 1 {
 			writeError(response, http.StatusBadRequest, "invalid_limit_up_request", "unsupported or repeated query parameter")
 			return
 		}
 	}
-	days, minOverlap, top := 365, 1, 5
-	for key, target := range map[string]*int{"days": &days, "min_overlap": &minOverlap, "top": &top} {
+	days, minOverlap, top, candidates := 365, 1, 5, 20
+	for key, target := range map[string]*int{"days": &days, "min_overlap": &minOverlap, "top": &top, "candidates": &candidates} {
 		if value := values.Get(key); value != "" {
 			parsed, err := strconv.Atoi(value)
 			if err != nil || parsed < 1 {
@@ -99,8 +99,8 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 			*target = parsed
 		}
 	}
-	if days > 366 || minOverlap > 20 || top > 20 {
-		writeError(response, http.StatusBadRequest, "invalid_limit_up_request", "days must be 1..366, min_overlap 1..20, top 1..20")
+	if days > 366 || minOverlap > 20 || top > 20 || candidates > 50 {
+		writeError(response, http.StatusBadRequest, "invalid_limit_up_request", "days must be 1..366, min_overlap 1..20, top 1..20, candidates 1..50")
 		return
 	}
 	scope := values.Get("scope")
@@ -151,7 +151,7 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 	}
 	result, err := limitup.AnalyzeToday(request.Context(), limitup.TodayInput{
 		Snapshot: snapshot, History: history, HistoryFrom: historyFrom,
-		LookbackDays: days, MinOverlap: minOverlap, TopCores: top,
+		LookbackDays: days, MinOverlap: minOverlap, TopCores: top, CandidateLimit: candidates,
 	})
 	if err != nil {
 		server.limitUpError(response, err)

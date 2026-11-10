@@ -271,18 +271,47 @@ type TodayCore struct {
 	Links  []Link      `json:"links"`
 }
 
+type CandidateLink struct {
+	CoreCode       string  `json:"core_code"`
+	CoreName       string  `json:"core_name"`
+	OverlapDays    int     `json:"overlap_days"`
+	Heat           float64 `json:"heat_adjusted_overlap"`
+	LastSharedDate string  `json:"last_shared_date"`
+}
+
+type TodayCandidate struct {
+	Code                 string          `json:"code"`
+	Name                 string          `json:"name"`
+	MarketType           string          `json:"market_type"`
+	Score                float64         `json:"score"`
+	Strength             float64         `json:"strength"`
+	Coverage             float64         `json:"coverage"`
+	EffectiveLinks       int             `json:"effective_links"`
+	SealDays             int             `json:"seal_days"`
+	TouchDays            int             `json:"touch_days"`
+	LastSealDate         string          `json:"last_seal_date"`
+	LastSharedDate       string          `json:"last_shared_date"`
+	StrongestCoreCode    string          `json:"strongest_core_code"`
+	StrongestCoreName    string          `json:"strongest_core_name"`
+	StrongestOverlapDays int             `json:"strongest_overlap_days"`
+	StrongestHeat        float64         `json:"strongest_heat"`
+	TopLinks             []CandidateLink `json:"top_links"`
+}
+
 type TodayNetwork struct {
-	TradeDate        string        `json:"trade_date"`
-	SnapshotAt       time.Time     `json:"snapshot_at"`
-	TradeStatus      string        `json:"trade_status"`
-	TradeStatusName  string        `json:"trade_status_name"`
-	SealedCount      int           `json:"sealed_count"`
-	HistoryAsOf      string        `json:"history_as_of"`
-	LookbackDays     int           `json:"lookback_days"`
-	Scope            string        `json:"scope"`
-	MinOverlap       int           `json:"min_overlap"`
-	Coverage         Coverage      `json:"coverage"`
-	HistoryAvailable bool          `json:"history_available"`
-	Members          []TodayMember `json:"members"`
-	Cores            []TodayCore   `json:"cores"`
+	TradeDate        string           `json:"trade_date"`
+	SnapshotAt       time.Time        `json:"snapshot_at"`
+	TradeStatus      string           `json:"trade_status"`
+	TradeStatusName  string           `json:"trade_status_name"`
+	SealedCount      int              `json:"sealed_count"`
+	HistoryAsOf      string           `json:"history_as_of"`
+	LookbackDays     int              `json:"lookback_days"`
+	Scope            string           `json:"scope"`
+	MinOverlap       int              `json:"min_overlap"`
+	Coverage         Coverage         `json:"coverage"`
+	HistoryAvailable bool             `json:"history_available"`
+	Members          []TodayMember    `json:"members"`
+	Cores            []TodayCore      `json:"cores"`
+	Candidates       []TodayCandidate `json:"candidates"`
+	CandidateLimit   int              `json:"candidate_limit"`
 }
