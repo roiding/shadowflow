@@ -945,22 +945,23 @@ components:
         candidate_limit: { type: integer }
     LimitUpCandidateLink:
       type: object
-      required: [core_code, core_name, overlap_days, heat_adjusted_overlap, last_shared_date]
+      required: [core_code, core_name, overlap_days, heat_adjusted_overlap, phi, last_shared_date]
       properties:
         core_code: { type: string }
         core_name: { type: string }
         overlap_days: { type: integer }
         heat_adjusted_overlap: { type: number }
+        phi: { type: number, description: φ 相关系数，已扣除候选股与该成员各自的封板频率；0 表示无关联，越高表示越专门跟随该核心。 }
         last_shared_date: { type: string, format: date }
     LimitUpTodayCandidate:
       type: object
-      required: [code, name, market_type, score, strength, coverage, effective_links, seal_days, touch_days, last_seal_date, last_shared_date, strongest_core_code, strongest_core_name, strongest_overlap_days, strongest_heat, top_links]
+      required: [code, name, market_type, score, strength, coverage, effective_links, seal_days, touch_days, last_seal_date, last_shared_date, strongest_core_code, strongest_core_name, strongest_overlap_days, strongest_heat, strongest_phi, top_links]
       properties:
         code: { type: string }
         name: { type: string }
         market_type: { type: string }
-        score: { type: number, description: 综合分 = 100 × (55% 关联强度 + 30% 覆盖度 + 15% 最近度)。 }
-        strength: { type: number, description: 按今日成员核心度加权的热度折算共现之和：每只成员基础权重 1，核心度最高再加 1 倍。 }
+        score: { type: number, description: 综合分 = 100 × (60% 主线关联度 + 15% 覆盖度 + 25% 最近度)。 }
+        strength: { type: number, description: 主线关联度：与最强 3 个今日成员的核心度加权 φ 均值，并按共现次数收缩稀疏样本；已扣除候选股自身封板频率。 }
         coverage: { type: number, description: 关联到的今日封板成员数除以今日封板总数。 }
         effective_links: { type: integer }
         seal_days: { type: integer }
@@ -971,6 +972,7 @@ components:
         strongest_core_name: { type: string }
         strongest_overlap_days: { type: integer }
         strongest_heat: { type: number }
+        strongest_phi: { type: number }
         top_links:
           type: array
           items: { $ref: "#/components/schemas/LimitUpCandidateLink" }

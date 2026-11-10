@@ -276,6 +276,7 @@ type CandidateLink struct {
 	CoreName       string  `json:"core_name"`
 	OverlapDays    int     `json:"overlap_days"`
 	Heat           float64 `json:"heat_adjusted_overlap"`
+	Phi            float64 `json:"phi"`
 	LastSharedDate string  `json:"last_shared_date"`
 }
 
@@ -295,6 +296,7 @@ type TodayCandidate struct {
 	StrongestCoreName    string          `json:"strongest_core_name"`
 	StrongestOverlapDays int             `json:"strongest_overlap_days"`
 	StrongestHeat        float64         `json:"strongest_heat"`
+	StrongestPhi         float64         `json:"strongest_phi"`
 	TopLinks             []CandidateLink `json:"top_links"`
 }
 

@@ -102,7 +102,10 @@ func TestAnalyzeTodayDeduplicatesRepeatedHistoryEvents(t *testing.T) {
 	// for caller-side event merging. Repeated event records must not inflate
 	// seal counts, overlap, heat, or conditional probability.
 	history := Dataset{
-		Days: []Day{{TradeDate: "2026-11-06"}, {TradeDate: "2026-11-05"}},
+		Days: []Day{
+			{TradeDate: "2026-11-06"}, {TradeDate: "2026-11-05"}, {TradeDate: "2026-11-04"},
+			{TradeDate: "2026-11-03"}, {TradeDate: "2026-11-02"}, {TradeDate: "2026-10-30"},
+		},
 		Events: []Event{
 			todayEvent("2026-11-06", "000001", PoolSealed),
 			todayEvent("2026-11-06", "000001", PoolSealed),
@@ -119,7 +122,7 @@ func TestAnalyzeTodayDeduplicatesRepeatedHistoryEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if network.Coverage.ObservedDays != 2 {
+	if network.Coverage.ObservedDays != 6 {
 		t.Fatalf("unexpected complete-day count: %+v", network.Coverage)
 	}
 	member := network.Members[0]
@@ -131,7 +134,7 @@ func TestAnalyzeTodayDeduplicatesRepeatedHistoryEvents(t *testing.T) {
 	}
 	link := network.Cores[0].Links[0]
 	if link.OverlapDays != 2 || link.AnchorDays != 2 || link.PeerDays != 2 ||
-		link.ConditionalProbability != 1 || link.Lift != 1 || link.HeatAdjustedOverlap != 1.5 {
+		link.ConditionalProbability != 1 || link.Lift != 3 || link.HeatAdjustedOverlap != 1.5 {
 		t.Fatalf("duplicate dates must not inflate link metrics: %+v", link)
 	}
 	if len(network.Candidates) != 1 || network.Candidates[0].Code != "000010" ||
@@ -239,7 +242,6 @@ func TestAnalyzeTodayRanksNonSealedCoSealCandidates(t *testing.T) {
 			todayEvent("2026-11-05", "000001", PoolSealed), todayEvent("2026-11-05", "000002", PoolSealed),
 			todayEvent("2026-11-05", "000010", PoolSealed),
 			todayEvent("2026-11-04", "000001", PoolSealed), todayEvent("2026-11-04", "000010", PoolSealed),
-			todayEvent("2026-11-04", "000020", PoolSealed),
 			todayEvent("2026-11-03", "000030", PoolSealed),
 		},
 	}

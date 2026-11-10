@@ -1541,6 +1541,8 @@ export interface components {
             core_name: string;
             overlap_days: number;
             heat_adjusted_overlap: number;
+            /** @description φ 相关系数，已扣除候选股与该成员各自的封板频率；0 表示无关联，越高表示越专门跟随该核心。 */
+            phi: number;
             /** Format: date */
             last_shared_date: string;
         };
@@ -1548,9 +1550,9 @@ export interface components {
             code: string;
             name: string;
             market_type: string;
-            /** @description 综合分 = 100 × (55% 关联强度 + 30% 覆盖度 + 15% 最近度)。 */
+            /** @description 综合分 = 100 × (60% 主线关联度 + 15% 覆盖度 + 25% 最近度)。 */
             score: number;
-            /** @description 按今日成员核心度加权的热度折算共现之和：每只成员基础权重 1，核心度最高再加 1 倍。 */
+            /** @description 主线关联度：与最强 3 个今日成员的核心度加权 φ 均值，并按共现次数收缩稀疏样本；已扣除候选股自身封板频率。 */
             strength: number;
             /** @description 关联到的今日封板成员数除以今日封板总数。 */
             coverage: number;
@@ -1568,6 +1570,7 @@ export interface components {
             strongest_core_name: string;
             strongest_overlap_days: number;
             strongest_heat: number;
+            strongest_phi: number;
             top_links: components["schemas"]["LimitUpCandidateLink"][];
         };
         BoardQuoteMeta: {

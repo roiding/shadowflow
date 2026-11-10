@@ -19,9 +19,9 @@ const (
 
 	// TodayCandidateWeight* rank stocks that are not sealed today by how
 	// strongly they co-sealed with today's core members in the lookback window.
-	TodayCandidateWeightStrength = 0.55
-	TodayCandidateWeightCoverage = 0.30
-	TodayCandidateWeightRecency  = 0.15
+	TodayCandidateWeightStrength = 0.60
+	TodayCandidateWeightCoverage = 0.15
+	TodayCandidateWeightRecency  = 0.25
 )
 
 type todayPair struct {
@@ -346,7 +346,8 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 		coreByCode[member.Code] = member.CoreScore
 	}
 	candidatesOut := buildTodayCandidates(candidatePairs, members, coreByCode, len(membersOut),
-		input.MinOverlap, input.CandidateLimit, parsedDate, allSealDates, allTouchDates, lastSealDate, stockMeta)
+		len(historyDays), input.MinOverlap, input.CandidateLimit, parsedDate,
+		allSealDates, allTouchDates, lastSealDate, stockMeta)
 	sort.SliceStable(membersOut, func(left, right int) bool {
 		if membersOut[left].CoreScore != membersOut[right].CoreScore {
 			return membersOut[left].CoreScore > membersOut[right].CoreScore
@@ -411,7 +412,7 @@ func buildTodayCandidates(
 	candidatePairs map[string]*todayPair,
 	members map[string]Event,
 	coreByCode map[string]float64,
-	sealedCount, minOverlap, limit int,
+	sealedCount, historyDays, minOverlap, limit int,
 	snapshotDate time.Time,
 	allSealDates, allTouchDates map[string]map[string]struct{},
 	lastSealDate map[string]string,
@@ -438,6 +439,11 @@ func buildTodayCandidates(
 			dates: append([]string(nil), pair.dates...),
 		})
 	}
+	type affinityLink struct {
+		link     candidateRawLink
+		phi      float64
+		affinity float64
+	}
 	type scoredCandidate struct {
 		candidate  TodayCandidate
 		strength   float64
@@ -446,47 +452,79 @@ func buildTodayCandidates(
 	items := make([]scoredCandidate, 0, len(byCandidate))
 	maxStrength := 0.0
 	for code, links := range byCandidate {
-		sort.Slice(links, func(left, right int) bool {
-			if links[left].heat != links[right].heat {
-				return links[left].heat > links[right].heat
+		candidateSealDays := len(allSealDates[code])
+		affinities := make([]affinityLink, 0, len(links))
+		for _, link := range links {
+			memberSealDays := len(allSealDates[link.memberCode])
+			// Phi is bounded and already divides out both the candidate's and
+			// the member's own seal frequency, so a stock that simply limits
+			// up often cannot score high without a specific tie to the core.
+			phi := 0.0
+			denominator := math.Sqrt(float64(candidateSealDays) * float64(memberSealDays) *
+				float64(max(0, historyDays-candidateSealDays)) * float64(max(0, historyDays-memberSealDays)))
+			if denominator > 0 {
+				phi = (float64(link.overlap)*float64(historyDays) -
+					float64(candidateSealDays)*float64(memberSealDays)) / denominator
 			}
-			if links[left].overlap != links[right].overlap {
-				return links[left].overlap > links[right].overlap
+			if phi < 0 {
+				phi = 0
 			}
-			return links[left].memberCode < links[right].memberCode
+			// A single shared day is weak evidence. Shrink sparse links
+			// toward zero instead of letting a 1-of-1 match outrank a
+			// repeatable relationship.
+			confidence := float64(link.overlap) / (float64(link.overlap) + 2)
+			affinities = append(affinities, affinityLink{
+				link: link, phi: phi,
+				affinity: (1 + coreByCode[link.memberCode]/100) * phi * confidence,
+			})
+		}
+		sort.Slice(affinities, func(left, right int) bool {
+			if affinities[left].affinity != affinities[right].affinity {
+				return affinities[left].affinity > affinities[right].affinity
+			}
+			if affinities[left].link.overlap != affinities[right].link.overlap {
+				return affinities[left].link.overlap > affinities[right].link.overlap
+			}
+			return affinities[left].link.memberCode < affinities[right].link.memberCode
 		})
+		// "Main line" is defined by the strongest ties, not by the total
+		// number of weak co-seal links. Average the top three affinities so a
+		// stock that simply limits up often cannot outrank a stock that
+		// specifically follows today's leaders.
+		topCount := min(3, len(affinities))
 		strength := 0.0
 		lastShared := ""
-		for _, link := range links {
-			// Every sealed member is a valid seed: the base weight keeps
-			// candidates linked only to isolated members from disappearing,
-			// while the core score doubles the weight of today's leaders.
-			strength += (1 + coreByCode[link.memberCode]/100) * link.heat
-			for _, date := range link.dates {
+		for _, item := range affinities[:topCount] {
+			strength += item.affinity
+			for _, date := range item.link.dates {
 				if date > lastShared {
 					lastShared = date
 				}
 			}
 		}
+		if topCount > 0 {
+			strength /= float64(topCount)
+		}
 		if strength <= 0 || lastShared == "" {
 			continue
 		}
 		maxStrength = math.Max(maxStrength, strength)
-		topLinks := make([]CandidateLink, 0, min(5, len(links)))
-		for _, link := range links {
+		topLinks := make([]CandidateLink, 0, min(5, len(affinities)))
+		for _, item := range affinities {
 			if len(topLinks) >= 5 {
 				break
 			}
 			linkLast := ""
-			for _, date := range link.dates {
+			for _, date := range item.link.dates {
 				if date > linkLast {
 					linkLast = date
 				}
 			}
-			member := members[link.memberCode]
+			member := members[item.link.memberCode]
 			topLinks = append(topLinks, CandidateLink{
-				CoreCode: link.memberCode, CoreName: member.Name,
-				OverlapDays: link.overlap, Heat: link.heat, LastSharedDate: linkLast,
+				CoreCode: item.link.memberCode, CoreName: member.Name,
+				OverlapDays: item.link.overlap, Heat: item.link.heat,
+				Phi: item.phi, LastSharedDate: linkLast,
 			})
 		}
 		meta := stockMeta[code]
@@ -496,11 +534,12 @@ func buildTodayCandidates(
 				Code: code, Name: meta.Name, MarketType: meta.MarketType,
 				Strength: strength, EffectiveLinks: len(links),
 				Coverage: float64(len(links)) / float64(max(1, sealedCount)),
-				SealDays: len(allSealDates[code]), TouchDays: len(allTouchDates[code]),
+				SealDays: candidateSealDays, TouchDays: len(allTouchDates[code]),
 				LastSealDate: lastSealDate[code], LastSharedDate: lastShared,
 				StrongestCoreCode: topLinks[0].CoreCode, StrongestCoreName: topLinks[0].CoreName,
 				StrongestOverlapDays: topLinks[0].OverlapDays, StrongestHeat: topLinks[0].Heat,
-				TopLinks: topLinks,
+				StrongestPhi: topLinks[0].Phi,
+				TopLinks:     topLinks,
 			},
 		})
 	}

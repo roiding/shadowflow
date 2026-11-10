@@ -371,8 +371,8 @@ function CandidateTable({
               <th>
                 <span className="linkage-column-label">
                   综合分
-                  <MetricHint label="外溢综合分" formula="100 × (55% 关联强度 + 30% 覆盖度 + 15% 最近度)">
-                    关联强度按今日核心度加权；覆盖度是关联到的今日封板成员数占今日封板总数的比例；最近度按最后一次同日封板距今天数衰减。
+                  <MetricHint label="外溢综合分" formula="100 × (60% 主线关联度 + 15% 覆盖度 + 25% 最近度)">
+                    主线关联度用 φ 相关系数衡量候选股是否专门跟随今日核心，已扣除候选股与今日成员各自的封板频率，并按共现次数收缩稀疏样本；再按今日核心度加权，取最强 3 条关系的均值。覆盖度是关联到的今日封板成员数占今日封板总数的比例；最近度按最后一次同日封板距今天数衰减。
                   </MetricHint>
                 </span>
               </th>
@@ -394,7 +394,10 @@ function CandidateTable({
                 <td><strong>{formatNumber(candidate.score, 1)}</strong></td>
                 <td>
                   <strong>{candidate.strongest_core_name || '--'}</strong>
-                  <small>共同 {candidate.strongest_overlap_days} 次</small>
+                  <small>
+                    共同 {candidate.strongest_overlap_days} 次
+                    {candidate.strongest_phi > 0 ? ` · 贴合 ${formatNumber(candidate.strongest_phi * 100, 0)}` : ''}
+                  </small>
                 </td>
                 <td>
                   <strong>{candidate.effective_links} 只</strong>

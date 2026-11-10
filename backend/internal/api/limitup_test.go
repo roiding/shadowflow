@@ -139,6 +139,14 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 	ctx := context.Background()
 	for _, snapshot := range []limitup.Snapshot{
 		{
+			TradeDate: "2026-11-04", Source: limitup.SourceTHS, Scope: limitup.ScopeDefault,
+			FetchedAt: time.Date(2026, 11, 4, 16, 0, 0, 0, limitup.Shanghai()), SealedCount: 1, TouchedCount: 1,
+			Events: []limitup.Event{
+				{TradeDate: "2026-11-04", Code: "000099", Name: "庚", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
+			},
+			RawPages: []json.RawMessage{json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`)},
+		},
+		{
 			TradeDate: "2026-11-05", Source: limitup.SourceTHS, Scope: limitup.ScopeDefault,
 			FetchedAt: time.Date(2026, 11, 5, 16, 0, 0, 0, limitup.Shanghai()), SealedCount: 2, TouchedCount: 2,
 			Events: []limitup.Event{
@@ -205,7 +213,7 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 		testingT.Fatal(err)
 	}
 	if response.Code != http.StatusOK || result.Data.SealedCount != 3 || result.Data.HistoryAsOf != "2026-11-06" ||
-		result.Data.Coverage.ObservedDays != 2 || !result.Meta.SnapshotOnly || !result.Meta.HistoryExcludesToday ||
+		result.Data.Coverage.ObservedDays != 3 || !result.Meta.SnapshotOnly || !result.Meta.HistoryExcludesToday ||
 		result.Meta.SnapshotFetchedAt == "" {
 		testingT.Fatalf("unexpected today network result: %d %s", response.Code, response.Body.String())
 	}
