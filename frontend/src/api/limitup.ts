@@ -26,6 +26,10 @@ export type LimitUpAnalysis = components['schemas']['LimitUpAnalysis']
 export type LimitUpTodayMember = components['schemas']['LimitUpTodayMember']
 export type LimitUpTodayCore = components['schemas']['LimitUpTodayCore']
 export type LimitUpTodayNetwork = components['schemas']['LimitUpTodayNetwork']
+export type LimitUpThemeTag = components['schemas']['LimitUpThemeTag']
+export type LimitUpThemeCluster = components['schemas']['LimitUpThemeCluster']
+export type LimitUpThemeLink = components['schemas']['LimitUpThemeLink']
+export type LimitUpThemeAnalysis = components['schemas']['LimitUpThemeAnalysis']
 export type LimitUpArchiveQuality = Omit<components['schemas']['LimitUpArchiveQuality'], 'day'> & {
   day: LimitUpDay | null
 }

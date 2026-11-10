@@ -99,16 +99,19 @@ export function LinkageView({
   const selectedStockCode = context.stockCode
   const [stockSearchKeyword, setStockSearchKeyword] = useState<string>('')
   const [directStockInput, setDirectStockInput] = useState<string>(context.stockCode)
+  const [directSearchOpen, setDirectSearchOpen] = useState(false)
   const [candidatePickerOpen, setCandidatePickerOpen] = useState(false)
   const [todayCoreOpen, setTodayCoreOpen] = useState(false)
   const todayCoreReturnRef = useRef<HTMLButtonElement>(null)
   const [relationPage, setRelationPage] = useState<number>(1)
+  const [themePage, setThemePage] = useState<number>(1)
   const [eventPage, setEventPage] = useState<number>(1)
   const stockSearchRef = useRef<HTMLInputElement>(null)
   const candidatePickerRef = useRef<HTMLDetailsElement>(null)
 
   useEffect(() => {
     setDirectStockInput(context.stockCode)
+    setDirectSearchOpen(false)
   }, [context.stockCode])
 
   const needsInitialCandidates = !context.stockCode
@@ -157,7 +160,7 @@ export function LinkageView({
     enabled:
       !authRequired &&
       Boolean(asOfDate) &&
-      (needsInitialCandidates || candidatePickerOpen || noEventFound) &&
+      (needsInitialCandidates || candidatePickerOpen || noEventFound || directStockInput.trim().length > 0) &&
       !stockQuery.isFetching,
     refetchInterval: false,
   })
@@ -193,11 +196,13 @@ export function LinkageView({
 
   const analysisData = stockQuery.data?.data
   const profileData: LimitUpProfile | null = analysisData?.profile ?? null
+  const themeData = analysisData?.theme ?? null
   const linkList: LimitUpLink[] = useMemo(() => analysisData?.links ?? [], [analysisData?.links])
   const eventList: LimitUpEvent[] = useMemo(() => analysisData?.events ?? [], [analysisData?.events])
 
   useEffect(() => {
     setRelationPage(1)
+    setThemePage(1)
     setEventPage(1)
   }, [selectedStockCode, eventType, minOverlap, lookbackDays, marketScope, asOfDate])
 
@@ -209,10 +214,18 @@ export function LinkageView({
     () => filteredStockCandidates.slice(0, MAX_VISIBLE_CANDIDATES),
     [filteredStockCandidates],
   )
+  const directStockMatches = useMemo(
+    () => filterStockCandidates(sortedStocks, directStockInput).slice(0, 8),
+    [sortedStocks, directStockInput],
+  )
 
   const paginatedLinks = useMemo(
     () => paginateRecords(linkList, relationPage, RELATION_PAGE_SIZE),
     [linkList, relationPage],
+  )
+  const paginatedThemeLinks = useMemo(
+    () => paginateRecords(themeData?.links ?? [], themePage, RELATION_PAGE_SIZE),
+    [themeData?.links, themePage],
   )
 
   const paginatedEvents = useMemo(
@@ -263,12 +276,22 @@ export function LinkageView({
 
 
   const handleDirectStockSubmit = () => {
-    const normalizedCode = directStockInput.trim()
-    if (!isStockCode(normalizedCode)) {
+    const normalizedInput = directStockInput.trim()
+    if (!normalizedInput) {
       stockSearchRef.current?.focus()
       return
     }
-    handleSelectStock(normalizedCode)
+    if (isStockCode(normalizedInput)) {
+      handleSelectStock(normalizedInput)
+      setDirectSearchOpen(false)
+      return
+    }
+    if (directStockMatches.length > 0) {
+      handleSelectStock(directStockMatches[0].code)
+      setDirectSearchOpen(false)
+      return
+    }
+    stockSearchRef.current?.focus()
   }
 
   const handleRefreshAll = () => {
@@ -301,12 +324,12 @@ export function LinkageView({
             <p className="linkage-eyebrow">股票联动</p>
             <h1 className="linkage-title">联动性与股性画像</h1>
             <p className="linkage-subline">
-              基于同花顺日终涨停池、炸板池与跌停池的盘后归档，统计三类事件的同日共现网络与个股股性。页面只读本地已归档数据，统计代表历史事件同日共现，非收益或因果预测。
+              先按同花顺 Top20 历史累计题材标签做股票聚类，再保留日终涨停池、炸板池与跌停池的全市场同日共振口径供核对。页面只读本地已归档数据，统计代表历史聚类或同日共现，非收益或因果预测。
             </p>
             <div className="linkage-disclaimer">
               <Info size={14} />
               <span>
-                提示：共现网络仅反映同日同类事件的统计重合度，无法推导先后、资金因果或未来收益。样本不足时请谨慎参考。
+                提示：同题材聚类不是完整行业/概念成份；未分类/其他/原因不明的题材桶不会参与。全市场同日共振也不等于同题材联动，无法推导先后、资金因果或未来收益。
               </span>
             </div>
           </div>
@@ -513,24 +536,56 @@ export function LinkageView({
               id="linkage-stock-code-input"
               ref={stockSearchRef}
               type="text"
-              inputMode="numeric"
-              maxLength={6}
-              placeholder="输入 6 位代码，例如 600519"
+              placeholder="输入代码、名称、拼音首字母或全拼，例如 600519 / 贵州茅台 / gzmt"
               value={directStockInput}
-              onChange={(inputEvent) => setDirectStockInput(inputEvent.target.value.replace(/\D/g, '').slice(0, 6))}
+              onChange={(inputEvent) => {
+                setDirectStockInput(inputEvent.target.value)
+                setDirectSearchOpen(true)
+              }}
+              onFocus={() => setDirectSearchOpen(true)}
+              onBlur={() => window.setTimeout(() => setDirectSearchOpen(false), 120)}
               onKeyDown={(keyboardEvent) => {
                 if (keyboardEvent.key === 'Enter') {
                   handleDirectStockSubmit()
+                } else if (keyboardEvent.key === 'Escape') {
+                  setDirectSearchOpen(false)
                 }
               }}
             />
+            {directSearchOpen && directStockInput.trim() && (
+              <div className="linkage-direct-suggestions" role="listbox" aria-label="股票搜索结果">
+                {directStockMatches.length === 0 ? (
+                  <span className="linkage-direct-suggestion-empty">
+                    当前窗口没有匹配股票；六位代码仍可直接查看
+                  </span>
+                ) : (
+                  directStockMatches.map((stockCandidate) => (
+                    <button
+                      type="button"
+                      key={stockCandidate.code}
+                      className="linkage-direct-suggestion"
+                      role="option"
+                      onMouseDown={(mouseEvent) => {
+                        mouseEvent.preventDefault()
+                        handleSelectStock(stockCandidate.code)
+                        setDirectSearchOpen(false)
+                      }}
+                    >
+                      <strong>{stockCandidate.name}</strong>
+                      <code>{stockCandidate.code}</code>
+                      <small>封 {stockCandidate.seal_days} 天 · 触 {stockCandidate.touch_days} 天</small>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
           </div>
           <button
             type="button"
             className="linkage-direct-submit"
             onClick={handleDirectStockSubmit}
             disabled={!asOfDate}
-            title={asOfDate ? '按六位代码读取本地历史事件' : '等待可用研究截止日'}
+            title={asOfDate ? '按代码、名称或拼音读取本地历史事件' : '等待可用研究截止日'}
           >
             查看该股
           </button>
@@ -673,11 +728,171 @@ export function LinkageView({
 
           {!stockQuery.isLoading && !stockQuery.isError && analysisData && profileData && (
             <>
+              {themeData && themeData.profile.code && (
+                <section className="linkage-panel linkage-theme-panel" aria-labelledby="linkage-theme-heading">
+                  <div className="linkage-panel-head">
+                    <div>
+                      <h2 id="linkage-theme-heading">
+                        同花顺题材聚类：{themeData.profile.name || analysisData.profile.name} ({themeData.profile.code})
+                      </h2>
+                      <span>
+                        只使用 {asOfDate} 及更早的历史 Top20 题材标签；未分类、其他、原因不明或全组没有明确原因标签的题材桶不参与。
+                      </span>
+                      <span className="linkage-scope-note">
+                        同一股票可以同时拥有多个历史题材标签；同题材天数按“同一天进入至少一个相同题材”去重。该视图不依赖东财行业/概念。
+                      </span>
+                    </div>
+                    <div>
+                      <span className="linkage-tag-success">
+                        有效标签日：{themeData.label_days} 天
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="linkage-theme-profile">
+                    <div className="linkage-theme-profile-head">
+                      <strong>历史累计题材标签</strong>
+                      <span>
+                        出现次数越多、最近越常出现，标签越靠前
+                        <MetricHint label="同花顺题材标签" formula="窗口内进入同一 Top20 题材的交易日数">
+                          同花顺每日盘后整理 Top20 题材；某只股票只要在某天进入某个题材，就积累该题材标签。标签不是完整成份，也不代表当天盘前已知；不同日期的题材可以同时保留，用来解释同一只股票在不同阶段的涨停原因。
+                        </MetricHint>
+                      </span>
+                    </div>
+                    <div className="linkage-theme-tag-list">
+                      {(themeData.profile.tags ?? []).length > 0 ? (themeData.profile.tags ?? []).map((tag) => (
+                        <span className="linkage-theme-tag" key={tag.code} title={`首次 ${tag.first_date} · 最近 ${tag.last_date} · 近60日 ${tag.recent_occurrences} 次`}>
+                          {tag.name}
+                          <small>{tag.occurrences}次</small>
+                        </span>
+                      )) : (
+                        <span className="muted">当前窗口没有有效 Top20 题材标签。</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="linkage-table-context">
+                    同题材联动按“同题材共现天数”降序，其次按题材相似度和同日封板次数。题材相似度使用 IDF 加权余弦；Jaccard 是题材日期集合的交集/并集；题材纯度 = 同题材共现天数 / 同日收盘封板次数，用于识别跨题材共振。
+                  </div>
+
+                  <div className="linkage-table-wrap">
+                    <table className="linkage-table" aria-label="同花顺题材聚类关联股票">
+                      <thead>
+                        <tr>
+                          <th>关联股票</th>
+                          <th>
+                            <span className="linkage-column-label">
+                              同题材共现
+                              <MetricHint label="同题材共现" formula="同一天进入至少一个相同 Top20 题材的天数" align="start">
+                                两只股票在同一天都进入同一个同花顺 Top20 题材的天数；同一天共享多个题材只算一天，避免多标签重复加分。
+                              </MetricHint>
+                            </span>
+                          </th>
+                          <th>共享题材</th>
+                          <th>
+                            <span className="linkage-column-label">
+                              题材相似度
+                              <MetricHint label="题材相似度" formula="IDF 加权题材向量余弦" align="start">
+                                把每只股票的历史题材标签出现次数按 IDF 加权后比较方向相似度。常见大题材权重较低，小众但反复共同出现的题材权重较高。
+                              </MetricHint>
+                            </span>
+                          </th>
+                          <th>
+                            <span className="linkage-column-label">
+                              题材 Jaccard
+                              <MetricHint label="题材 Jaccard" formula="同题材天数 / 双方标签日并集" align="start">
+                                两只股票有题材标签的日期集合相似度，取值 0 到 1；它不使用同日封板次数做分母。
+                              </MetricHint>
+                            </span>
+                          </th>
+                          <th>
+                            <span className="linkage-column-label">
+                              题材纯度
+                              <MetricHint label="题材纯度" formula="同题材天数 / 同日封板次数" align="start">
+                                同日一起封板的次数里，有多少次至少共享一个同花顺题材。纯度高说明不是跨题材普涨共振；同日封板为 0 时不计算。
+                              </MetricHint>
+                            </span>
+                          </th>
+                          <th>同日封板</th>
+                          <th>最近同题材</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {paginatedThemeLinks.paginatedItems.length === 0 && (
+                          <tr>
+                            <td colSpan={9} className="muted" style={{ textAlign: 'center', padding: '18px' }}>
+                              当前窗口没有可配对的同题材股票。
+                            </td>
+                          </tr>
+                        )}
+                        {paginatedThemeLinks.paginatedItems.map((themeLink) => (
+                          <tr key={themeLink.code}>
+                            <td>
+                              <strong>{themeLink.name}</strong>
+                              <small>{themeLink.code}</small>
+                            </td>
+                            <td><strong>{themeLink.theme_days} 天</strong></td>
+                            <td>
+                              <span title={(themeLink.shared_themes ?? []).map((theme) => theme.name).join('、')}>
+                                {(themeLink.shared_themes ?? []).slice(0, 3).map((theme) => theme.name).join('、') || '--'}
+                              </span>
+                              {(themeLink.shared_themes ?? []).length > 3 && (
+                                <small>等 {(themeLink.shared_themes ?? []).length} 个</small>
+                              )}
+                            </td>
+                            <td>{formatPercent(themeLink.theme_similarity)}</td>
+                            <td>{formatNumber(themeLink.theme_jaccard, 3)}</td>
+                            <td>{formatPercent(themeLink.theme_purity)}</td>
+                            <td>{themeLink.co_seal_days} 次</td>
+                            <td>{themeLink.last_shared_date || '--'}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className="linkage-switch-btn"
+                                onClick={() => handleSelectStock(themeLink.code)}
+                              >
+                                设为中心
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {paginatedThemeLinks.totalPages > 1 && (
+                    <div className="linkage-pagination">
+                      <button
+                        type="button"
+                        className="linkage-pagination-btn"
+                        disabled={paginatedThemeLinks.currentPage <= 1}
+                        onClick={() => setThemePage(paginatedThemeLinks.currentPage - 1)}
+                        title="上一页"
+                        aria-label="同题材联动上一页"
+                      >
+                        <ChevronLeft size={14} />
+                      </button>
+                      <span>{paginatedThemeLinks.currentPage} / {paginatedThemeLinks.totalPages} 页</span>
+                      <button
+                        type="button"
+                        className="linkage-pagination-btn"
+                        disabled={paginatedThemeLinks.currentPage >= paginatedThemeLinks.totalPages}
+                        onClick={() => setThemePage(paginatedThemeLinks.currentPage + 1)}
+                        title="下一页"
+                        aria-label="同题材联动下一页"
+                      >
+                        <ChevronRight size={14} />
+                      </button>
+                    </div>
+                  )}
+                </section>
+              )}
+
               <section className="linkage-panel" aria-labelledby="linkage-network-heading">
                 <div className="linkage-panel-head">
                   <div>
                     <h2 id="linkage-network-heading">
-                      联动性：{analysisData.profile.name} ({analysisData.profile.code}) 共现网络
+                      全市场同日共振：{analysisData.profile.name} ({analysisData.profile.code}) 共现网络
                     </h2>
                     <span>
                       共现事件：{EVENT_LABELS[eventType]} · 最少共同次数 ≥ {minOverlap} 次（可在上方切换 1..10 探索）
@@ -793,7 +1008,7 @@ export function LinkageView({
                 </div>
 
                 <div className="linkage-table-context">
-                  当前关系口径：{EVENT_LABELS[eventType]}。{EVENT_SCOPE_NOTES[eventType]}{' '}
+                  当前关系口径：{EVENT_LABELS[eventType]}，这是全市场同日共振，不是同花顺题材聚类。{EVENT_SCOPE_NOTES[eventType]}{' '}
                   P(B|A) = 共同事件日 / 中心股票在该口径下的事件日；基准频率按完整样本日 N 计算。
                 </div>
 

@@ -12,6 +12,7 @@ import (
 	"github.com/roiding/shadowflow/internal/graymarket"
 	"github.com/roiding/shadowflow/internal/limitup"
 	"github.com/roiding/shadowflow/internal/repository"
+	"github.com/roiding/shadowflow/internal/thsfocus"
 )
 
 func TestLimitUpAPIsReadIndependentEvents(testingT *testing.T) {
@@ -183,6 +184,25 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 			testingT.Fatal(err)
 		}
 	}
+	focus := thsfocus.Snapshot{
+		TradeDate: "2026-11-06", Source: thsfocus.Source, Scope: thsfocus.ScopeDefault,
+		MarketScope: thsfocus.MarketScope, FetchedAt: time.Date(2026, 11, 6, 16, 45, 0, 0, limitup.Shanghai()),
+		Blocks: []thsfocus.Block{{
+			Code: "885517", Name: "机器人概念", LimitUpCount: 2,
+			Stocks: []thsfocus.Stock{
+				{Code: "000001", Name: "甲", MarketID: 33, Reason: "机器人"},
+				{Code: "000002", Name: "乙", MarketID: 33, Reason: "机器人"},
+			},
+		}},
+		Ladder:      []thsfocus.Level{},
+		Market:      json.RawMessage(`{"rise_fall":{"rise":100,"fall":200,"deuce":10,"limit_up":10,"limit_down":2}}`),
+		Comparison:  json.RawMessage(`{"today_date":"2026-11-06"}`),
+		Limitations: []string{"测试空梯队"},
+		RawPages:    []json.RawMessage{json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`)},
+	}
+	if err := store.SaveThsFocus(ctx, focus); err != nil {
+		testingT.Fatal(err)
+	}
 	snapshotAt := time.Date(2026, 11, 9, 10, 42, 0, 0, limitup.Shanghai())
 	server, err := New(store, server.calendar, server.logger, Options{
 		ScanRatePerMinute: 10000,
@@ -231,6 +251,15 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 	if len(result.Data.Candidates) != 1 || result.Data.Candidates[0].Code != "000003" ||
 		result.Data.Candidates[0].EffectiveLinks != 2 {
 		testingT.Fatalf("unexpected non-sealed candidates: %+v", result.Data.Candidates)
+	}
+	if len(result.Data.ThemeMainline) != 1 || result.Data.ThemeMainline[0].Code != "885517" ||
+		result.Data.ThemeMainline[0].MemberCount != 2 {
+		testingT.Fatalf("unexpected THS theme mainline: %+v", result.Data.ThemeMainline)
+	}
+	for _, member := range result.Data.Members {
+		if member.Code == "000001" && (len(member.ThemeTags) != 1 || member.ThemeNeighborCount != 1) {
+			testingT.Fatalf("THS theme tags were not wired into today members: %+v", member)
+		}
 	}
 }
 

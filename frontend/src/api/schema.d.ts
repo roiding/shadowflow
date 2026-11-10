@@ -1463,6 +1463,7 @@ export interface components {
             profile: components["schemas"]["LimitUpProfile"];
             links: components["schemas"]["LimitUpLink"][];
             events: components["schemas"]["LimitUpEvent"][];
+            theme?: components["schemas"]["LimitUpThemeAnalysis"];
         };
         LimitUpTodayMember: {
             code: string;
@@ -1489,7 +1490,7 @@ export interface components {
             broken_days: number;
             /** @description 历史收盘跌停天数，不含今天。 */
             down_days: number;
-            /** @description 0到100的可复现综合分：45%关系强度+30%关系覆盖+25%邻居强度，仅用于今日成员内部排序。 */
+            /** @description 0到100的可复现综合分：35%关系强度+25%关系覆盖+20%邻居强度+20%同题材聚类；无题材标签时题材项为0、其余三项重新归一化，仅用于今日成员内部排序。 */
             core_score: number;
             /** @description 有效关系数/今日封板成员数减一。 */
             coverage: number;
@@ -1501,6 +1502,12 @@ export interface components {
             strongest_peer_code: string;
             strongest_peer_name: string;
             strongest_overlap_days: number;
+            /** @description 该股在回看窗口内积累的同花顺 Top20 题材标签，最多返回前 8 个；不是完整行业/概念成份。 */
+            theme_tags: components["schemas"]["LimitUpThemeTag"][];
+            /** @description 与今日其他封板成员共享至少一个有效同花顺题材标签的成员数。 */
+            theme_neighbor_count: number;
+            /** @description 与今日其他封板成员共享题材的 IDF 加权强度和；独立于同日收盘封板共现。 */
+            theme_strength: number;
         };
         LimitUpTodayCore: {
             member: components["schemas"]["LimitUpTodayMember"];
@@ -1532,11 +1539,67 @@ export interface components {
             members: components["schemas"]["LimitUpTodayMember"][];
             /** @description 至少有一条有效关系的核心成员，最多top只。 */
             cores: components["schemas"]["LimitUpTodayCore"][];
-            /** @description 与今日封板成员历史共现、但今日未封板的待选股，按综合分降序。 */
+            /** @description 与今日封板成员历史共现或共享同花顺历史题材主线、但今日未封板的待选股，按综合分降序。 */
             candidates: components["schemas"]["LimitUpTodayCandidate"][];
             candidate_limit: number;
-            /** @description 今日封板成员集中度最高的行业/概念板块，作为题材主线；每个板块至少 2 只今日封板成员。融资融券、昨日高振幅、连续亏损等宽泛风格或状态标签不参与。 */
+            /** @description 兼容字段，当前为空；今日主线改用 theme_mainline。 */
             mainline_themes: components["schemas"]["LimitUpMainlineTheme"][];
+            /** @description 由同花顺 Top20 历史累计标签计算出的今日题材主线；至少 2 只今日封板成员共享同一标签，按成员核心度和标签 IDF 加权。未分类/其他/无明确原因的题材桶不参与。 */
+            theme_mainline: components["schemas"]["LimitUpThemeCluster"][];
+        };
+        LimitUpThemeTag: {
+            code: string;
+            name: string;
+            /** @description 窗口内该股进入该同花顺题材的天数。 */
+            occurrences: number;
+            /** @description 最近60个自然日内该股进入该题材的天数。 */
+            recent_occurrences: number;
+            /** Format: date */
+            first_date: string;
+            /** Format: date */
+            last_date: string;
+        };
+        LimitUpThemeStockProfile: {
+            code: string;
+            name: string;
+            market_type: string;
+            /** @description 该股至少进入一个有效同花顺题材的交易日数。 */
+            label_days: number;
+            tags: components["schemas"]["LimitUpThemeTag"][];
+        };
+        LimitUpThemeCluster: {
+            code: string;
+            name: string;
+            /** @description 共享该题材的今日封板成员数。 */
+            member_count: number;
+            /** @description 按核心度和 IDF 归一化后的主线权重。 */
+            weight: number;
+        };
+        LimitUpThemeLink: {
+            code: string;
+            name: string;
+            shared_themes: components["schemas"]["LimitUpThemeTag"][];
+            /** @description 两只股票同日进入至少一个相同题材的天数。 */
+            theme_days: number;
+            /** @description 同题材日期集合的 Jaccard。 */
+            theme_jaccard: number;
+            /** @description 按 IDF 加权后的题材向量余弦相似度。 */
+            theme_similarity: number;
+            /** @description 同题材共现天数 / 同日收盘封板共现天数，最高1。 */
+            theme_purity: number;
+            /** @description 同题材天数 / 对方有题材标签的交易日数。 */
+            label_coverage: number;
+            /** @description 同日收盘封板次数，用于对照全市场共振。 */
+            co_seal_days: number;
+            /** Format: date */
+            last_shared_date: string;
+            shared_dates: string[];
+        };
+        LimitUpThemeAnalysis: {
+            profile: components["schemas"]["LimitUpThemeStockProfile"];
+            links: components["schemas"]["LimitUpThemeLink"][];
+            total_links: number;
+            label_days: number;
         };
         LimitUpThemeRef: {
             code: string;
@@ -1568,7 +1631,7 @@ export interface components {
             code: string;
             name: string;
             market_type: string;
-            /** @description 基础分按 100 × (60% 主线关联度 + 15% 覆盖度 + 25% 最近度) 计算后压缩到 75%，再加 25% 题材贴合度。 */
+            /** @description 基础分按 100 × (60% 主线关联度 + 15% 覆盖度 + 25% 最近度) 计算后保留 70%，再加 30% 同花顺题材聚类贴合度。 */
             score: number;
             /** @description 主线关联度：与最强 3 个今日成员的核心度加权 φ 均值，并按共现次数收缩稀疏样本；已扣除候选股自身封板频率。 */
             strength: number;
@@ -1589,10 +1652,12 @@ export interface components {
             strongest_overlap_days: number;
             strongest_heat: number;
             strongest_phi: number;
-            /** @description 题材贴合度：匹配到的今日主线板块权重之和，上限 1；宽泛风格或状态标签不参与，未匹配为 0。 */
+            /** @description 题材聚类贴合度：匹配到的今日同花顺题材主线权重之和，上限 1；未匹配为 0。 */
             theme_score: number;
-            /** @description 命中的今日主线板块，按权重降序，最多 5 个。 */
+            /** @description 兼容字段；当前为空，题材标签见 theme_tags。 */
             themes: components["schemas"]["LimitUpThemeRef"][];
+            /** @description 命中的同花顺历史题材主线标签，按共现次数/最近日期排序，最多 5 个。 */
+            theme_tags: components["schemas"]["LimitUpThemeTag"][];
             top_links: components["schemas"]["LimitUpCandidateLink"][];
         };
         BoardQuoteMeta: {

@@ -152,6 +152,33 @@ func TestValidateSnapshotRejectsDateAndSizeViolations(t *testing.T) {
 	}
 }
 
+func TestIsUsableThemeBlockRejectsUnclassifiedAndReasonlessBuckets(t *testing.T) {
+	base := Block{
+		Code: "885517", Name: "机器人概念",
+		Stocks: []Stock{{Code: "000001", Name: "样本", Reason: "机器人"}},
+	}
+	if !IsUsableThemeBlock(base) {
+		t.Fatal("a reasoned theme block should be usable")
+	}
+	namedLikeIndustry := base
+	namedLikeIndustry.Name = "其他电子"
+	if !IsUsableThemeBlock(namedLikeIndustry) {
+		t.Fatal("a real theme whose name merely contains 其他 must remain usable")
+	}
+	for _, name := range []string{"其他概念", "未分类", "原因不明", "其他题材"} {
+		block := base
+		block.Name = name
+		if IsUsableThemeBlock(block) {
+			t.Errorf("unclassified bucket %q was accepted", name)
+		}
+	}
+	noReason := base
+	noReason.Stocks = []Stock{{Code: "000001", Name: "样本"}}
+	if IsUsableThemeBlock(noReason) {
+		t.Fatal("a block without any reason should be rejected")
+	}
+}
+
 func TestValidateSnapshotRejectsDuplicateCodeWithinLadderLevel(t *testing.T) {
 	snapshot := validSnapshot()
 	snapshot.Ladder[0].Stocks = append(snapshot.Ladder[0].Stocks, snapshot.Ladder[0].Stocks[0])

@@ -10,18 +10,19 @@ import (
 )
 
 const (
-	// TodayCoreWeightStrength, TodayCoreWeightCoverage and
-	// TodayCoreWeightNeighbors sum to one. Keeping the weights in code makes
-	// the API's "core score" reproducible instead of an unexplained rank.
-	TodayCoreWeightStrength  = 0.45
-	TodayCoreWeightCoverage  = 0.30
-	TodayCoreWeightNeighbors = 0.25
+	// TodayCoreWeight* sum to one. Keeping the weights in code makes the
+	// API's "core score" reproducible instead of an unexplained rank.
+	TodayCoreWeightStrength  = 0.35
+	TodayCoreWeightCoverage  = 0.25
+	TodayCoreWeightNeighbors = 0.20
+	TodayCoreWeightTheme     = 0.20
 
-	// TodayCandidateWeight* rank stocks that are not sealed today by how
-	// strongly they co-sealed with today's core members in the lookback window.
+	// TodayCandidateWeight* rank stocks that are not sealed today by a blend
+	// of historical co-seal affinity and THS theme-cluster affinity.
 	TodayCandidateWeightStrength = 0.60
 	TodayCandidateWeightCoverage = 0.15
 	TodayCandidateWeightRecency  = 0.25
+	TodayCandidateWeightTheme    = 0.30
 )
 
 type todayPair struct {
@@ -38,34 +39,10 @@ type TodayInput struct {
 	MinOverlap     int
 	TopCores       int
 	CandidateLimit int
-	ThemeLookup    func(codes []string) (map[string][]ThemeRef, error)
-}
-
-// Broad market attributes are published as concept boards by the data source,
-// but they do not describe a tradable theme. Keeping them would make almost
-// every candidate match a "main line" and flatten the theme contribution.
-var broadConceptTerms = []string{
-	"融资融券", "沪股通", "深股通", "QFII", "重仓", "新进", "金股",
-	"证金持股", "大基金持股", "增仓", "减仓",
-	"昨日", "最近", "近期", "百日新高", "历史新高", "热股", "题材股", "连续亏损",
-	"预增", "预减", "扭亏", "首亏", "破发", "破增发", "破净",
-	"市净率", "市盈率", "小盘", "中盘", "大盘", "微盘", "价值股", "成长股",
-	"周期股", "超跌股", "趋势股", "微利股", "百元股", "低价股", "权重股",
-	"红利股", "行业龙头", "风格", "外资背景", "股权", "举牌", "增持计划", "密集调研",
-	"专精特新", "央国企改革",
-	"标准普尔", "富时罗素", "MSCI中国", "HS300", "上证50", "上证180",
-	"上证380", "中证500", "深证100", "深成500", "创业成份", "创业板综",
-	"央视50", "宁组合", "茅指数", "ST股", "次新股", "转债标的",
-	"AB股", "AH股", "B股", "GDR", "IPO受益",
-}
-
-func isThematicConcept(name string) bool {
-	for _, term := range broadConceptTerms {
-		if strings.Contains(name, term) {
-			return false
-		}
-	}
-	return true
+	// ThemeProfiles is the historical accumulated THS Top20 label index. It
+	// is the primary clustering source for today's mainline; Eastmoney board
+	// relations are intentionally not part of this path.
+	ThemeProfiles map[string]ThemeStockProfile
 }
 
 // AnalyzeToday computes a relationship graph whose nodes are the stocks sealed
@@ -341,7 +318,8 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 			SealDays: len(sealDates[code]), TouchDays: len(touchDates[code]),
 			BrokenDays: len(brokenDates[code]), DownDays: len(downDates[code]),
 			EffectiveLinks: len(links), Strength: strength,
-			Coverage: float64(len(links)) / float64(max(1, len(members)-1)),
+			Coverage:  float64(len(links)) / float64(max(1, len(members)-1)),
+			ThemeTags: []ThemeTag{},
 		}
 		if len(links) > 0 {
 			member.StrongestPeerCode, member.StrongestPeerName = links[0].Code, links[0].Name
@@ -349,6 +327,24 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 		}
 		membersOut = append(membersOut, member)
 		memberByCode[code] = member
+	}
+	themeAffinity := map[string]memberThemeAffinity{}
+	maxThemeStrength := 0.0
+	if len(input.ThemeProfiles) > 0 {
+		for index := range membersOut {
+			if profile, exists := input.ThemeProfiles[membersOut[index].Code]; exists {
+				membersOut[index].ThemeTags = topThemeTags(profile.Tags, 8)
+			} else {
+				membersOut[index].ThemeTags = []ThemeTag{}
+			}
+		}
+		themeAffinity = computeMemberThemeAffinity(membersOut, input.ThemeProfiles)
+		for index := range membersOut {
+			affinity := themeAffinity[membersOut[index].Code]
+			membersOut[index].ThemeNeighborCount = affinity.neighbors
+			membersOut[index].ThemeStrength = affinity.strength
+			maxThemeStrength = math.Max(maxThemeStrength, affinity.strength)
+		}
 	}
 	maxStrength, maxNeighborStrength := 0.0, 0.0
 	for _, member := range membersOut {
@@ -365,33 +361,31 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 		for _, link := range strongEdges[member.Code] {
 			neighborStrength += memberByCode[link.Code].Strength
 		}
+		themeWeight := TodayCoreWeightTheme
+		activeWeight := TodayCoreWeightStrength + TodayCoreWeightCoverage + TodayCoreWeightNeighbors + themeWeight
+		if maxThemeStrength <= 0 {
+			themeWeight = 0
+			activeWeight = TodayCoreWeightStrength + TodayCoreWeightCoverage + TodayCoreWeightNeighbors
+		}
 		member.CoreScore = 100 * (TodayCoreWeightStrength*normalise(member.Strength, maxStrength) +
 			TodayCoreWeightCoverage*member.Coverage +
-			TodayCoreWeightNeighbors*normalise(neighborStrength, maxNeighborStrength))
+			TodayCoreWeightNeighbors*normalise(neighborStrength, maxNeighborStrength) +
+			themeWeight*normalise(member.ThemeStrength, maxThemeStrength)) / activeWeight
 	}
 	coreByCode := make(map[string]float64, len(membersOut))
 	for _, member := range membersOut {
 		coreByCode[member.Code] = member.CoreScore
 	}
+	themeMainline := []ThemeCluster{}
+	if len(input.ThemeProfiles) > 0 {
+		themeMainline = ComputeThemeMainline(membersOut, input.ThemeProfiles)
+	}
 	candidatesOut := buildTodayCandidates(candidatePairs, members, coreByCode, len(membersOut),
 		len(historyDays), input.MinOverlap, parsedDate,
 		allSealDates, allTouchDates, lastSealDate, stockMeta)
-	mainlineThemes := []MainlineTheme{}
-	if input.ThemeLookup != nil && len(candidatesOut) > 0 {
-		if memberThemes, err := input.ThemeLookup(codes); err == nil {
-			mainlineThemes = computeMainlineThemes(memberThemes, coreByCode)
-			if len(mainlineThemes) > 0 {
-				candidateCodes := make([]string, 0, len(candidatesOut))
-				for _, candidate := range candidatesOut {
-					candidateCodes = append(candidateCodes, candidate.Code)
-				}
-				if candidateThemes, err := input.ThemeLookup(candidateCodes); err == nil {
-					applyThemeScores(candidatesOut, mainlineThemes, candidateThemes)
-				} else {
-					mainlineThemes = []MainlineTheme{}
-				}
-			}
-		}
+	if len(themeMainline) > 0 {
+		candidatesOut = applyTodayThemeProfiles(candidatesOut, themeMainline, input.ThemeProfiles,
+			members, allSealDates, allTouchDates, lastSealDate)
 	}
 	sort.SliceStable(candidatesOut, func(left, right int) bool {
 		if candidatesOut[left].Score != candidatesOut[right].Score {
@@ -441,7 +435,7 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 		if len(cores) >= input.TopCores {
 			break
 		}
-		if member.EffectiveLinks == 0 {
+		if member.EffectiveLinks == 0 && member.ThemeNeighborCount == 0 {
 			continue
 		}
 		cores = append(cores, TodayCore{Member: member, Links: strongEdges[member.Code]})
@@ -454,7 +448,7 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 		Coverage: coverage, HistoryAvailable: len(historyDays) > 0,
 		Members: membersOut, Cores: cores,
 		Candidates: candidatesOut, CandidateLimit: input.CandidateLimit,
-		MainlineThemes: mainlineThemes,
+		MainlineThemes: []MainlineTheme{}, ThemeMainline: themeMainline,
 	}, ctx.Err()
 }
 
@@ -602,6 +596,7 @@ func buildTodayCandidates(
 				StrongestPhi: topLinks[0].Phi,
 				TopLinks:     topLinks,
 				Themes:       []ThemeRef{},
+				ThemeTags:    []ThemeTag{},
 			},
 		})
 	}
@@ -636,131 +631,6 @@ func buildTodayCandidates(
 		result = append(result, item.candidate)
 	}
 	return result
-}
-
-// computeMainlineThemes ranks today's industry and concept boards by the
-// core-weighted number of sealed members. A board needs at least two sealed
-// members to count as a main line.
-func computeMainlineThemes(memberThemes map[string][]ThemeRef, coreByCode map[string]float64) []MainlineTheme {
-	type boardAggregate struct {
-		code    string
-		name    string
-		typ     string
-		members int
-		weight  float64
-	}
-	byBoard := make(map[string]*boardAggregate)
-	for code, refs := range memberThemes {
-		core := coreByCode[code]
-		seen := make(map[string]struct{}, len(refs))
-		for _, ref := range refs {
-			if ref.Type == "concept" && !isThematicConcept(ref.Name) {
-				continue
-			}
-			key := ref.Type + ":" + ref.Code
-			if _, duplicate := seen[key]; duplicate {
-				continue
-			}
-			seen[key] = struct{}{}
-			aggregate := byBoard[key]
-			if aggregate == nil {
-				aggregate = &boardAggregate{code: ref.Code, name: ref.Name, typ: ref.Type}
-				byBoard[key] = aggregate
-			}
-			aggregate.members++
-			aggregate.weight += 1 + core/100
-		}
-	}
-	list := make([]boardAggregate, 0, len(byBoard))
-	for _, aggregate := range byBoard {
-		if aggregate.members >= 2 {
-			list = append(list, *aggregate)
-		}
-	}
-	sort.Slice(list, func(left, right int) bool {
-		if list[left].weight != list[right].weight {
-			return list[left].weight > list[right].weight
-		}
-		if list[left].members != list[right].members {
-			return list[left].members > list[right].members
-		}
-		return list[left].code < list[right].code
-	})
-	industry := make([]boardAggregate, 0, 5)
-	concept := make([]boardAggregate, 0, 5)
-	for _, aggregate := range list {
-		switch aggregate.typ {
-		case "industry":
-			if len(industry) < 5 {
-				industry = append(industry, aggregate)
-			}
-		case "concept":
-			if len(concept) < 5 {
-				concept = append(concept, aggregate)
-			}
-		}
-	}
-	selected := append(industry, concept...)
-	if len(selected) == 0 {
-		return []MainlineTheme{}
-	}
-	maxWeight := 0.0
-	for _, aggregate := range selected {
-		maxWeight = math.Max(maxWeight, aggregate.weight)
-	}
-	result := make([]MainlineTheme, 0, len(selected))
-	for _, aggregate := range selected {
-		result = append(result, MainlineTheme{
-			Code: aggregate.code, Name: aggregate.name, Type: aggregate.typ,
-			Weight: aggregate.weight / maxWeight, MemberCount: aggregate.members,
-		})
-	}
-	return result
-}
-
-// applyThemeScores blends theme alignment into the candidate score. The base
-// 60/15/25 score keeps 75% of its weight; matching today's main-line boards
-// contributes the remaining 25%.
-func applyThemeScores(candidates []TodayCandidate, mainline []MainlineTheme, candidateThemes map[string][]ThemeRef) {
-	index := make(map[string]MainlineTheme, len(mainline))
-	for _, theme := range mainline {
-		index[theme.Type+":"+theme.Code] = theme
-	}
-	for position := range candidates {
-		matched := make([]ThemeRef, 0, 4)
-		total := 0.0
-		seen := make(map[string]struct{}, 4)
-		for _, ref := range candidateThemes[candidates[position].Code] {
-			theme, ok := index[ref.Type+":"+ref.Code]
-			if !ok {
-				continue
-			}
-			key := theme.Type + ":" + theme.Code
-			if _, duplicate := seen[key]; duplicate {
-				continue
-			}
-			seen[key] = struct{}{}
-			matched = append(matched, ThemeRef{
-				Code: theme.Code, Name: theme.Name, Type: theme.Type, Weight: theme.Weight,
-			})
-			total += theme.Weight
-		}
-		if total > 1 {
-			total = 1
-		}
-		sort.Slice(matched, func(left, right int) bool {
-			if matched[left].Weight != matched[right].Weight {
-				return matched[left].Weight > matched[right].Weight
-			}
-			return matched[left].Code < matched[right].Code
-		})
-		if len(matched) > 5 {
-			matched = matched[:5]
-		}
-		candidates[position].ThemeScore = total
-		candidates[position].Themes = matched
-		candidates[position].Score = 0.75*candidates[position].Score + 25*total
-	}
 }
 
 func normalise(value, maximum float64) float64 {

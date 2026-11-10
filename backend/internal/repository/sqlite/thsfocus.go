@@ -22,6 +22,26 @@ CREATE TABLE IF NOT EXISTS ths_focus_day (
     raw_pages BLOB NOT NULL,
     PRIMARY KEY (source, scope, trade_date)
 ) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS ths_theme_stock_day (
+    source TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    stock_code TEXT NOT NULL,
+    stock_name TEXT NOT NULL,
+    theme_code TEXT NOT NULL,
+    theme_name TEXT NOT NULL,
+    theme_rank INTEGER NOT NULL,
+    theme_limit_up_count INTEGER NOT NULL,
+    day_sealed_count INTEGER NOT NULL,
+    PRIMARY KEY (source, scope, trade_date, stock_code, theme_code)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_ths_theme_stock_code
+    ON ths_theme_stock_day (scope, stock_code, trade_date);
+
+CREATE INDEX IF NOT EXISTS idx_ths_theme_stock_theme
+    ON ths_theme_stock_day (scope, theme_code, trade_date, stock_code);
 `
 
 func (store *Store) SaveThsFocus(ctx context.Context, snapshot thsfocus.Snapshot) error {
@@ -60,7 +80,44 @@ VALUES(?,?,?,?,?,?) ON CONFLICT(source,scope,trade_date) DO UPDATE SET fetched_a
 		snapshot.Source, snapshot.Scope, snapshot.TradeDate, formatTimestamp(snapshot.FetchedAt), string(payload), rawPages); err != nil {
 		return err
 	}
+	if err := replaceThsThemeRows(ctx, transaction, snapshot); err != nil {
+		return err
+	}
 	return transaction.Commit()
+}
+
+func replaceThsThemeRows(ctx context.Context, transaction *sql.Tx, snapshot thsfocus.Snapshot) error {
+	if _, err := transaction.ExecContext(ctx, `DELETE FROM ths_theme_stock_day
+WHERE source=? AND scope=? AND trade_date=?`, snapshot.Source, snapshot.Scope, snapshot.TradeDate); err != nil {
+		return err
+	}
+	daySealedCount := 0
+	seenDayStocks := make(map[string]struct{})
+	for _, block := range snapshot.Blocks {
+		for _, stock := range block.Stocks {
+			seenDayStocks[stock.Code] = struct{}{}
+		}
+	}
+	daySealedCount = len(seenDayStocks)
+	for index, block := range snapshot.Blocks {
+		if !thsfocus.IsUsableThemeBlock(block) {
+			continue
+		}
+		seenStocks := make(map[string]struct{}, len(block.Stocks))
+		for _, stock := range block.Stocks {
+			if _, duplicate := seenStocks[stock.Code]; duplicate {
+				continue
+			}
+			seenStocks[stock.Code] = struct{}{}
+			if _, err := transaction.ExecContext(ctx, `INSERT INTO ths_theme_stock_day
+(source,scope,trade_date,stock_code,stock_name,theme_code,theme_name,theme_rank,theme_limit_up_count,day_sealed_count)
+VALUES(?,?,?,?,?,?,?,?,?,?)`, snapshot.Source, snapshot.Scope, snapshot.TradeDate,
+				stock.Code, stock.Name, block.Code, block.Name, index+1, block.LimitUpCount, daySealedCount); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (store *Store) ReadThsFocus(ctx context.Context, date, scope string) (*thsfocus.Snapshot, error) {
@@ -84,4 +141,70 @@ func (store *Store) ReadThsFocus(ctx context.Context, date, scope string) (*thsf
 		return nil, fmt.Errorf("stored THS focus identity mismatch")
 	}
 	return &snapshot, nil
+}
+
+// migrateThsThemeStock builds the derived stock-theme-day index from the
+// already archived focus payloads. It is a one-time, restart-safe migration;
+// the source table remains the evidence of record.
+func migrateThsThemeStock(store *Store) error {
+	var migrated int
+	if err := store.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM database_maintenance
+WHERE name='ths_theme_stock_v1')`).Scan(&migrated); err != nil {
+		return err
+	}
+	if migrated == 1 {
+		return nil
+	}
+	type storedFocus struct {
+		source    string
+		scope     string
+		tradeDate string
+		payload   string
+	}
+	rows, err := store.db.Query(`SELECT source,scope,trade_date,payload_json
+FROM ths_focus_day ORDER BY trade_date,scope`)
+	if err != nil {
+		return err
+	}
+	stored := make([]storedFocus, 0)
+	for rows.Next() {
+		var item storedFocus
+		if err := rows.Scan(&item.source, &item.scope, &item.tradeDate, &item.payload); err != nil {
+			rows.Close()
+			return err
+		}
+		stored = append(stored, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	transaction, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer transaction.Rollback()
+	if _, err := transaction.Exec(`DELETE FROM ths_theme_stock_day`); err != nil {
+		return err
+	}
+	for _, item := range stored {
+		var snapshot thsfocus.Snapshot
+		if err := json.Unmarshal([]byte(item.payload), &snapshot); err != nil {
+			return fmt.Errorf("decode THS focus %s/%s: %w", item.tradeDate, item.scope, err)
+		}
+		if snapshot.Source != item.source || snapshot.Scope != item.scope || snapshot.TradeDate != item.tradeDate {
+			return fmt.Errorf("stored THS focus identity mismatch for %s/%s", item.tradeDate, item.scope)
+		}
+		if err := replaceThsThemeRows(context.Background(), transaction, snapshot); err != nil {
+			return err
+		}
+	}
+	if _, err := transaction.Exec(`INSERT INTO database_maintenance(name,completed_at)
+VALUES('ths_theme_stock_v1',?)`, formatTimestamp(time.Now())); err != nil {
+		return err
+	}
+	return transaction.Commit()
 }

@@ -230,13 +230,14 @@ type Link struct {
 }
 
 type Analysis struct {
-	Coverage   Coverage `json:"coverage"`
-	Event      string   `json:"event"`
-	MinOverlap int      `json:"min_overlap"`
-	TotalLinks int      `json:"total_links"`
-	Profile    Profile  `json:"profile"`
-	Links      []Link   `json:"links"`
-	Events     []Event  `json:"events"`
+	Coverage   Coverage       `json:"coverage"`
+	Event      string         `json:"event"`
+	MinOverlap int            `json:"min_overlap"`
+	TotalLinks int            `json:"total_links"`
+	Profile    Profile        `json:"profile"`
+	Links      []Link         `json:"links"`
+	Events     []Event        `json:"events"`
+	Theme      *ThemeAnalysis `json:"theme,omitempty"`
 }
 
 // TodayMember is one stock in the current intraday sealed pool. Historical
@@ -264,6 +265,9 @@ type TodayMember struct {
 	StrongestPeerCode    string     `json:"strongest_peer_code"`
 	StrongestPeerName    string     `json:"strongest_peer_name"`
 	StrongestOverlapDays int        `json:"strongest_overlap_days"`
+	ThemeTags            []ThemeTag `json:"theme_tags"`
+	ThemeNeighborCount   int        `json:"theme_neighbor_count"`
+	ThemeStrength        float64    `json:"theme_strength"`
 }
 
 type TodayCore struct {
@@ -285,6 +289,72 @@ type ThemeRef struct {
 	Name   string  `json:"name"`
 	Type   string  `json:"type"`
 	Weight float64 `json:"weight"`
+}
+
+// ThemeTag is one historical THS Top20 theme label accumulated by a stock.
+// A stock can carry many labels; the label is not a complete industry or
+// concept membership and is only available after the source's daily close.
+type ThemeTag struct {
+	Code              string `json:"code"`
+	Name              string `json:"name"`
+	Occurrences       int    `json:"occurrences"`
+	RecentOccurrences int    `json:"recent_occurrences"`
+	FirstDate         string `json:"first_date"`
+	LastDate          string `json:"last_date"`
+}
+
+type ThemeStockProfile struct {
+	Code       string     `json:"code"`
+	Name       string     `json:"name"`
+	MarketType string     `json:"market_type"`
+	LabelDays  int        `json:"label_days"`
+	Tags       []ThemeTag `json:"tags"`
+}
+
+type ThemeCluster struct {
+	Code        string  `json:"code"`
+	Name        string  `json:"name"`
+	MemberCount int     `json:"member_count"`
+	Weight      float64 `json:"weight"`
+}
+
+// ThemeCooccurrence is one stock-theme-day row joined to another stock that
+// appeared under the same THS theme on the same date.
+type ThemeCooccurrence struct {
+	TradeDate string `json:"trade_date"`
+	ThemeCode string `json:"theme_code"`
+	ThemeName string `json:"theme_name"`
+	PeerCode  string `json:"peer_code"`
+	PeerName  string `json:"peer_name"`
+}
+
+type ThemeLink struct {
+	Code            string     `json:"code"`
+	Name            string     `json:"name"`
+	SharedThemes    []ThemeTag `json:"shared_themes"`
+	ThemeDays       int        `json:"theme_days"`
+	ThemeJaccard    float64    `json:"theme_jaccard"`
+	ThemeSimilarity float64    `json:"theme_similarity"`
+	ThemePurity     float64    `json:"theme_purity"`
+	LabelCoverage   float64    `json:"label_coverage"`
+	CoSealDays      int        `json:"co_seal_days"`
+	LastSharedDate  string     `json:"last_shared_date"`
+	SharedDates     []string   `json:"shared_dates"`
+}
+
+type ThemeAnalysis struct {
+	Profile    ThemeStockProfile `json:"profile"`
+	Links      []ThemeLink       `json:"links"`
+	TotalLinks int               `json:"total_links"`
+	LabelDays  int               `json:"label_days"`
+}
+
+// ThemeReader exposes the derived THS theme-stock index. Implementations must
+// read only complete focus snapshots and must never use fetched_at as the
+// historical date.
+type ThemeReader interface {
+	ReadThemeProfiles(context.Context, string, string, string, []string) ([]ThemeStockProfile, error)
+	ReadThemeCooccurrences(context.Context, string, string, string, string) ([]ThemeCooccurrence, error)
 }
 
 type MainlineTheme struct {
@@ -314,6 +384,7 @@ type TodayCandidate struct {
 	StrongestPhi         float64         `json:"strongest_phi"`
 	ThemeScore           float64         `json:"theme_score"`
 	Themes               []ThemeRef      `json:"themes"`
+	ThemeTags            []ThemeTag      `json:"theme_tags"`
 	TopLinks             []CandidateLink `json:"top_links"`
 }
 
@@ -334,4 +405,5 @@ type TodayNetwork struct {
 	Candidates       []TodayCandidate `json:"candidates"`
 	CandidateLimit   int              `json:"candidate_limit"`
 	MainlineThemes   []MainlineTheme  `json:"mainline_themes"`
+	ThemeMainline    []ThemeCluster   `json:"theme_mainline"`
 }

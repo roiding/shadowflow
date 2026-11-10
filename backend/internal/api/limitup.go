@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/roiding/shadowflow/internal/graymarket"
 	"github.com/roiding/shadowflow/internal/limitup"
 )
 
@@ -78,7 +77,43 @@ func (server *Server) limitUpStock(response http.ResponseWriter, request *http.R
 		server.limitUpError(response, err)
 		return
 	}
+	if themeReader, ok := server.store.(limitup.ThemeReader); ok {
+		themeAnalysis, themeErr := loadThemeAnalysis(request.Context(), themeReader, query, code, result.Links)
+		if themeErr != nil {
+			server.internalError(response, themeErr)
+			return
+		}
+		if themeAnalysis.Profile.Code != "" {
+			result.Theme = &themeAnalysis
+		}
+	}
 	writeJSON(response, http.StatusOK, envelope{Data: result})
+}
+
+func loadThemeAnalysis(
+	ctx context.Context,
+	reader limitup.ThemeReader,
+	query limitup.Query,
+	code string,
+	rawLinks []limitup.Link,
+) (limitup.ThemeAnalysis, error) {
+	normalized, from, err := limitup.NormalizeQuery(query)
+	if err != nil {
+		return limitup.ThemeAnalysis{}, err
+	}
+	profiles, err := reader.ReadThemeProfiles(ctx, from, normalized.AsOf, normalized.Scope, nil)
+	if err != nil {
+		return limitup.ThemeAnalysis{}, err
+	}
+	byCode := make(map[string]limitup.ThemeStockProfile, len(profiles))
+	for _, profile := range profiles {
+		byCode[profile.Code] = profile
+	}
+	rows, err := reader.ReadThemeCooccurrences(ctx, from, normalized.AsOf, normalized.Scope, code)
+	if err != nil {
+		return limitup.ThemeAnalysis{}, err
+	}
+	return limitup.BuildThemeAnalysis(code, byCode, rows, rawLinks), nil
 }
 
 func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request *http.Request) {
@@ -137,6 +172,7 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 	snapshot.ArchivedThrough = historyAsOf
 	history := limitup.Dataset{Days: []limitup.Day{}, Events: []limitup.Event{}}
 	historyFrom := ""
+	themeProfiles := make(map[string]limitup.ThemeStockProfile)
 	if historyAsOf != "" {
 		asOf, _ := time.ParseInLocation("2006-01-02", historyAsOf, server.location)
 		historyFrom = asOf.AddDate(0, 0, 1-days).Format("2006-01-02")
@@ -150,29 +186,21 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 			server.limitUpError(response, err)
 			return
 		}
+		if themeReader, ok := server.store.(limitup.ThemeReader); ok {
+			profiles, themeErr := themeReader.ReadThemeProfiles(request.Context(), historyFrom, historyAsOf, scope, nil)
+			if themeErr != nil {
+				server.internalError(response, themeErr)
+				return
+			}
+			for _, profile := range profiles {
+				themeProfiles[profile.Code] = profile
+			}
+		}
 	}
 	result, err := limitup.AnalyzeToday(request.Context(), limitup.TodayInput{
 		Snapshot: snapshot, History: history, HistoryFrom: historyFrom,
 		LookbackDays: days, MinOverlap: minOverlap, TopCores: top, CandidateLimit: candidates,
-		ThemeLookup: func(codes []string) (map[string][]limitup.ThemeRef, error) {
-			reader, ok := server.store.(interface {
-				StockBoardRelationsBatch(context.Context, []string, string) ([]graymarket.StockBoardRelation, error)
-			})
-			if !ok {
-				return nil, nil
-			}
-			relations, err := reader.StockBoardRelationsBatch(request.Context(), codes, snapshot.TradeDate)
-			if err != nil {
-				return nil, err
-			}
-			byCode := make(map[string][]limitup.ThemeRef, len(codes))
-			for _, relation := range relations {
-				byCode[relation.StockCode] = append(byCode[relation.StockCode], limitup.ThemeRef{
-					Code: relation.BoardCode, Name: relation.BoardName, Type: string(relation.BoardType),
-				})
-			}
-			return byCode, nil
-		},
+		ThemeProfiles: themeProfiles,
 	})
 	if err != nil {
 		server.limitUpError(response, err)

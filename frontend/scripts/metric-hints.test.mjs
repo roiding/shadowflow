@@ -34,6 +34,13 @@ test('quick linkage cards explain the same conditional probability and lift', ()
   }
 })
 
+test('direct linkage search accepts code, Chinese and pinyin instead of numeric-only input', () => {
+  assert.ok(linkageViewSource.includes('输入代码、名称、拼音首字母或全拼'))
+  assert.ok(!linkageViewSource.includes('inputMode="numeric"'))
+  assert.ok(linkageViewSource.includes('filterStockCandidates(sortedStocks, directStockInput)'))
+  assert.ok(linkageViewSource.includes('linkage-direct-suggestions'))
+})
+
 test('hint supports hover, keyboard focus, pinned tap and escape', () => {
   for (const event of ['onMouseEnter', 'onMouseLeave', 'onFocus', 'onBlur', 'onClick']) {
     assert.ok(metricHintSource.includes(event), `missing ${event}`)
@@ -55,8 +62,8 @@ test('today core explains its score and historical relationship metrics', () => 
     'Phi 相关系数',
     '热度折算共现',
     '样本充分度',
-    '题材贴合度',
-    '今日主线',
+    '同花顺题材聚类',
+    '今日同花顺主线',
   ]) {
     assert.ok(todayCoreSource.includes(`<MetricHint label="${label}"`), `missing today-core hint for ${label}`)
   }

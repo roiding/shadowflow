@@ -286,7 +286,48 @@ func TestAnalyzeTodayRanksNonSealedCoSealCandidates(t *testing.T) {
 	}
 }
 
-func TestAnalyzeTodayAppliesMainlineThemeAlignment(t *testing.T) {
+func TestAnalyzeTodayThemeClusterCanFormCoreWithoutRawCoSeal(t *testing.T) {
+	snapshot := IntradaySnapshot{
+		TradeDate: "2026-11-09", Source: SourceTHS, Scope: ScopeDefault, SealedCount: 2,
+		FetchedAt: time.Date(2026, 11, 9, 10, 42, 0, 0, Shanghai()), TradeStatus: "open",
+		Events: []Event{
+			todayEvent("2026-11-09", "000001", PoolSealed),
+			todayEvent("2026-11-09", "000002", PoolSealed),
+		},
+	}
+	history := Dataset{
+		Days: []Day{{TradeDate: "2026-11-06"}, {TradeDate: "2026-11-05"}},
+		Events: []Event{
+			todayEvent("2026-11-06", "000001", PoolSealed),
+			todayEvent("2026-11-05", "000002", PoolSealed),
+		},
+	}
+	robot := ThemeTag{Code: "885517", Name: "机器人概念", Occurrences: 3, LastDate: "2026-11-06"}
+	profiles := map[string]ThemeStockProfile{
+		"000001": {Code: "000001", Name: "甲", LabelDays: 2, Tags: []ThemeTag{robot}},
+		"000002": {Code: "000002", Name: "乙", LabelDays: 2, Tags: []ThemeTag{robot}},
+	}
+	network, err := AnalyzeToday(context.Background(), TodayInput{
+		Snapshot: snapshot, History: history, HistoryFrom: "2025-11-10",
+		LookbackDays: 365, MinOverlap: 1, TopCores: 2, ThemeProfiles: profiles,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(network.ThemeMainline) != 1 || network.ThemeMainline[0].MemberCount != 2 {
+		t.Fatalf("theme mainline was not formed: %+v", network.ThemeMainline)
+	}
+	if len(network.Cores) != 2 {
+		t.Fatalf("theme-only members must still form cores: %+v", network.Cores)
+	}
+	for _, member := range network.Members {
+		if member.EffectiveLinks != 0 || member.ThemeNeighborCount != 1 || member.ThemeStrength <= 0 || member.CoreScore <= 0 {
+			t.Fatalf("theme affinity was not reflected in member/core score: %+v", member)
+		}
+	}
+}
+
+func TestAnalyzeTodayUsesHistoricalTHSThemeClusters(t *testing.T) {
 	snapshot := IntradaySnapshot{
 		TradeDate: "2026-11-09", Source: SourceTHS, Scope: ScopeDefault, SealedCount: 2,
 		FetchedAt: time.Date(2026, 11, 9, 10, 42, 0, 0, Shanghai()), TradeStatus: "open",
@@ -309,72 +350,48 @@ func TestAnalyzeTodayAppliesMainlineThemeAlignment(t *testing.T) {
 			todayEvent("2026-11-03", "000020", PoolSealed),
 		},
 	}
-	themes := map[string][]ThemeRef{
-		"000001": {
-			{Code: "BK0001", Name: "主线行业", Type: "industry"},
-			{Code: "BK9001", Name: "融资融券", Type: "concept"},
-			{Code: "BK9002", Name: "昨日高振幅", Type: "concept"},
-		},
-		"000002": {
-			{Code: "BK0001", Name: "主线行业", Type: "industry"},
-			{Code: "BK9001", Name: "融资融券", Type: "concept"},
-		},
-		"000010": {
-			{Code: "BK0001", Name: "主线行业", Type: "industry"},
-			{Code: "BK9002", Name: "昨日高振幅", Type: "concept"},
-		},
-		"000020": {{Code: "BK0002", Name: "旁支行业", Type: "industry"}},
+	robot := ThemeTag{Code: "885517", Name: "机器人概念", Occurrences: 4, LastDate: "2026-11-06"}
+	other := ThemeTag{Code: "885999", Name: "旁支题材", Occurrences: 2, LastDate: "2026-11-06"}
+	profiles := map[string]ThemeStockProfile{
+		"000001": {Code: "000001", Name: "股票000001", LabelDays: 4, Tags: []ThemeTag{robot}},
+		"000002": {Code: "000002", Name: "股票000002", LabelDays: 3, Tags: []ThemeTag{robot}},
+		"000010": {Code: "000010", Name: "股票000010", LabelDays: 3, Tags: []ThemeTag{robot}},
+		"000020": {Code: "000020", Name: "股票000020", LabelDays: 2, Tags: []ThemeTag{other}},
+		"000030": {Code: "000030", Name: "题材独有候选", LabelDays: 2, Tags: []ThemeTag{robot}},
 	}
 	network, err := AnalyzeToday(context.Background(), TodayInput{
 		Snapshot: snapshot, History: history, HistoryFrom: "2025-11-10",
 		LookbackDays: 365, MinOverlap: 1, TopCores: 2, CandidateLimit: 5,
-		ThemeLookup: func(codes []string) (map[string][]ThemeRef, error) {
-			result := make(map[string][]ThemeRef, len(codes))
-			for _, code := range codes {
-				result[code] = themes[code]
-			}
-			return result, nil
-		},
+		ThemeProfiles: profiles,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(network.MainlineThemes) != 1 || network.MainlineThemes[0].Code != "BK0001" ||
-		network.MainlineThemes[0].MemberCount != 2 || network.MainlineThemes[0].Weight != 1 {
-		t.Fatalf("unexpected mainline themes: %+v", network.MainlineThemes)
+	if len(network.MainlineThemes) != 0 {
+		t.Fatalf("Eastmoney-compatible mainline field must stay empty: %+v", network.MainlineThemes)
+	}
+	if len(network.ThemeMainline) != 1 || network.ThemeMainline[0].Code != robot.Code ||
+		network.ThemeMainline[0].MemberCount != 2 || network.ThemeMainline[0].Weight != 1 {
+		t.Fatalf("unexpected THS mainline themes: %+v", network.ThemeMainline)
 	}
 	byCode := make(map[string]TodayCandidate, len(network.Candidates))
 	for _, candidate := range network.Candidates {
 		byCode[candidate.Code] = candidate
 	}
 	themed := byCode["000010"]
-	if themed.ThemeScore != 1 || len(themed.Themes) != 1 || themed.Themes[0].Code != "BK0001" {
+	if themed.ThemeScore != 1 || len(themed.ThemeTags) != 1 || themed.ThemeTags[0].Code != robot.Code {
 		t.Fatalf("mainline candidate did not receive theme alignment: %+v", themed)
 	}
 	unthemed := byCode["000020"]
-	if unthemed.ThemeScore != 0 || len(unthemed.Themes) != 0 {
+	if unthemed.ThemeScore != 0 || len(unthemed.ThemeTags) != 0 {
 		t.Fatalf("non-mainline candidate received theme alignment: %+v", unthemed)
 	}
 	if themed.Score <= unthemed.Score {
 		t.Fatalf("theme alignment did not lift the mainline candidate: %+v", network.Candidates)
 	}
-}
-
-func TestIsThematicConceptFiltersBroadMarketAttributes(t *testing.T) {
-	for _, name := range []string{
-		"融资融券", "昨日高振幅", "连续亏损", "QFII重仓", "2026中报预增",
-		"专精特新", "央国企改革", "小盘股", "标准普尔", "历史新高",
-	} {
-		if isThematicConcept(name) {
-			t.Errorf("broad concept %q was treated as thematic", name)
-		}
-	}
-	for _, name := range []string{
-		"机器人概念", "人形机器人", "新能源车", "华为概念", "人工智能",
-		"AI眼镜", "影视概念", "短剧互动游戏", "券商概念", "参股保险",
-	} {
-		if !isThematicConcept(name) {
-			t.Errorf("thematic concept %q was filtered out", name)
-		}
+	themeOnly, exists := byCode["000030"]
+	if !exists || themeOnly.ThemeScore != 1 || themeOnly.EffectiveLinks != 0 ||
+		themeOnly.Strength != 0 || themeOnly.Score <= 0 {
+		t.Fatalf("theme-only candidate was not added explicitly: %+v", themeOnly)
 	}
 }

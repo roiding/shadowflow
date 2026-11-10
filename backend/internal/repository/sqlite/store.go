@@ -141,6 +141,9 @@ func OpenWithReadConns(path string, readConns int) (*Store, error) {
 	if _, err := db.Exec(thsFocusSchema); err != nil {
 		return nil, fmt.Errorf("migrate THS focus tables: %w", err)
 	}
+	if err := migrateThsThemeStock(store); err != nil {
+		return nil, fmt.Errorf("migrate THS theme-stock index: %w", err)
+	}
 	if _, err := db.Exec(thsAuthSchema); err != nil {
 		return nil, fmt.Errorf("migrate THS auth tables: %w", err)
 	}

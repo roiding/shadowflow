@@ -39,7 +39,7 @@
 - `end-of-day-events` 只负责涨停事件；同花顺题材补充由独立的 `ths-focus` 盘后任务在 `16:45` 执行，重试时跳过已完成分项。Compose中的事件开关按部署选择默认开启；直接运行Go程序时默认关闭，实际运行以配置为准。
 - 手动补充入口：`collect -task ths-focus -date YYYY-MM-DD -scope HS,GEM2STAR`。不会自动回补全年。
 - `GET /api/v1/limit-up/focus?trade_date=YYYY-MM-DD&scope=HS,GEM2STAR` 只读本地。没有数据返回`not_collected`，不在打开页面时采集上游。
-- 股票联动页提供辅助题材、来源解释和梯队信息；连线继续使用同日事件共现，不因题材相同自动加边。
+- 股票联动页同时提供同花顺 Top20 历史累计题材聚类、全市场同日事件共现、来源解释和梯队信息。题材聚类和全市场共振分开展示；未分类/其他/原因不明的题材桶不进入聚类，东财行业/概念不作为题材主线来源。
 - `block_top`和梯队按请求scope记录，概览和两日对照使用`source_default`口径。部分接口没有日期回显，`source_date_verified=false`，界面显示限制；不能作为严格点时回测事实。
 - 跌停请求加入`330333/330334`，存储真实`first_limit_down_time/last_limit_down_time`，股性新增首次跌停时刻中位数和有效样本数。老记录缺失时保持未知，须重采后才有时间数据。
 

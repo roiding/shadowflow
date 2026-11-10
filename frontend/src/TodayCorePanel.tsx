@@ -123,8 +123,8 @@ function CoreMemberHeader({ member, rank }: { member: LimitUpTodayMember; rank: 
         <strong>{formatNumber(member.core_score, 1)}</strong>
         <span>
           核心度
-          <MetricHint label="核心度" formula="100 × (45% 关系强度 + 30% 关系覆盖 + 25% 邻居强度)">
-            在当前今日封板成员子图内的综合排序分，满分100。关系强度是本股与其他今日封板股的历史收盘封板共现加权和；关系覆盖是有有效关系的今日成员占比；邻居强度是相连成员自身强度的汇总。三项分别按本次结果中的最大值归一化后再加权。它只描述当前子图中的历史共现位置，不代表因果、带动能力或收益预测。
+          <MetricHint label="核心度" formula="100 × (35% 关系强度 + 25% 关系覆盖 + 20% 邻居强度 + 20% 同题材聚类)">
+            在当前今日封板成员子图内的综合排序分，满分100。关系强度是本股与其他今日封板股的历史收盘封板共现加权和；关系覆盖是有有效关系的今日成员占比；邻居强度是相连成员自身强度的汇总；同题材聚类是与今日其他成员共享有效同花顺 Top20 历史标签的 IDF 加权强度。四项分别按本次结果中的最大值归一化后再加权；没有有效题材标签时，题材项按 0 处理，其余三项重新归一化。它只描述当前子图中的历史关系与题材位置，不代表因果、带动能力或收益预测。
           </MetricHint>
         </span>
       </div>
@@ -140,6 +140,19 @@ function CoreDetail({ core, rank }: { core: LimitUpTodayCore; rank: number }) {
   return (
     <article className="today-core-card">
       <CoreMemberHeader member={member} rank={rank} />
+      <div className="today-core-theme-tags">
+        <span>同花顺题材聚类</span>
+        {(member.theme_tags ?? []).length > 0 ? (
+          (member.theme_tags ?? []).map((tag) => (
+            <span className="today-core-theme-tag" key={tag.code} title={`${tag.occurrences} 次 · 最近 ${tag.last_date}`}>
+              {tag.name}
+              <small>{tag.occurrences}次</small>
+            </span>
+          ))
+        ) : (
+          <small>该股在回看窗口内没有有效的 Top20 题材标签；不会用东财板块替代。</small>
+        )}
+      </div>
       <div className="today-core-facts">
         <div>
           <span>历史封板 / 触板</span>
@@ -149,7 +162,7 @@ function CoreDetail({ core, rank }: { core: LimitUpTodayCore; rank: number }) {
         <div>
           <span>有效关系</span>
           <strong>{member.effective_links} 只</strong>
-          <small>覆盖今日成员 {formatPercent(member.coverage)}</small>
+          <small>覆盖今日成员 {formatPercent(member.coverage)} · 同题材邻居 {member.theme_neighbor_count ?? 0} 只</small>
         </div>
         <div>
           <span>关系强度</span>
@@ -255,7 +268,9 @@ function CoreDetail({ core, rank }: { core: LimitUpTodayCore; rank: number }) {
           <tbody>
             {paged.paginatedItems.length === 0 && (
               <tr>
-                <td colSpan={9} className="muted today-core-table-empty">当前阈值下没有符合条件的今日成员关系。</td>
+                <td colSpan={9} className="muted today-core-table-empty">
+                  当前阈值下没有符合条件的收盘封板关系；可参考上方同花顺题材标签和同题材邻居。
+                </td>
               </tr>
             )}
             {paged.paginatedItems.map((link) => (
@@ -334,7 +349,12 @@ function MemberRoster({ network }: { network: LimitUpTodayNetwork }) {
             <span>{index + 1}</span>
             <strong>{member.name}</strong>
             <code>{member.code}</code>
-            <small>封{member.seal_days} · 关{member.effective_links} · 分{formatNumber(member.core_score, 0)}</small>
+            <small>封{member.seal_days} · 关{member.effective_links} · 题{member.theme_neighbor_count ?? 0} · 分{formatNumber(member.core_score, 0)}</small>
+            {(member.theme_tags ?? []).length > 0 && (
+              <small className="today-core-chip-themes">
+                {(member.theme_tags ?? []).slice(0, 2).map((theme) => theme.name).join('、')}
+              </small>
+            )}
           </div>
         ))}
       </div>
@@ -358,7 +378,7 @@ function CandidateTable({
       <div className="today-core-candidates-head">
         <div>
           <h3 id="today-core-candidates-title"><Network size={15} />外溢待选</h3>
-          <p>历史上与今日封板成员同日封板、但今日未封板的股票；按核心度加权共现排序，不是推荐。</p>
+          <p>按历史同题材聚类、同日封板关系和核心度加权排序；包括只通过 Top20 标签关联、没有直接共封记录的待选股，不是推荐。</p>
         </div>
         <span>{candidates.length} 只</span>
       </div>
@@ -371,16 +391,16 @@ function CandidateTable({
               <th>
                 <span className="linkage-column-label">
                   综合分
-                  <MetricHint label="外溢综合分" formula="75% × 基础分 + 25% 题材贴合度">
-                    基础分按 60% 主线关联度、15% 覆盖度、25% 最近度计算，再压缩到 75%；主线关联度用 φ 相关系数衡量候选股是否专门跟随今日核心，已扣除候选股与今日成员各自的封板频率，并按共现次数收缩稀疏样本，取最强 3 条关系的均值。题材贴合度是候选股命中的今日主线行业/概念板块权重之和，上限 1。
+                  <MetricHint label="外溢综合分" formula="70% × 基础分 + 30% 同花顺题材聚类">
+                    基础分按 60% 主线关联度、15% 覆盖度、25% 最近度计算，再保留 70%；主线关联度用 φ 相关系数衡量候选股是否专门跟随今日核心，已扣除候选股与今日成员各自的封板频率，并按共现次数收缩稀疏样本，取最强 3 条关系的均值。同花顺题材聚类是候选股命中的今日 Top20 历史累计题材主线权重之和，上限 1；没有直接共封记录的题材候选只拿这 30% 的题材分，因此会明确排在关系更强的股票后面。
                   </MetricHint>
                 </span>
               </th>
               <th>
                 <span className="linkage-column-label">
-                  题材贴合
-                  <MetricHint label="题材贴合度" formula="Σ 命中主线权重，上限 1">
-                    今日主线取今日封板成员中至少 2 只共同所属的行业/概念板块，按成员核心度加权，行业/概念各取前 5；融资融券、昨日高振幅、连续亏损等宽泛风格或状态标签不参与。候选命中主线板块的归一化权重之和即题材贴合度，未命中为 0。
+                  同花顺题材
+                  <MetricHint label="同花顺题材聚类" formula="Σ 命中 Top20 历史主线权重，上限 1">
+                    今日主线取今日封板成员共享的同花顺 Top20 历史累计题材标签，至少 2 只成员共享才计入；按成员核心度和标签 IDF 加权。未分类、其他、原因不明或全组都没有明确原因标签的题材桶不参与，也不会用东财行业/概念替代。候选命中主线的归一化权重之和即题材聚类分，未命中为 0。
                   </MetricHint>
                 </span>
               </th>
@@ -403,9 +423,9 @@ function CandidateTable({
                 <td>
                   <strong>{formatNumber((candidate.theme_score ?? 0) * 100, 0)}</strong>
                   <small>
-                    {(candidate.themes ?? []).length > 0
-                      ? (candidate.themes ?? []).slice(0, 2).map((theme) => theme.name).join('、')
-                      : '未匹配主线'}
+                    {(candidate.theme_score ?? 0) > 0 && (candidate.theme_tags ?? []).length > 0
+                      ? (candidate.theme_tags ?? []).slice(0, 3).map((theme) => theme.name).join('、')
+                      : '未匹配题材'}
                   </small>
                 </td>
                 <td>
@@ -440,7 +460,7 @@ function CandidateTable({
         </table>
       </div>
       <div className="today-core-card-note">
-        外溢待选只表示历史共现关系，不包含今日实时涨幅或资金确认；请结合盘口自行判断。
+        外溢待选只表示历史同题材聚类与共现关系，不包含今日实时涨幅或资金确认；没有直接共封记录的题材候选也不会被伪装成强关系。请结合盘口自行判断。
       </div>
     </section>
   )
@@ -566,10 +586,10 @@ export function TodayCorePanel({
       >
         <header className="today-core-head">
           <div>
-            <p className="linkage-eyebrow">盘中实时 · 历史收盘封板关系</p>
+            <p className="linkage-eyebrow">盘中实时 · 同花顺历史题材聚类</p>
             <h2 id="today-core-title"><Crown size={20} />今日涨停核心</h2>
             <p>
-              只分析点击时仍封住涨停的股票，并在这些成员之间回看历史收盘封板共现。今日盘中快照不写入历史，也不进入历史分母。
+              只分析点击时仍封住涨停的股票，用它们过去一年积累的同花顺 Top20 题材标签寻找今日主线，再结合历史收盘封板关系排列外溢候选。今日盘中快照不写入历史，也不进入历史分母。
             </p>
           </div>
           <button ref={closeRef} type="button" className="linkage-quick-close" onClick={onClose} aria-label="关闭今日核心" title="关闭（Esc）">
@@ -680,31 +700,39 @@ export function TodayCorePanel({
                 </div>
               </div>
 
-              {(network.mainline_themes ?? []).length > 0 && (
+              {(network.theme_mainline ?? []).length > 0 && (
                 <div className="today-core-mainlines">
                   <span className="today-core-mainlines-label">
-                    今日主线
-                    <MetricHint label="今日主线" formula="至少 2 只今日封板成员共同所属，按核心度加权">
-                      今日封板成员中至少 2 只共同所属的行业/概念板块；行业与概念各取加权成员数前 5。融资融券、昨日高振幅、连续亏损等宽泛风格或状态标签会被剔除，避免几乎所有股票都命中主线。
+                    今日同花顺主线
+                    <MetricHint label="今日同花顺主线" formula="至少 2 只今日封板成员共享 Top20 标签，按核心度 × IDF 加权">
+                      只使用同花顺 Top20 在历史日期中积累到个股上的题材标签。至少 2 只今日封板成员共享同一标签才计入主线，按成员核心度和标签 IDF 加权，避免大题材把几乎所有股票连在一起。未分类、其他、原因不明或全组没有明确原因标签的题材桶不参与，东财行业/概念不作为替代。
                     </MetricHint>
                   </span>
-                  {(network.mainline_themes ?? []).map((theme) => (
+                  {(network.theme_mainline ?? []).map((theme) => (
                     <span
-                      key={`${theme.type}:${theme.code}`}
-                      className={`today-core-mainline ${theme.type}`}
-                      title={`${theme.type === 'industry' ? '行业' : '概念'} · 权重 ${formatNumber(theme.weight, 2)}`}
+                      key={theme.code}
+                      className="today-core-mainline"
+                      title={`Top20 历史标签 · 权重 ${formatNumber(theme.weight, 2)}`}
                     >
                       {theme.name}
-                      <small>{theme.member_count} 只封板</small>
+                      <small>{theme.member_count} 只封板 · 权重 {formatNumber(theme.weight, 2)}</small>
                     </span>
                   ))}
+                </div>
+              )}
+              {network.history_available && (network.theme_mainline ?? []).length === 0 && (
+                <div className="today-core-caveat">
+                  <Info size={14} />
+                  <span>
+                    当前没有至少 2 只今日封板成员共享有效的同花顺 Top20 历史题材标签；不会用东财行业/概念补一条“伪主线”。
+                  </span>
                 </div>
               )}
 
               <div className="today-core-caveat">
                 <Info size={14} />
                 <span>
-                  快照会随开板、回封而变化，刷新后成员和排名可能不同。历史关系仅使用 {network.history_as_of || '最近完整日'} 及更早的收盘封板归档；今日实时封板不参与统计。共现不代表因果、带动或未来收益。
+                  快照会随开板、回封而变化，刷新后成员和排名可能不同。题材标签只使用 {network.history_as_of || '最近完整日'} 及更早的同花顺 Top20 归档，今日实时封板不参与统计；没有有效 Top20 标签的股票不会被东财板块强行归类。共现不代表因果、带动或未来收益。
                 </span>
               </div>
 
@@ -746,7 +774,10 @@ export function TodayCorePanel({
                         <span className={`today-core-tab-rank${coreRankClass(index + 1)}`}>{index + 1}</span>
                         <span>
                           <strong>{core.member.name}</strong>
-                          <small>{formatNumber(core.member.core_score, 1)} 分 · {core.links.length} 关系</small>
+                          <small>
+                            {formatNumber(core.member.core_score, 1)} 分 · {core.links.length} 关系
+                            {(core.member.theme_neighbor_count ?? 0) > 0 ? ` · 题${core.member.theme_neighbor_count}` : ''}
+                          </small>
                         </span>
                       </button>
                     ))}

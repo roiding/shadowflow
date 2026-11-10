@@ -362,9 +362,39 @@ export function LinkageQuickPanel({
                 {formatPercent(profile.event_frequency)}，完整样本日 {analysisData.coverage.observed_days} 天。
               </p>
 
+              {analysisData.theme && (analysisData.theme.profile.tags ?? []).length > 0 && (
+                <section className="linkage-quick-theme" aria-label="同花顺历史题材标签">
+                  <div className="linkage-quick-section-head">
+                    <div>
+                      <strong>同花顺历史题材聚类</strong>
+                      <span>
+                        历史累计 Top20 标签，不是东财行业/概念；未分类桶已排除
+                        <MetricHint label="同花顺题材标签" formula="窗口内进入同一 Top20 题材的交易日数">
+                          同一股票可以在不同日期积累多个涨停原因标签。标签出现次数越多、最近越常出现，越靠前；它只用于股票聚类，不代表完整成份或盘前已知信息。
+                        </MetricHint>
+                      </span>
+                    </div>
+                    <span className="linkage-tag-success">{analysisData.theme.label_days} 个标签日</span>
+                  </div>
+                  <div className="linkage-quick-theme-tags">
+                    {(analysisData.theme.profile.tags ?? []).slice(0, 8).map((tag) => (
+                      <span key={tag.code} title={`${tag.occurrences} 次 · 最近 ${tag.last_date}`}>
+                        {tag.name}
+                        <small>{tag.occurrences}次</small>
+                      </span>
+                    ))}
+                  </div>
+                </section>
+              )}
+              {analysisData.theme && (analysisData.theme.profile.tags ?? []).length === 0 && (
+                <p className="linkage-quick-profile-note">
+                  当前窗口没有有效的同花顺 Top20 历史题材标签；不会用东财行业/概念替代，也不会把未分类桶当成题材。
+                </p>
+              )}
+
               <div className="linkage-quick-section-head">
                 <div>
-                  <strong>Top {limit} 联动股票</strong>
+                  <strong>Top {limit} 全市场同日共振股票</strong>
                   <span>
                     {QUICK_EVENT_LABELS[eventType]} · 至少协同 {minOverlap} 次 · 按协同次数降序 · 符合条件{' '}
                     {analysisData.total_links} 只 · 完整样本日 {analysisData.coverage.observed_days} 天
@@ -420,7 +450,7 @@ export function LinkageQuickPanel({
               </div>
 
               <div className="linkage-quick-note">
-                条件概率表示中心股票事件日中出现该股同日事件的占比；提升倍数相对完整样本日基准频率。共现不代表先后、因果或未来收益。
+                下方列表是全市场同日共振，不等同于上方 Top20 同题材聚类；条件概率表示中心股票事件日中出现该股同日事件的占比，提升倍数相对完整样本日基准频率。共现不代表先后、因果或未来收益。
               </div>
             </>
           )}
