@@ -11,8 +11,14 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/roiding/shadowflow/internal/graymarket"
 	"github.com/roiding/shadowflow/internal/limitup"
 )
+
+type boardThemeFallbackReader interface {
+	StockBoardRelationsBatch(context.Context, []string, string) ([]graymarket.StockBoardRelation, error)
+	CurrentBoardMembershipStats(context.Context) (map[string]int, int, error)
+}
 
 func limitUpQuery(request *http.Request) (limitup.Query, error) {
 	values := request.URL.Query()
@@ -180,6 +186,10 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 	history := limitup.Dataset{Days: []limitup.Day{}, Events: []limitup.Event{}}
 	historyFrom := ""
 	themeProfiles := make(map[string]limitup.ThemeStockProfile)
+	var boardReader boardThemeFallbackReader
+	var boardCounts map[string]int
+	var boardDocuments int
+	var boardStatsLoaded bool
 	if historyAsOf != "" {
 		asOf, _ := time.ParseInLocation("2006-01-02", historyAsOf, server.location)
 		historyFrom = asOf.AddDate(0, 0, 1-days).Format("2006-01-02")
@@ -204,6 +214,46 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 			}
 		}
 	}
+	if reader, ok := server.store.(boardThemeFallbackReader); ok {
+		boardReader = reader
+	}
+	loadBoardFallbacks := func(codes []string) bool {
+		if boardReader == nil || len(codes) == 0 {
+			return false
+		}
+		if !boardStatsLoaded {
+			counts, documents, boardErr := boardReader.CurrentBoardMembershipStats(request.Context())
+			if boardErr != nil {
+				server.logger.Warn("read Eastmoney board fallback statistics", "error", boardErr)
+				boardReader = nil
+				return false
+			}
+			boardCounts, boardDocuments, boardStatsLoaded = counts, documents, true
+		}
+		relations, boardErr := boardReader.StockBoardRelationsBatch(request.Context(), codes, snapshot.TradeDate)
+		if boardErr != nil {
+			server.logger.Warn("read Eastmoney board fallback relations", "error", boardErr)
+			return false
+		}
+		memberships := make([]limitup.BoardMembership, 0, len(relations))
+		for _, relation := range relations {
+			memberships = append(memberships, limitup.BoardMembership{
+				StockCode: relation.StockCode, StockName: relation.StockName,
+				BoardCode: relation.BoardCode, BoardName: relation.BoardName,
+				BoardType: string(relation.BoardType), SourceOrder: relation.SourceOrder,
+			})
+		}
+		before := len(themeProfiles)
+		themeProfiles = limitup.AddBoardThemeFallbacks(
+			themeProfiles, codes, memberships, boardCounts, boardDocuments,
+		)
+		return len(themeProfiles) > before
+	}
+	memberCodes := make([]string, 0, len(snapshot.Events))
+	for _, event := range snapshot.Events {
+		memberCodes = append(memberCodes, event.Code)
+	}
+	loadBoardFallbacks(memberCodes)
 	input := limitup.TodayInput{
 		Snapshot: snapshot, History: history, HistoryFrom: historyFrom,
 		LookbackDays: days, MinOverlap: minOverlap, TopCores: top, CandidateLimit: candidates,
@@ -213,6 +263,14 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 	if err != nil {
 		server.limitUpError(response, err)
 		return
+	}
+	if loadBoardFallbacks(todayCandidateQuoteCodes(result)) {
+		input.ThemeProfiles = themeProfiles
+		result, err = limitup.AnalyzeToday(request.Context(), input)
+		if err != nil {
+			server.limitUpError(response, err)
+			return
+		}
 	}
 	liveQuoteStatus := "disabled"
 	if server.limitUpQuotes != nil {

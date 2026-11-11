@@ -1383,166 +1383,6 @@
   background: #ffffff;
 }
 
-.today-core-candidates.embedded {
-  margin-top: 0;
-  padding: 8px 10px 6px;
-  border: 0;
-  border-top: 1px solid var(--line, #e4e8ed);
-  border-radius: 0;
-}
-
-.today-core-mainline-board {
-  margin-top: 14px;
-  padding: 10px 12px 8px;
-  border: 1px solid var(--line, #e4e8ed);
-  border-radius: 7px;
-  background: #ffffff;
-}
-
-.today-core-mainline-board-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--line, #e4e8ed);
-}
-
-.today-core-mainline-board-head h3 {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin: 0;
-  color: var(--ink, #17212f);
-  font-size: 12px;
-}
-
-.today-core-mainline-board-head p {
-  margin: 3px 0 0;
-  color: var(--muted, #7b8795);
-  font-size: 9px;
-  line-height: 1.45;
-}
-
-.today-core-mainline-board-head > span {
-  flex: none;
-  color: var(--muted, #7b8795);
-  font-size: 9px;
-}
-
-.today-core-mainline-intersections {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 5px;
-  padding: 8px 0 2px;
-  color: var(--muted, #7b8795);
-  font-size: 9px;
-}
-
-.today-core-mainline-intersections > span:first-child {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.today-core-mainline-intersection {
-  padding: 3px 6px;
-  border: 1px solid #d8c8f3;
-  border-radius: 999px;
-  background: #faf7ff;
-  color: #5b3fa0;
-}
-
-.today-core-mainline-intersection small {
-  margin-left: 4px;
-  color: var(--muted, #7b8795);
-  font-size: 8px;
-}
-
-.today-core-cross-mainlines,
-.today-core-mainline-group {
-  margin-top: 8px;
-  border: 1px solid var(--line, #e4e8ed);
-  border-radius: 6px;
-  background: #fcfdff;
-  overflow: hidden;
-}
-
-.today-core-cross-mainlines > summary,
-.today-core-mainline-group > summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  cursor: pointer;
-  list-style: none;
-}
-
-.today-core-cross-mainlines > summary::-webkit-details-marker,
-.today-core-mainline-group > summary::-webkit-details-marker {
-  display: none;
-}
-
-.today-core-cross-mainlines > summary > span:first-child,
-.today-core-mainline-group-title {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.today-core-cross-mainlines > summary strong,
-.today-core-mainline-group-title strong {
-  color: var(--ink, #17212f);
-  font-size: 10px;
-}
-
-.today-core-cross-mainlines > summary small,
-.today-core-mainline-group-title small {
-  color: var(--muted, #7b8795);
-  font-size: 9px;
-}
-
-.today-core-mainline-group > summary > svg {
-  flex: none;
-  margin-left: auto;
-  color: var(--muted, #7b8795);
-  transition: transform 0.15s ease;
-}
-
-.today-core-cross-mainlines > summary > svg {
-  flex: none;
-  margin-left: auto;
-  color: var(--muted, #7b8795);
-  transition: transform 0.15s ease;
-}
-
-.today-core-cross-mainlines[open] > summary > svg {
-  transform: rotate(180deg);
-}
-
-.today-core-mainline-group[open] > summary > svg {
-  transform: rotate(180deg);
-}
-
-.today-core-mainline-group-related {
-  flex: none;
-  color: #5b3fa0;
-  font-size: 9px;
-}
-
-.today-core-mainline-groups {
-  display: grid;
-  gap: 8px;
-}
-
-.today-core-mainline-empty {
-  padding: 12px 10px;
-  border-top: 1px solid var(--line, #e4e8ed);
-  color: var(--muted, #7b8795);
-  font-size: 9px;
-}
-
 .today-core-candidates-head {
   display: flex;
   align-items: flex-start;
@@ -1611,6 +1451,12 @@
   color: #2f6fa8;
 }
 
+.today-core-mainline.communication {
+  border-color: #cfe3f7;
+  background: #f1f8ff;
+  color: #2f6fa8;
+}
+
 .today-core-mainline small {
   color: var(--muted, #7b8795);
   font-size: 8px;
@@ -1626,6 +1472,30 @@
   margin-top: 2px;
   color: var(--muted, #7b8795);
   font-size: 9px;
+}
+
+.today-core-candidate-mainlines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  max-width: 190px;
+  margin-top: 3px;
+}
+
+.today-core-candidate-mainlines span {
+  padding: 1px 4px;
+  border: 1px solid #e4d8f7;
+  border-radius: 3px;
+  background: #faf7ff;
+  color: #6f4fb3;
+  font-size: 8px;
+  line-height: 1.4;
+}
+
+.today-core-candidate-mainlines span.communication {
+  border-color: #cfe3f7;
+  background: #f1f8ff;
+  color: #2f6fa8;
 }
 
 .today-core-candidate-table {

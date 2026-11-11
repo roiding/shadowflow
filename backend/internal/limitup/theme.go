@@ -175,8 +175,8 @@ func ComputeThemeMainline(
 		code        string
 		name        string
 		memberCodes map[string]struct{}
+		sources     map[string]struct{}
 		weight      float64
-		recency     float64
 		lastSealAt  *time.Time
 		penalty     *themePenalty
 		brokenCount int
@@ -207,13 +207,18 @@ func ComputeThemeMainline(
 				item = &aggregate{
 					code: tag.Code, name: tag.Name,
 					memberCodes: make(map[string]struct{}),
+					sources:     make(map[string]struct{}),
 					penalty:     penaltyByTheme[tag.Code],
 				}
 				byTheme[tag.Code] = item
 			}
 			item.memberCodes[member.Code] = struct{}{}
-			item.weight += (1 + member.CoreScore/100) * themeIDF(tag.Code, documentFrequency, len(profiles))
-			item.recency = math.Max(item.recency, themeRecency(tag, member.LastLimitAt))
+			source := tag.Source
+			if source == "" {
+				source = ThemeSourceTHS
+			}
+			item.sources[source] = struct{}{}
+			item.weight += (1 + member.CoreScore/100) * themeTagWeight(tag, documentFrequency, len(profiles))
 			lastSealAt := member.LastLimitAt
 			if lastSealAt == nil {
 				lastSealAt = member.FirstLimitAt
@@ -251,7 +256,6 @@ func ComputeThemeMainline(
 		list[index].sealQuality = themeSealQuality(
 			len(list[index].memberCodes), list[index].brokenCount, list[index].downCount,
 		)
-		list[index].weight *= 0.7 + 0.3*clamp01(list[index].recency)
 		list[index].weight *= list[index].freshness
 		list[index].weight *= list[index].sealQuality
 		maxWeight = math.Max(maxWeight, list[index].weight)
@@ -280,12 +284,21 @@ func ComputeThemeMainline(
 		sort.Strings(memberCodes)
 		result = append(result, ThemeCluster{
 			Code: item.code, Name: item.name, MemberCount: len(memberCodes),
-			Weight: item.weight / maxWeight, Recency: clamp01(item.recency),
+			Weight: item.weight / maxWeight, Sources: sortedThemeSources(item.sources),
 			Freshness: item.freshness, SealQuality: item.sealQuality,
 			LastSealAt: item.lastSealAt, BrokenCount: item.brokenCount, DownCount: item.downCount,
 			MemberCodes: memberCodes,
 		})
 	}
+	return result
+}
+
+func sortedThemeSources(sources map[string]struct{}) []string {
+	result := make([]string, 0, len(sources))
+	for source := range sources {
+		result = append(result, source)
+	}
+	sort.Strings(result)
 	return result
 }
 
@@ -387,34 +400,6 @@ func themeSealQuality(sealedCount, brokenCount, downCount int) float64 {
 	return clamp01(float64(sealedCount) / (float64(sealedCount) + penalty))
 }
 
-// themeRecency distinguishes a label that the market is using now from one
-// that merely exists in the stock's 365-day profile. It uses the label's last
-// appearance and deliberately stays in [0,1]; the mainline weight is still
-// driven by current member breadth and idf.
-func themeRecency(tag ThemeTag, lastSealAt *time.Time) float64 {
-	if tag.LastDate == "" {
-		return 0
-	}
-	last, err := time.ParseInLocation("2006-01-02", tag.LastDate, Shanghai())
-	if err != nil {
-		return 0
-	}
-	reference := time.Time{}
-	if lastSealAt != nil {
-		reference = *lastSealAt
-	}
-	if reference.IsZero() {
-		reference = time.Now().In(Shanghai())
-	}
-	days := reference.Sub(last).Hours() / 24
-	if days < 0 {
-		days = 0
-	}
-	// A label used in the current week keeps most of its weight; a label that
-	// has not appeared for two months retains only the minimum.
-	return 1 / (1 + days/21)
-}
-
 type memberThemeAffinity struct {
 	neighbors int
 	strength  float64
@@ -439,7 +424,7 @@ func computeMemberThemeAffinity(members []TodayMember, profiles map[string]Theme
 		}
 		byTheme := make(map[string]float64)
 		for _, tag := range normaliseThemeTags(profile.Tags) {
-			byTheme[tag.Code] = themeIDF(tag.Code, documentFrequency, len(profiles))
+			byTheme[tag.Code] = themeTagWeight(tag, documentFrequency, len(profiles))
 		}
 		weights[member.Code] = byTheme
 		result[member.Code] = memberThemeAffinity{}
@@ -651,6 +636,9 @@ func themeDocumentFrequency(profiles map[string]ThemeStockProfile) map[string]in
 	for _, profile := range profiles {
 		seen := make(map[string]struct{}, len(profile.Tags))
 		for _, tag := range normaliseThemeTags(profile.Tags) {
+			if tag.Source == ThemeSourceEastmoneyConcept || tag.Source == ThemeSourceEastmoneyIndustry {
+				continue
+			}
 			if _, duplicate := seen[tag.Code]; duplicate {
 				continue
 			}
@@ -659,6 +647,13 @@ func themeDocumentFrequency(profiles map[string]ThemeStockProfile) map[string]in
 		}
 	}
 	return result
+}
+
+func themeTagWeight(tag ThemeTag, documentFrequency map[string]int, documents int) float64 {
+	if tag.weight > 0 {
+		return tag.weight
+	}
+	return themeIDF(tag.Code, documentFrequency, documents)
 }
 
 func themeIDF(code string, documentFrequency map[string]int, documents int) float64 {
@@ -714,8 +709,14 @@ func normaliseThemeTags(tags []ThemeTag) []ThemeTag {
 			continue
 		}
 		existing.Occurrences += tag.Occurrences
+		if tag.weight > existing.weight {
+			existing.weight = tag.weight
+		}
 		if tag.RecentOccurrences > existing.RecentOccurrences {
 			existing.RecentOccurrences = tag.RecentOccurrences
+		}
+		if existing.Source == "" && tag.Source != "" {
+			existing.Source = tag.Source
 		}
 		if existing.FirstDate == "" || (tag.FirstDate != "" && tag.FirstDate < existing.FirstDate) {
 			existing.FirstDate = tag.FirstDate
@@ -751,6 +752,9 @@ func isUnclassifiedThemeName(name string) bool {
 
 func sortThemeTags(tags []ThemeTag) {
 	sort.SliceStable(tags, func(left, right int) bool {
+		if tags[left].weight != tags[right].weight {
+			return tags[left].weight > tags[right].weight
+		}
 		if tags[left].Occurrences != tags[right].Occurrences {
 			return tags[left].Occurrences > tags[right].Occurrences
 		}

@@ -18,6 +18,10 @@ const (
 	EventTouched   = "touch"
 	EventDown      = "down"
 	MinimumSamples = 20
+
+	ThemeSourceTHS               = "ths"
+	ThemeSourceEastmoneyConcept  = "eastmoney_concept"
+	ThemeSourceEastmoneyIndustry = "eastmoney_industry"
 )
 
 var (
@@ -313,6 +317,8 @@ type ThemeTag struct {
 	RecentOccurrences int    `json:"recent_occurrences"`
 	FirstDate         string `json:"first_date"`
 	LastDate          string `json:"last_date"`
+	Source            string `json:"source,omitempty"`
+	weight            float64
 }
 
 type ThemeStockProfile struct {
@@ -323,12 +329,24 @@ type ThemeStockProfile struct {
 	Tags       []ThemeTag `json:"tags"`
 }
 
+// BoardMembership is the small projection of an Eastmoney stock-board
+// relation needed to fall back to board-based clustering when a stock has no
+// usable historical THS Top20 label.
+type BoardMembership struct {
+	StockCode   string
+	StockName   string
+	BoardCode   string
+	BoardName   string
+	BoardType   string
+	SourceOrder int
+}
+
 type ThemeCluster struct {
 	Code        string     `json:"code"`
 	Name        string     `json:"name"`
 	MemberCount int        `json:"member_count"`
 	Weight      float64    `json:"weight"`
-	Recency     float64    `json:"recency"`
+	Sources     []string   `json:"sources"`
 	Freshness   float64    `json:"freshness"`
 	SealQuality float64    `json:"seal_quality"`
 	LastSealAt  *time.Time `json:"last_seal_at"`

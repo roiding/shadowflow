@@ -1131,7 +1131,7 @@ export interface paths {
                     min_overlap?: number;
                     /** @description 返回的核心股数量；无有效关系或并列时按核心度、关系数、封板天数及代码稳定排序。 */
                     top?: number;
-                    /** @description 每条实时主线独立返回的非封板外溢待选股数量上限。 */
+                    /** @description 统一候选结果集的去重后数量上限，同时限制每条实时主线内部保留的候选数量。 */
                     candidates?: number;
                 };
                 header?: never;
@@ -1550,13 +1550,13 @@ export interface components {
             members: components["schemas"]["LimitUpTodayMember"][];
             /** @description 至少有一条有效关系的核心成员，最多top只。 */
             cores: components["schemas"]["LimitUpTodayCore"][];
-            /** @description 与今日封板成员历史共现或共享同花顺历史题材主线、但今日未封板的待选股，按综合分降序。 */
+            /** @description 与今日封板成员历史共现或共享有效题材主线、但今日未封板的待选股，按综合分降序。 */
             candidates: components["schemas"]["LimitUpTodayCandidate"][];
-            /** @description 每条实时主线独立保留的候选数量上限。 */
+            /** @description 统一候选结果集和每条实时主线内部保留的候选数量上限。 */
             candidate_limit: number;
             /** @description 兼容字段，当前为空；今日主线改用 theme_mainline。 */
             mainline_themes: components["schemas"]["LimitUpMainlineTheme"][];
-            /** @description 由同花顺 Top20 历史累计标签实时计算出的多条题材主线；至少 2 只当前封板成员共享同一标签，按成员核心度、标签 IDF、标签近期度、时效和封板质量加权。时效按该主线当前封板成员最近一次封板（回封也算）距快照的交易分钟衰减，n 只统计当前仍封板且共享该题材的成员；封板质量按当前炸板/跌停成员扣减。不解析今日实时 reason，未分类/其他/无明确原因的题材桶不参与。 */
+            /** @description 由当前封板成员的历史题材标签实时聚类出的多条题材主线；至少 2 只成员共享同一标签。个股优先使用同花顺 Top20 历史累计标签；没有有效历史标签时，使用本地东财概念/行业关系兜底，并按名称映射到可识别的同花顺题材。按成员核心度、标签 IDF、时效和封板质量加权，不使用历史标签近期度。不解析今日实时 reason，未分类/其他/无明确原因的题材桶不参与。 */
             theme_mainline: components["schemas"]["LimitUpThemeCluster"][];
             /** @description 每条实时主线各自独立排名的候选组。主线之间不合并为单一主线，同一候选可出现在多个组中。 */
             mainline_candidates: components["schemas"]["LimitUpTodayMainlineGroup"][];
@@ -1570,7 +1570,7 @@ export interface components {
         LimitUpThemeTag: {
             code: string;
             name: string;
-            /** @description 窗口内该股进入该同花顺题材的天数。 */
+            /** @description 窗口内该股进入该题材的天数；东财兜底标签固定为 1。 */
             occurrences: number;
             /** @description 最近60个自然日内该股进入该题材的天数。 */
             recent_occurrences: number;
@@ -1578,12 +1578,17 @@ export interface components {
             first_date: string;
             /** Format: date */
             last_date: string;
+            /**
+             * @description 标签来源；ths 表示同花顺历史 Top20，eastmoney_concept/eastmoney_industry 表示东财关系兜底。
+             * @enum {string}
+             */
+            source?: "ths" | "eastmoney_concept" | "eastmoney_industry";
         };
         LimitUpThemeStockProfile: {
             code: string;
             name: string;
             market_type: string;
-            /** @description 该股至少进入一个有效同花顺题材的交易日数。 */
+            /** @description 该股至少进入一个有效题材的交易日数；东财兜底关系按 1 个标签日计。 */
             label_days: number;
             tags: components["schemas"]["LimitUpThemeTag"][];
         };
@@ -1592,10 +1597,10 @@ export interface components {
             name: string;
             /** @description 共享该题材的今日封板成员数。 */
             member_count: number;
-            /** @description 按核心度、IDF、标签近期度、时效和封板质量衰减后的归一化主线权重。 */
+            /** @description 按核心度、标签 IDF、时效和封板质量衰减后的归一化主线权重；不使用历史标签近期度。 */
             weight: number;
-            /** @description 0到1的标签近期度；由该标签在历史Top20中的最近出现日期计算，仅在主线内部降低陈旧标签权重。 */
-            recency: number;
+            /** @description 该主线成员标签的来源集合。 */
+            sources: ("ths" | "eastmoney_concept" | "eastmoney_industry")[];
             /** @description 0到1的时效；e^(-Δt/90)+(1-e^(-Δt/90))×n/(n+5)，Δt 为当前封板成员最近一次封板距快照的交易分钟数，n 为当前仍封板且共享该题材的成员数，午休不计入，回封会刷新。 */
             freshness: number;
             /** @description 0到1的封板质量；封板/(封板+0.5×炸板+1×跌停)，炸板和跌停均来自当前实时侧池。 */
@@ -1724,7 +1729,7 @@ export interface components {
             theme_score: number;
             /** @description 兼容字段；当前为空，题材标签见 theme_tags。 */
             themes: components["schemas"]["LimitUpThemeRef"][];
-            /** @description 命中的同花顺历史题材主线标签，按共现次数/最近日期排序，最多 5 个。 */
+            /** @description 命中的有效题材主线标签，按共现次数/最近日期排序，最多 5 个；历史标签优先，缺失时可用东财关系兜底。 */
             theme_tags: components["schemas"]["LimitUpThemeTag"][];
             top_links: components["schemas"]["LimitUpCandidateLink"][];
             /** @description 是否取得该候选的盘中行情。false时不能把历史分当作盘中确认。 */

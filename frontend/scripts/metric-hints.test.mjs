@@ -63,17 +63,20 @@ test('today core explains its score and historical relationship metrics', () => 
     '热度折算共现',
     '样本充分度',
     '实时多主线',
-    '主线交叉',
+    '多主线共振',
     '外溢综合分',
     '盘中确认',
     '历史特异性',
   ]) {
     assert.ok(todayCoreSource.includes(`<MetricHint label="${label}"`), `missing today-core hint for ${label}`)
   }
-  assert.ok(todayCoreSource.includes("'单主线贴合'"))
-  assert.ok(todayCoreSource.includes("'多主线共振'"))
   assert.ok(todayCoreSource.includes('封板质量 ='))
   assert.ok(todayCoreSource.includes('炸板按半个封板损失'))
+  assert.ok(todayCoreSource.includes('没有有效历史标签时，使用本地东财概念/行业关系兜底'))
+  assert.ok(!todayCoreSource.includes('近期度'))
+  assert.ok(todayCoreSource.includes('统一候选结果'))
+  assert.ok(todayCoreSource.includes('不再按主线重复列表'))
+  assert.ok(!todayCoreSource.includes('多主线备选'))
   assert.ok(todayCoreSource.includes('今日盘中快照不写入历史，也不进入历史分母'))
   assert.ok(todayCoreSource.includes('共现不代表因果、带动或未来收益'))
 })

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/roiding/shadowflow/internal/graymarket"
+	"github.com/roiding/shadowflow/internal/limitup"
 	"github.com/roiding/shadowflow/internal/repository"
 )
 
@@ -328,6 +329,38 @@ func (s *Store) StockBoardRelationsBatch(ctx context.Context, stockCodes []strin
 		return result[left].BoardCode < result[right].BoardCode
 	})
 	return result, nil
+}
+
+// CurrentBoardMembershipStats returns the current stored board breadth used
+// only to weight Eastmoney fallback labels. It does not scan upstream.
+func (s *Store) CurrentBoardMembershipStats(ctx context.Context) (map[string]int, int, error) {
+	rows, err := s.reader.QueryContext(ctx, `SELECT board_type,board_code,count(DISTINCT stock_code)
+FROM stock_board_relation_current
+GROUP BY board_type,board_code`)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	counts := make(map[string]int)
+	for rows.Next() {
+		var boardType, boardCode string
+		var count int
+		if err := rows.Scan(&boardType, &boardCode, &count); err != nil {
+			return nil, 0, err
+		}
+		counts[limitup.BoardThemeKey(boardType, boardCode)] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, 0, err
+	}
+	var documents int
+	if err := s.reader.QueryRowContext(ctx, `SELECT count(DISTINCT stock_code) FROM stock_board_relation_current`).Scan(&documents); err != nil {
+		return nil, 0, err
+	}
+	return counts, documents, nil
 }
 
 func (s *Store) BoardStockRelations(ctx context.Context, boardType graymarket.BoardType, boardCode, asOf string) ([]graymarket.StockBoardRelation, error) {

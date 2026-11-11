@@ -86,6 +86,7 @@ ORDER BY stock_code,theme_code,MAX(trade_date) DESC`, args...)
 		builder.profile.Tags = append(builder.profile.Tags, limitup.ThemeTag{
 			Code: themeCode, Name: themeName, Occurrences: occurrences,
 			RecentOccurrences: recentOccurrences, FirstDate: firstDate, LastDate: lastDate,
+			Source: limitup.ThemeSourceTHS,
 		})
 	}
 	if err := rows.Err(); err != nil {

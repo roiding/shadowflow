@@ -110,7 +110,7 @@ func TestThemeMatchScoreUsesAllMatchingMainlinesWithDiminishingReturns(t *testin
 	}
 }
 
-func TestThemeMainlinePrefersRecentlyUsedLabel(t *testing.T) {
+func TestThemeMainlineIgnoresHistoricalLabelDate(t *testing.T) {
 	recent := ThemeTag{Code: "885517", Name: "机器人概念", Occurrences: 3, LastDate: "2026-11-10"}
 	stale := ThemeTag{Code: "885431", Name: "新能源汽车", Occurrences: 3, LastDate: "2026-01-10"}
 	profiles := map[string]ThemeStockProfile{
@@ -121,8 +121,11 @@ func TestThemeMainlinePrefersRecentlyUsedLabel(t *testing.T) {
 		{Code: "000001", CoreScore: 50, LastLimitAt: timePointer(time.Date(2026, 11, 11, 9, 30, 0, 0, Shanghai()))},
 		{Code: "000002", CoreScore: 50, LastLimitAt: timePointer(time.Date(2026, 11, 11, 9, 30, 0, 0, Shanghai()))},
 	}, profiles, time.Date(2026, 11, 11, 14, 0, 0, 0, Shanghai()), nil, nil)
-	if len(mainline) != 2 || mainline[0].Code != recent.Code || mainline[0].Recency <= mainline[1].Recency {
-		t.Fatalf("recently used label did not outrank stale label: %+v", mainline)
+	if len(mainline) != 2 {
+		t.Fatalf("expected both historical labels: %+v", mainline)
+	}
+	if math.Abs(mainline[0].Weight-mainline[1].Weight) > 1e-9 {
+		t.Fatalf("historical label date must not change weight: %+v", mainline)
 	}
 }
 

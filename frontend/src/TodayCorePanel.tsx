@@ -137,7 +137,7 @@ function CoreMemberHeader({ member, rank }: { member: LimitUpTodayMember; rank: 
         <span>
           核心度
           <MetricHint label="核心度" formula="100 × (35% 关系强度 + 25% 关系覆盖 + 20% 邻居强度 + 20% 同题材聚类)">
-            在当前今日封板成员子图内的综合排序分，满分100。关系强度是本股与其他今日封板股的历史收盘封板共现加权和；关系覆盖是有有效关系的今日成员占比；邻居强度是相连成员自身强度的汇总；同题材聚类是与今日其他成员共享有效同花顺 Top20 历史标签的 IDF 加权强度。四项分别按本次结果中的最大值归一化后再加权；没有有效题材标签时，题材项按 0 处理，其余三项重新归一化。它只描述当前子图中的历史关系与题材位置，不代表因果、带动能力或收益预测。
+            在当前今日封板成员子图内的综合排序分，满分100。关系强度是本股与其他今日封板股的历史收盘封板共现加权和；关系覆盖是有有效关系的今日成员占比；邻居强度是相连成员自身强度的汇总；同题材聚类是与今日其他成员共享有效题材标签的 IDF 加权强度。个股优先使用同花顺 Top20 历史标签；没有有效历史标签时，使用本地东财概念/行业关系兜底。四项分别按本次结果中的最大值归一化后再加权；没有有效题材标签时，题材项按 0 处理，其余三项重新归一化。它只描述当前子图中的历史关系与题材位置，不代表因果、带动能力或收益预测。
           </MetricHint>
         </span>
       </div>
@@ -154,16 +154,22 @@ function CoreDetail({ core, rank }: { core: LimitUpTodayCore; rank: number }) {
     <article className="today-core-card">
       <CoreMemberHeader member={member} rank={rank} />
       <div className="today-core-theme-tags">
-        <span>同花顺题材聚类</span>
+        <span>题材聚类</span>
         {(member.theme_tags ?? []).length > 0 ? (
           (member.theme_tags ?? []).map((tag) => (
-            <span className="today-core-theme-tag" key={tag.code} title={`${tag.occurrences} 次 · 最近 ${tag.last_date}`}>
+            <span
+              className="today-core-theme-tag"
+              key={tag.code}
+              title={tag.source === 'ths'
+                ? `同花顺 Top20 · ${tag.occurrences} 次 · 最近 ${tag.last_date}`
+                : `东财关系兜底 · ${tag.source === 'eastmoney_industry' ? '行业' : '概念'} · 当前关系`}
+            >
               {tag.name}
-              <small>{tag.occurrences}次</small>
+              <small>{tag.source === 'ths' ? `${tag.occurrences}次` : '东财'}</small>
             </span>
           ))
         ) : (
-          <small>该股在回看窗口内没有有效的 Top20 题材标签；不会用东财板块替代。</small>
+          <small>该股在回看窗口内没有有效的同花顺 Top20 题材标签，当前也没有可用的东财概念/行业兜底关系。</small>
         )}
       </div>
       <div className="today-core-facts">
@@ -381,16 +387,12 @@ function CandidateTable({
   candidates: candidateInput,
   title = '外溢待选',
   description = '先按实时多主线与历史特异性选股，再用盘中涨幅、量比、换手、资金与触板确认排序；近期涨停次数本身不加分，不是推荐。',
-  themeName,
-  embedded = false,
 }: {
   network: LimitUpTodayNetwork
   onOpenStock: (code: string, name: string) => void
   candidates?: LimitUpTodayNetwork['candidates']
   title?: string
   description?: string
-  themeName?: string
-  embedded?: boolean
 }) {
   const candidates = candidateInput ?? network.candidates ?? []
   const headingId = useId()
@@ -402,7 +404,7 @@ function CandidateTable({
     return null
   }
   return (
-    <section className={`today-core-candidates${embedded ? ' embedded' : ''}`} aria-labelledby={headingId}>
+    <section className="today-core-candidates" aria-labelledby={headingId}>
       <div className="today-core-candidates-head">
         <div>
           <h3 id={headingId}><Network size={15} />{title}</h3>
@@ -434,16 +436,9 @@ function CandidateTable({
               </th>
               <th>
                 <span className="linkage-column-label">
-                  {themeName ? '主线贴合' : '多主线共振'}
-                  <MetricHint
-                    label={themeName ? '单主线贴合' : '多主线共振'}
-                    formula={themeName
-                      ? '主线权重 × (o+r)/(o+r+2)'
-                      : '1 − Π(1 − 单主线贴合)'}
-                  >
-                    {themeName
-                      ? `本表只属于「${themeName}」这一条实时主线，按候选在该题材的历史出现次数 o 与近60日出现次数 r 计算 (o+r)/(o+r+2)，再乘主线权重独立排名；同一候选也可以出现在其他主线。`
-                      : '多主线共振把候选命中的每一条实时主线当作独立证据：同时命中越多，分数越高但边际收益递减。它不再使用最强80%+次强20%的固定主次结构。'}
+                  多主线共振
+                  <MetricHint label="多主线共振" formula="1 − Π(1 − 单主线贴合)">
+                    多主线共振把候选命中的每一条实时主线当作独立证据：同时命中越多，分数越高但边际收益递减。它不再使用最强80%+次强20%的固定主次结构。
                   </MetricHint>
                 </span>
               </th>
@@ -465,7 +460,7 @@ function CandidateTable({
             {candidates.map((candidate, index) => {
               const riskFlags = candidate.risk_flags ?? []
               const riskDiscount = (1 - (candidate.risk_score ?? 1)) * 15
-              const mainlineValue = themeName ? (candidate.mainline_fit ?? 0) : (candidate.mainline_score ?? 0)
+              const mainlineValue = candidate.mainline_score ?? 0
               const matchedMainlines = (candidate.mainline_codes ?? [])
                 .map((code) => mainlineNameByCode.get(code))
                 .filter((name): name is string => Boolean(name))
@@ -523,13 +518,20 @@ function CandidateTable({
                   </td>
                   <td>
                     <strong>{formatNumber(mainlineValue * 100, 0)}</strong>
-                    <small>
-                      {themeName
-                        ? themeName
-                        : matchedMainlines.length > 0
-                          ? matchedMainlines.slice(0, 3).join('、')
-                          : '未匹配主线'}
-                    </small>
+                    {matchedMainlines.length > 0 ? (
+                      <div className="today-core-candidate-mainlines" title={matchedMainlines.join('、')}>
+                        {matchedMainlines.map((name) => (
+                          <span
+                            key={name}
+                            className={/CPO|通信|5G|光|数据中心/.test(name) ? 'communication' : ''}
+                          >
+                            {name}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <small>未匹配主线</small>
+                    )}
                     {(candidate.cross_mainline_count ?? 0) > 1 && (
                       <small>跨 {candidate.cross_mainline_count} 条主线</small>
                     )}
@@ -604,110 +606,26 @@ function MainlineCandidateSections({
   network: LimitUpTodayNetwork
   onOpenStock: (code: string, name: string) => void
 }) {
+  const candidates = network.candidates ?? []
   const groups = network.mainline_candidates ?? []
-  if (groups.length === 0) {
-    return <CandidateTable network={network} onOpenStock={onOpenStock} />
+  if (candidates.length === 0) {
+    return null
   }
-  const intersections = network.mainline_intersections ?? []
-  const intersectionsByTheme = new Map<string, typeof intersections>()
-  for (const intersection of intersections) {
-    const left = intersectionsByTheme.get(intersection.left_code) ?? []
-    left.push(intersection)
-    intersectionsByTheme.set(intersection.left_code, left)
-    const right = intersectionsByTheme.get(intersection.right_code) ?? []
-    right.push(intersection)
-    intersectionsByTheme.set(intersection.right_code, right)
-  }
-  const crossCandidates = (network.candidates ?? []).filter((candidate) => (candidate.cross_mainline_count ?? 0) > 1)
+  const mainlineCount = (network.theme_mainline ?? []).length || groups.length
+  const crossCount = candidates.filter((candidate) => (candidate.cross_mainline_count ?? 0) > 1).length
   return (
-    <section className="today-core-mainline-board" aria-labelledby="today-core-mainline-board-title">
-      <div className="today-core-mainline-board-head">
-        <div>
-          <h3 id="today-core-mainline-board-title"><Network size={15} />多主线备选</h3>
-          <p>
-            实时识别 {groups.length} 条主线，每条主线独立排名；主线可以交叉，同一候选也可以同时出现在多条主线。
-          </p>
-        </div>
-        <span>{groups.reduce((total, group) => total + group.candidates.length, 0)} 个候选位置</span>
+    <>
+      <div className="today-core-card-note">
+        已把 {mainlineCount} 条主线的候选去重，统一按综合分排序；不再按主线重复列表。
+        {crossCount > 0 ? ` 其中 ${crossCount} 只同时命中至少两条主线。` : ''}
       </div>
-      {intersections.length > 0 && (
-        <div className="today-core-mainline-intersections">
-          <span>
-            主线交叉
-            <MetricHint label="主线交叉" formula="|成员A ∩ 成员B| / |成员A ∪ 成员B|">
-              两条实时主线共享的当前封板成员。这里只展示交叉，不把两条主线合并；共享成员多不代表方向相同，仍需看各自候选。
-            </MetricHint>
-          </span>
-          {intersections.slice(0, 8).map((intersection) => (
-            <span key={`${intersection.left_code}:${intersection.right_code}`} className="today-core-mainline-intersection">
-              {intersection.left_name} × {intersection.right_name}
-              <small>共用 {intersection.shared_member_count} 只 · Jaccard {formatNumber(intersection.jaccard, 2)}</small>
-            </span>
-          ))}
-        </div>
-      )}
-      {crossCandidates.length > 0 && (
-        <details className="today-core-cross-mainlines" open>
-          <summary>
-            <span>
-              <strong>跨主线候选</strong>
-              <small>{crossCandidates.length} 只同时命中至少两条实时主线</small>
-            </span>
-            <ChevronDown size={14} />
-          </summary>
-          <CandidateTable
-            network={network}
-            onOpenStock={onOpenStock}
-            candidates={crossCandidates}
-            title="跨主线共振候选"
-            description="这里只汇总同时命中至少两条主线的候选；候选仍会保留在各自主线组内，不会因为交叉而被合并。"
-            embedded
-          />
-        </details>
-      )}
-      <div className="today-core-mainline-groups">
-        {groups.map((group, index) => {
-          const related = intersectionsByTheme.get(group.theme.code) ?? []
-          return (
-            <details key={group.theme.code} className="today-core-mainline-group" open={index === 0}>
-              <summary>
-                <span className="today-core-mainline-group-title">
-                  <strong>{group.theme.name}</strong>
-                  <small>
-                    {group.theme.member_count} 只封板 · 炸板 {group.theme.broken_count ?? 0} · 跌停 {group.theme.down_count ?? 0}
-                    {' · '}质量 {formatNumber(group.theme.seal_quality, 2)}
-                    {' · '}时效 {formatNumber(group.theme.freshness, 2)}
-                    {' · '}最近封板 {formatTimeText(group.theme.last_seal_at)}
-                    {' · '}{group.candidates.length} 只备选
-                  </small>
-                </span>
-                {related.length > 0 && (
-                  <span className="today-core-mainline-group-related">
-                    与 {related.slice(0, 2).map((intersection) => (
-                      intersection.left_code === group.theme.code ? intersection.right_name : intersection.left_name
-                    )).join('、')} 交叉
-                  </span>
-                )}
-                <ChevronDown size={14} />
-              </summary>
-              {group.candidates.length > 0 ? (
-                <CandidateTable
-                  network={network}
-                  onOpenStock={onOpenStock}
-                  candidates={group.candidates}
-                  title={`${group.theme.name} · 主线候选`}
-                  description="只按当前这一条实时主线独立排名；候选如果也命中其他主线，会在“多主线共振”中体现，但不会改写本组顺序。"
-                  themeName={group.theme.name}
-                  embedded
-                />
-              ) : (
-                <div className="today-core-mainline-empty">该主线当前没有命中的未封板候选。</div>
-              )}
-            </details>
-          )
-        })}
-      </div>
-    </section>
+      <CandidateTable
+        network={network}
+        onOpenStock={onOpenStock}
+        title="统一候选结果"
+        description="所有实时主线的候选先去重，再按实时确认、主线共振、历史特异性和关联覆盖统一排序；每只股票只出现一次。"
+      />
+    </>
   )
 }
 
@@ -734,7 +652,7 @@ export function TodayCorePanel({
   const [marketScope, setMarketScope] = useState<LimitUpTodayNetwork['scope']>(defaultScope)
   const [minOverlap, setMinOverlap] = useState(1)
   const [top, setTop] = useState<number>(5)
-  const [candidateLimit, setCandidateLimit] = useState<number>(20)
+  const [candidateLimit, setCandidateLimit] = useState<number>(10)
   const [selectedCode, setSelectedCode] = useState('')
   const panelRef = useRef<HTMLElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
@@ -831,10 +749,10 @@ export function TodayCorePanel({
       >
         <header className="today-core-head">
           <div>
-            <p className="linkage-eyebrow">盘中实时 · 同花顺历史题材聚类</p>
+            <p className="linkage-eyebrow">盘中实时 · 题材聚类</p>
             <h2 id="today-core-title"><Crown size={20} />今日涨停核心</h2>
             <p>
-              只分析点击时仍封住涨停的股票，用它们过去一年积累的同花顺 Top20 题材标签实时识别多条主线。每条主线独立给候选，主线可以交叉，同一候选也可以出现在多条主线；最后只为候选并集读取盘中行情做第二次确认。今日盘中快照不写入历史，也不进入历史分母。
+              只分析点击时仍封住涨停的股票，优先用历史 Top20 题材标签聚类；没有有效历史标签的成员才用本地东财概念/行业关系兜底。所有主线候选先去重，最后只展示一张统一结果表。今日盘中快照不写入历史，也不进入历史分母。
             </p>
           </div>
           <button ref={closeRef} type="button" className="linkage-quick-close" onClick={onClose} aria-label="关闭今日核心" title="关闭（Esc）">
@@ -869,7 +787,7 @@ export function TodayCorePanel({
             </select>
           </label>
           <label>
-            <span>每条主线待选</span>
+            <span>候选结果数</span>
             <select value={candidateLimit} onChange={(event) => setCandidateLimit(Number(event.target.value))}>
               {CORE_CANDIDATE_OPTIONS.map((option) => <option key={option} value={option}>Top {option}</option>)}
             </select>
@@ -957,15 +875,15 @@ export function TodayCorePanel({
                 <div className="today-core-mainlines">
                   <span className="today-core-mainlines-label">
                     实时主线
-                    <MetricHint label="实时多主线" formula="至少 2 只当前封板成员共享 Top20 历史标签；原始权重 × 近期度 × 时效 × 封板质量">
-                      只使用同花顺 Top20 在历史日期中积累到个股上的题材标签，不解析今日实时 reason。每条主线独立保留，不再用最强80%+次强20%合并成一条；至少 2 只当前封板成员共享同一标签才计入。时效 = `e^(-Δt/90) + (1-e^(-Δt/90)) × n/(n+5)`，Δt 是该主线当前封板成员最近一次封板距快照的交易分钟数，午休不计入；n 只统计当前仍封板且共享该题材的成员，不含未涨停或炸板股；回封会刷新时效。封板质量 = `封板 / (封板 + 0.5 × 炸板 + 1 × 跌停)`，炸板按半个封板损失、跌停按一个封板损失扣减。主线可以交叉，候选也可以交叉。未分类、其他、原因不明或全组没有明确原因标签的题材桶不参与，东财行业/概念不作为替代。
+                    <MetricHint label="实时多主线" formula="至少 2 只当前封板成员共享有效题材标签；原始权重 × 时效 × 封板质量">
+                      个股优先使用同花顺 Top20 在历史日期中积累到个股上的题材标签；没有有效历史标签时，使用本地东财概念/行业关系兜底，并按名称映射到可识别的同花顺题材。不解析今日实时 reason。每条主线独立保留，至少 2 只当前封板成员共享同一标签才计入。时效 = `e^(-Δt/90) + (1-e^(-Δt/90)) × n/(n+5)`，Δt 是该主线当前封板成员最近一次封板距快照的交易分钟数，午休不计入；n 只统计当前仍封板且共享该题材的成员，不含未涨停或炸板股；回封会刷新时效。封板质量 = `封板 / (封板 + 0.5 × 炸板 + 1 × 跌停)`，炸板按半个封板损失、跌停按一个封板损失扣减。历史标签的最近出现日期不参与权重。主线可以交叉，候选也可以交叉。未分类、其他、原因不明或全组没有明确原因标签的题材桶不参与。
                     </MetricHint>
                   </span>
                   {(network.theme_mainline ?? []).map((theme) => (
                     <span
                       key={theme.code}
-                      className="today-core-mainline"
-                      title={`Top20 历史标签 · 权重 ${formatNumber(theme.weight, 2)} · 近期度 ${formatNumber(theme.recency, 2)} · 时效 ${formatNumber(theme.freshness, 2)} · 封板质量 ${formatNumber(theme.seal_quality, 2)} · 最近封板 ${formatTimeText(theme.last_seal_at)}`}
+                      className={`today-core-mainline${/CPO|通信|5G|光|数据中心/.test(theme.name) ? ' communication' : ''}`}
+                      title={`题材聚类 · 来源 ${(theme.sources ?? []).map((source) => source === 'ths' ? '同花顺' : source === 'eastmoney_industry' ? '东财行业' : '东财概念').join(' + ')} · 权重 ${formatNumber(theme.weight, 2)} · 时效 ${formatNumber(theme.freshness, 2)} · 封板质量 ${formatNumber(theme.seal_quality, 2)} · 最近封板 ${formatTimeText(theme.last_seal_at)}`}
                     >
                       {theme.name}
                       <small>
@@ -982,7 +900,7 @@ export function TodayCorePanel({
                 <div className="today-core-caveat">
                   <Info size={14} />
                   <span>
-                    当前没有至少 2 只今日封板成员共享有效的同花顺 Top20 历史题材标签；不会用东财行业/概念补一条“伪主线”。
+                    当前没有至少 2 只今日封板成员共享有效题材标签；历史 Top20 和本地东财概念/行业关系都未能形成主线。
                   </span>
                 </div>
               )}
@@ -990,7 +908,7 @@ export function TodayCorePanel({
               <div className="today-core-caveat">
                 <Info size={14} />
                 <span>
-                  快照会随开板、回封而变化，刷新后成员和排名可能不同。题材标签只使用 {network.history_as_of || '最近完整日'} 及更早的同花顺 Top20 归档，今日实时封板与实时 reason 不参与主线统计；今日盘中快照不写入历史，也不进入历史分母。没有有效 Top20 标签的股票不会被东财板块强行归类。盘中行情只对多主线候选并集读取一次，缺失时明确降级为历史观察。共现不代表因果、带动或未来收益。
+                  快照会随开板、回封而变化，刷新后成员和排名可能不同。历史题材优先使用 {network.history_as_of || '最近完整日'} 及更早的同花顺 Top20 归档；没有有效历史标签的封板股使用本地东财概念/行业关系兜底。今日实时封板与实时 reason 不参与题材命名；今日盘中快照不写入历史，也不进入历史分母。盘中行情只对多主线候选并集读取一次，缺失时明确降级为历史观察。共现不代表因果、带动或未来收益。
                 </span>
               </div>
 
