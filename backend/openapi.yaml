@@ -927,13 +927,15 @@ components:
           items: { $ref: "#/components/schemas/LimitUpLink" }
     LimitUpTodayNetwork:
       type: object
-      required: [trade_date, snapshot_at, trade_status, trade_status_name, sealed_count, history_as_of, lookback_days, scope, min_overlap, coverage, history_available, members, cores, candidates, candidate_limit, mainline_themes, theme_mainline, mainline_candidates, mainline_intersections, live_candidate, live_unavailable]
+      required: [trade_date, snapshot_at, trade_status, trade_status_name, sealed_count, broken_count, down_count, history_as_of, lookback_days, scope, min_overlap, coverage, history_available, members, cores, candidates, candidate_limit, mainline_themes, theme_mainline, mainline_candidates, mainline_intersections, live_candidate, live_unavailable]
       properties:
         trade_date: { type: string, format: date }
         snapshot_at: { type: string, format: date-time, description: 实时封板快照的读取时刻；盘中成员和计数可能随后变化。 }
         trade_status: { type: string, description: 上游交易状态ID，例如open、closed。 }
         trade_status_name: { type: string }
         sealed_count: { type: integer, description: 快照时仍封住涨停的成员数。 }
+        broken_count: { type: integer, description: 快照时仍处于炸板池的股票数；仅用于主线质量扣减，不进入封板成员。 }
+        down_count: { type: integer, description: 快照时处于跌停池的股票数；仅用于主线质量扣减，不进入封板成员。 }
         history_as_of: { type: string, description: 历史关系使用的最近完整归档日；无历史为空字符串。始终早于trade_date。 }
         lookback_days: { type: integer, description: 历史窗口的自然日长度，以history_as_of为截止日。 }
         scope: { type: string, enum: ["HS,GEM2STAR", "HS,GEM2STAR,ST,NEW"] }
@@ -959,7 +961,7 @@ components:
           items: { $ref: "#/components/schemas/LimitUpMainlineTheme" }
         theme_mainline:
           type: array
-          description: 由同花顺 Top20 历史累计标签实时计算出的多条题材主线；至少 2 只当前封板成员共享同一标签，按成员核心度、标签 IDF、标签近期度和日内时效加权。日内时效按该主线最近一次首次封板距快照的时间衰减，封板成员越多衰减越轻。不解析今日实时 reason，未分类/其他/无明确原因的题材桶不参与。
+          description: 由同花顺 Top20 历史累计标签实时计算出的多条题材主线；至少 2 只当前封板成员共享同一标签，按成员核心度、标签 IDF、标签近期度、时效和封板质量加权。时效按该主线当前封板成员最近一次封板（回封也算）距快照的交易分钟衰减，n 只统计当前仍封板且共享该题材的成员；封板质量按当前炸板/跌停成员扣减。不解析今日实时 reason，未分类/其他/无明确原因的题材桶不参与。
           items: { $ref: "#/components/schemas/LimitUpThemeCluster" }
         mainline_candidates:
           type: array
@@ -994,15 +996,18 @@ components:
           items: { $ref: "#/components/schemas/LimitUpThemeTag" }
     LimitUpThemeCluster:
       type: object
-      required: [code, name, member_count, weight, recency, time_decay, last_new_limit_at, member_codes]
+      required: [code, name, member_count, weight, recency, freshness, seal_quality, last_seal_at, broken_count, down_count, member_codes]
       properties:
         code: { type: string }
         name: { type: string }
         member_count: { type: integer, description: 共享该题材的今日封板成员数。 }
-        weight: { type: number, description: 按核心度、IDF、标签近期度和日内时效衰减后的归一化主线权重。 }
+        weight: { type: number, description: 按核心度、IDF、标签近期度、时效和封板质量衰减后的归一化主线权重。 }
         recency: { type: number, description: 0到1的标签近期度；由该标签在历史Top20中的最近出现日期计算，仅在主线内部降低陈旧标签权重。 }
-        time_decay: { type: number, description: 0到1的日内时效；由该主线当前成员最近一次首次封板时间距快照的分钟数计算，封板成员越多衰减越轻。 }
-        last_new_limit_at: { type: [string, "null"], format: date-time, description: 该主线当前成员最近一次首次封板时间；无时间数据为null。 }
+        freshness: { type: number, description: 0到1的时效；e^(-Δt/90)+(1-e^(-Δt/90))×n/(n+5)，Δt 为当前封板成员最近一次封板距快照的交易分钟数，n 为当前仍封板且共享该题材的成员数，午休不计入，回封会刷新。 }
+        seal_quality: { type: number, description: 0到1的封板质量；封板/(封板+0.5×炸板+1×跌停)，炸板和跌停均来自当前实时侧池。 }
+        last_seal_at: { type: [string, "null"], format: date-time, description: 该主线当前封板成员最近一次封板时间；无时间数据为null。 }
+        broken_count: { type: integer, description: 该主线当前炸板成员数；按去重后的股票代码计。 }
+        down_count: { type: integer, description: 该主线当前跌停成员数；按去重后的股票代码计，且不会与炸板重复计数。 }
         member_codes:
           type: array
           description: 共享该题材的当前封板成员代码，用于计算主线交叉。

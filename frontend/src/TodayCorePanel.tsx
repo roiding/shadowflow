@@ -674,9 +674,10 @@ function MainlineCandidateSections({
                 <span className="today-core-mainline-group-title">
                   <strong>{group.theme.name}</strong>
                   <small>
-                    {group.theme.member_count} 只封板 · 权重 {formatNumber(group.theme.weight, 2)}
-                    {' · '}时效 {formatNumber(group.theme.time_decay, 2)}
-                    {' · '}新增 {formatTimeText(group.theme.last_new_limit_at)}
+                    {group.theme.member_count} 只封板 · 炸板 {group.theme.broken_count ?? 0} · 跌停 {group.theme.down_count ?? 0}
+                    {' · '}质量 {formatNumber(group.theme.seal_quality, 2)}
+                    {' · '}时效 {formatNumber(group.theme.freshness, 2)}
+                    {' · '}最近封板 {formatTimeText(group.theme.last_seal_at)}
                     {' · '}{group.candidates.length} 只备选
                   </small>
                 </span>
@@ -919,7 +920,10 @@ export function TodayCorePanel({
                   <span className={`today-core-live-dot ${network.trade_status === 'open' ? 'open' : ''}`} />
                   <div>
                     <strong>{network.trade_status_name || network.trade_status || '状态未知'}</strong>
-                    <span>{formatSnapshotTime(network.snapshot_at)} 快照 · 今日仍封板 {network.sealed_count} 只</span>
+                    <span>
+                      {formatSnapshotTime(network.snapshot_at)} 快照 · 今日仍封板 {network.sealed_count} 只
+                      {' · '}炸板 {network.broken_count ?? 0} 只 · 跌停 {network.down_count ?? 0} 只
+                    </span>
                   </div>
                 </div>
                 <div>
@@ -953,21 +957,22 @@ export function TodayCorePanel({
                 <div className="today-core-mainlines">
                   <span className="today-core-mainlines-label">
                     实时主线
-                    <MetricHint label="实时多主线" formula="至少 2 只当前封板成员共享 Top20 历史标签；原始权重 × 近期度 × 日内时效">
-                      只使用同花顺 Top20 在历史日期中积累到个股上的题材标签，不解析今日实时 reason。每条主线独立保留，不再用最强80%+次强20%合并成一条；至少 2 只当前封板成员共享同一标签才计入。日内时效 = `e^(-Δt/90) + (1-e^(-Δt/90)) × n/(n+5)`，Δt 是该主线当前成员最近一次首次封板距快照的分钟数，n 是当前封板成员数；成员越多，空窗衰减越轻。主线可以交叉，候选也可以交叉。未分类、其他、原因不明或全组没有明确原因标签的题材桶不参与，东财行业/概念不作为替代。
+                    <MetricHint label="实时多主线" formula="至少 2 只当前封板成员共享 Top20 历史标签；原始权重 × 近期度 × 时效 × 封板质量">
+                      只使用同花顺 Top20 在历史日期中积累到个股上的题材标签，不解析今日实时 reason。每条主线独立保留，不再用最强80%+次强20%合并成一条；至少 2 只当前封板成员共享同一标签才计入。时效 = `e^(-Δt/90) + (1-e^(-Δt/90)) × n/(n+5)`，Δt 是该主线当前封板成员最近一次封板距快照的交易分钟数，午休不计入；n 只统计当前仍封板且共享该题材的成员，不含未涨停或炸板股；回封会刷新时效。封板质量 = `封板 / (封板 + 0.5 × 炸板 + 1 × 跌停)`，炸板按半个封板损失、跌停按一个封板损失扣减。主线可以交叉，候选也可以交叉。未分类、其他、原因不明或全组没有明确原因标签的题材桶不参与，东财行业/概念不作为替代。
                     </MetricHint>
                   </span>
                   {(network.theme_mainline ?? []).map((theme) => (
                     <span
                       key={theme.code}
                       className="today-core-mainline"
-                      title={`Top20 历史标签 · 权重 ${formatNumber(theme.weight, 2)} · 近期度 ${formatNumber(theme.recency, 2)} · 日内时效 ${formatNumber(theme.time_decay, 2)} · 最近新增封板 ${formatTimeText(theme.last_new_limit_at)}`}
+                      title={`Top20 历史标签 · 权重 ${formatNumber(theme.weight, 2)} · 近期度 ${formatNumber(theme.recency, 2)} · 时效 ${formatNumber(theme.freshness, 2)} · 封板质量 ${formatNumber(theme.seal_quality, 2)} · 最近封板 ${formatTimeText(theme.last_seal_at)}`}
                     >
                       {theme.name}
                       <small>
-                        {theme.member_count} 只封板 · 权重 {formatNumber(theme.weight, 2)}
-                        {' · '}时效 {formatNumber(theme.time_decay, 2)}
-                        {' · '}新增 {formatTimeText(theme.last_new_limit_at)}
+                        {theme.member_count} 只封板 · 炸板 {theme.broken_count ?? 0} · 跌停 {theme.down_count ?? 0}
+                        {' · '}质量 {formatNumber(theme.seal_quality, 2)}
+                        {' · '}时效 {formatNumber(theme.freshness, 2)}
+                        {' · '}最近封板 {formatTimeText(theme.last_seal_at)}
                       </small>
                     </span>
                   ))}

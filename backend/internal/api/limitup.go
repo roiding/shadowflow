@@ -160,7 +160,13 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 		writeError(response, http.StatusServiceUnavailable, "limit_up_history_unavailable", "历史涨停归档读取暂不可用")
 		return
 	}
-	snapshot, err := server.limitUpIntraday.FetchSealedToday(request.Context(), scope)
+	var snapshot limitup.IntradaySnapshot
+	var err error
+	if reader, ok := server.limitUpIntraday.(limitup.IntradayPoolsReader); ok {
+		snapshot, err = reader.FetchIntradayToday(request.Context(), scope)
+	} else {
+		snapshot, err = server.limitUpIntraday.FetchSealedToday(request.Context(), scope)
+	}
 	if err != nil {
 		server.limitUpError(response, err)
 		return

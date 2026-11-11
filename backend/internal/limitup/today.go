@@ -70,6 +70,10 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 	if input.Snapshot.SealedCount != len(input.Snapshot.Events) {
 		return TodayNetwork{}, fmt.Errorf("%w: intraday sealed count does not match its members", ErrInvalid)
 	}
+	if input.Snapshot.BrokenCount != len(input.Snapshot.BrokenEvents) ||
+		input.Snapshot.DownCount != len(input.Snapshot.DownEvents) {
+		return TodayNetwork{}, fmt.Errorf("%w: intraday side-pool counts do not match their members", ErrInvalid)
+	}
 	if input.MinOverlap < 1 {
 		input.MinOverlap = 1
 	}
@@ -130,6 +134,31 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 			return TodayNetwork{}, fmt.Errorf("%w: duplicate intraday member %s", ErrInvalid, event.Code)
 		}
 		members[event.Code] = event
+	}
+	validateSidePool := func(events []Event, pool string, label string) error {
+		seen := make(map[string]struct{}, len(events))
+		for _, event := range events {
+			if event.TradeDate != input.Snapshot.TradeDate {
+				return fmt.Errorf("%w: intraday %s has a different trade date", ErrInvalid, label)
+			}
+			if event.Pool != pool {
+				return fmt.Errorf("%w: intraday %s contains a wrong pool record", ErrInvalid, label)
+			}
+			if _, duplicate := seen[event.Code]; duplicate {
+				return fmt.Errorf("%w: duplicate intraday %s %s", ErrInvalid, label, event.Code)
+			}
+			if _, sealed := members[event.Code]; sealed {
+				return fmt.Errorf("%w: intraday %s conflicts with sealed pool %s", ErrInvalid, label, event.Code)
+			}
+			seen[event.Code] = struct{}{}
+		}
+		return nil
+	}
+	if err := validateSidePool(input.Snapshot.BrokenEvents, PoolBroken, "broken pool"); err != nil {
+		return TodayNetwork{}, err
+	}
+	if err := validateSidePool(input.Snapshot.DownEvents, PoolDown, "limit-down pool"); err != nil {
+		return TodayNetwork{}, err
 	}
 	codes := make([]string, 0, len(members))
 	for code := range members {
@@ -388,7 +417,10 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 	}
 	themeMainline := []ThemeCluster{}
 	if len(input.ThemeProfiles) > 0 {
-		themeMainline = ComputeThemeMainline(membersOut, input.ThemeProfiles, input.Snapshot.FetchedAt)
+		themeMainline = ComputeThemeMainline(
+			membersOut, input.ThemeProfiles, input.Snapshot.FetchedAt,
+			input.Snapshot.BrokenEvents, input.Snapshot.DownEvents,
+		)
 	}
 	candidatesOut := buildTodayCandidates(candidatePairs, members, coreByCode, len(membersOut),
 		len(historyDays), input.MinOverlap,
@@ -467,7 +499,8 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 	return TodayNetwork{
 		TradeDate: input.Snapshot.TradeDate, SnapshotAt: input.Snapshot.FetchedAt,
 		TradeStatus: input.Snapshot.TradeStatus, TradeStatusName: input.Snapshot.TradeStatusName,
-		SealedCount: len(membersOut), HistoryAsOf: historyAsOf,
+		SealedCount: len(membersOut), BrokenCount: len(input.Snapshot.BrokenEvents),
+		DownCount: len(input.Snapshot.DownEvents), HistoryAsOf: historyAsOf,
 		LookbackDays: input.LookbackDays, Scope: input.Snapshot.Scope, MinOverlap: input.MinOverlap,
 		Coverage: coverage, HistoryAvailable: len(historyDays) > 0,
 		Members: membersOut, Cores: cores,

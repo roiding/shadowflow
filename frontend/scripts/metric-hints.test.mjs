@@ -72,6 +72,8 @@ test('today core explains its score and historical relationship metrics', () => 
   }
   assert.ok(todayCoreSource.includes("'单主线贴合'"))
   assert.ok(todayCoreSource.includes("'多主线共振'"))
+  assert.ok(todayCoreSource.includes('封板质量 ='))
+  assert.ok(todayCoreSource.includes('炸板按半个封板损失'))
   assert.ok(todayCoreSource.includes('今日盘中快照不写入历史，也不进入历史分母'))
   assert.ok(todayCoreSource.includes('共现不代表因果、带动或未来收益'))
 })

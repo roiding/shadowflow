@@ -150,23 +150,46 @@ func BuildThemeAnalysis(centerCode string, profiles map[string]ThemeStockProfile
 	return ThemeAnalysis{Profile: center, Links: links, TotalLinks: len(links), LabelDays: center.LabelDays}
 }
 
+type themePenalty struct {
+	brokenCodes map[string]struct{}
+	downCodes   map[string]struct{}
+}
+
 // ComputeThemeMainline finds themes shared by at least two currently sealed
 // members. Unclassified buckets are excluded, and themes carried by many
 // stocks receive a smaller IDF weight so the result does not collapse into a
-// few ubiquitous labels.
-func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockProfile, asOf time.Time) []ThemeCluster {
+// few ubiquitous labels. Broken and limit-down members are separate live
+// evidence: they reduce the theme's seal quality without changing its sealed
+// membership.
+func ComputeThemeMainline(
+	members []TodayMember,
+	profiles map[string]ThemeStockProfile,
+	asOf time.Time,
+	brokenEvents []Event,
+	downEvents []Event,
+) []ThemeCluster {
 	if len(members) == 0 || len(profiles) == 0 {
 		return []ThemeCluster{}
 	}
 	type aggregate struct {
-		code           string
-		name           string
-		memberCodes    map[string]struct{}
-		weight         float64
-		recency        float64
-		lastNewLimitAt *time.Time
+		code        string
+		name        string
+		memberCodes map[string]struct{}
+		weight      float64
+		recency     float64
+		lastSealAt  *time.Time
+		penalty     *themePenalty
+		brokenCount int
+		downCount   int
+		freshness   float64
+		sealQuality float64
 	}
 	documentFrequency := themeDocumentFrequency(profiles)
+	sealedCodes := make(map[string]struct{}, len(members))
+	for _, member := range members {
+		sealedCodes[member.Code] = struct{}{}
+	}
+	penaltyByTheme := buildThemePenalties(profiles, sealedCodes, brokenEvents, downEvents)
 	byTheme := make(map[string]*aggregate)
 	for _, member := range members {
 		profile, exists := profiles[member.Code]
@@ -184,19 +207,20 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 				item = &aggregate{
 					code: tag.Code, name: tag.Name,
 					memberCodes: make(map[string]struct{}),
+					penalty:     penaltyByTheme[tag.Code],
 				}
 				byTheme[tag.Code] = item
 			}
 			item.memberCodes[member.Code] = struct{}{}
 			item.weight += (1 + member.CoreScore/100) * themeIDF(tag.Code, documentFrequency, len(profiles))
 			item.recency = math.Max(item.recency, themeRecency(tag, member.LastLimitAt))
-			newLimitAt := member.FirstLimitAt
-			if newLimitAt == nil {
-				newLimitAt = member.LastLimitAt
+			lastSealAt := member.LastLimitAt
+			if lastSealAt == nil {
+				lastSealAt = member.FirstLimitAt
 			}
-			if newLimitAt != nil && (item.lastNewLimitAt == nil || newLimitAt.After(*item.lastNewLimitAt)) {
-				value := *newLimitAt
-				item.lastNewLimitAt = &value
+			if lastSealAt != nil && (item.lastSealAt == nil || lastSealAt.After(*item.lastSealAt)) {
+				value := *lastSealAt
+				item.lastSealAt = &value
 			}
 		}
 	}
@@ -213,8 +237,23 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 	}
 	maxWeight := 0.0
 	for index := range list {
+		if list[index].penalty != nil {
+			list[index].downCount = len(list[index].penalty.downCodes)
+			for code := range list[index].penalty.brokenCodes {
+				if _, isDown := list[index].penalty.downCodes[code]; !isDown {
+					list[index].brokenCount++
+				}
+			}
+		}
+		list[index].freshness = themeFreshness(
+			list[index].lastSealAt, asOf, len(list[index].memberCodes),
+		)
+		list[index].sealQuality = themeSealQuality(
+			len(list[index].memberCodes), list[index].brokenCount, list[index].downCount,
+		)
 		list[index].weight *= 0.7 + 0.3*clamp01(list[index].recency)
-		list[index].weight *= themeTimeDecay(list[index].lastNewLimitAt, asOf, len(list[index].memberCodes))
+		list[index].weight *= list[index].freshness
+		list[index].weight *= list[index].sealQuality
 		maxWeight = math.Max(maxWeight, list[index].weight)
 	}
 	if maxWeight <= 0 {
@@ -242,29 +281,110 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 		result = append(result, ThemeCluster{
 			Code: item.code, Name: item.name, MemberCount: len(memberCodes),
 			Weight: item.weight / maxWeight, Recency: clamp01(item.recency),
-			TimeDecay:      themeTimeDecay(item.lastNewLimitAt, asOf, len(memberCodes)),
-			LastNewLimitAt: item.lastNewLimitAt, MemberCodes: memberCodes,
+			Freshness: item.freshness, SealQuality: item.sealQuality,
+			LastSealAt: item.lastSealAt, BrokenCount: item.brokenCount, DownCount: item.downCount,
+			MemberCodes: memberCodes,
 		})
 	}
 	return result
 }
 
-func themeTimeDecay(lastNewLimitAt *time.Time, asOf time.Time, memberCount int) float64 {
-	if lastNewLimitAt == nil || asOf.IsZero() {
+func buildThemePenalties(
+	profiles map[string]ThemeStockProfile,
+	sealedCodes map[string]struct{},
+	brokenEvents, downEvents []Event,
+) map[string]*themePenalty {
+	result := make(map[string]*themePenalty)
+	add := func(events []Event, isDown bool) {
+		for _, event := range events {
+			if _, sealed := sealedCodes[event.Code]; sealed {
+				continue
+			}
+			profile, exists := profiles[event.Code]
+			if !exists {
+				continue
+			}
+			seen := make(map[string]struct{}, len(profile.Tags))
+			for _, tag := range normaliseThemeTags(profile.Tags) {
+				if _, duplicate := seen[tag.Code]; duplicate {
+					continue
+				}
+				seen[tag.Code] = struct{}{}
+				item := result[tag.Code]
+				if item == nil {
+					item = &themePenalty{
+						brokenCodes: make(map[string]struct{}),
+						downCodes:   make(map[string]struct{}),
+					}
+					result[tag.Code] = item
+				}
+				if isDown {
+					item.downCodes[event.Code] = struct{}{}
+				} else {
+					item.brokenCodes[event.Code] = struct{}{}
+				}
+			}
+		}
+	}
+	add(brokenEvents, false)
+	add(downEvents, true)
+	return result
+}
+
+func themeFreshness(lastSealAt *time.Time, asOf time.Time, memberCount int) float64 {
+	if lastSealAt == nil || asOf.IsZero() {
 		return 1
 	}
-	ageMinutes := asOf.Sub(*lastNewLimitAt).Minutes()
+	ageMinutes := intradayElapsedMinutes(*lastSealAt, asOf)
 	if ageMinutes <= 0 {
 		return 1
 	}
-	// A stale direction loses weight, but a broad direction keeps more of its
-	// weight because its existing breadth is itself evidence that the theme
-	// remains active. The 90-minute decay constant is intentionally shorter
-	// than a trading session so morning and afternoon rotations can be
-	// distinguished.
+	// Use the latest reseal time, not the first touch. A stock that opened and
+	// resealed refreshes the direction. Lunch break is excluded from the age
+	// because no new limit-up can occur while the market is closed. The
+	// breadth buffer uses only currently sealed members sharing this theme,
+	// never the whole market or unsealed constituents.
 	baseDecay := math.Exp(-ageMinutes / 90)
 	breadth := float64(max(0, memberCount)) / float64(max(1, memberCount)+5)
 	return clamp01(baseDecay + (1-baseDecay)*breadth)
+}
+
+func intradayElapsedMinutes(start, end time.Time) float64 {
+	start, end = start.In(Shanghai()), end.In(Shanghai())
+	if !end.After(start) {
+		return 0
+	}
+	if start.Format("2006-01-02") != end.Format("2006-01-02") {
+		return end.Sub(start).Minutes()
+	}
+	total := 0.0
+	for _, session := range [][2]int{{9*60 + 30, 11*60 + 30}, {13 * 60, 15 * 60}} {
+		sessionStart := time.Date(start.Year(), start.Month(), start.Day(), session[0]/60, session[0]%60, 0, 0, Shanghai())
+		sessionEnd := time.Date(start.Year(), start.Month(), start.Day(), session[1]/60, session[1]%60, 0, 0, Shanghai())
+		if start.After(sessionStart) {
+			sessionStart = start
+		}
+		if end.Before(sessionEnd) {
+			sessionEnd = end
+		}
+		if sessionEnd.After(sessionStart) {
+			total += sessionEnd.Sub(sessionStart).Minutes()
+		}
+	}
+	return total
+}
+
+func themeSealQuality(sealedCount, brokenCount, downCount int) float64 {
+	if sealedCount <= 0 {
+		return 0
+	}
+	// A broken board is a partial loss of a seal; a limit-down is a full loss
+	// and therefore receives twice the penalty weight. This ratio is bounded
+	// in [0,1]: one broken board among many sealed members is less destructive
+	// than one among a small cluster, while freshness still has no breadth
+	// exemption.
+	penalty := 0.5*float64(max(0, brokenCount)) + float64(max(0, downCount))
+	return clamp01(float64(sealedCount) / (float64(sealedCount) + penalty))
 }
 
 // themeRecency distinguishes a label that the market is using now from one

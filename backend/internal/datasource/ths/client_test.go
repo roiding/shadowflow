@@ -629,6 +629,62 @@ func TestFetchSealedTodayAcceptsOpenMarketAndCachesSnapshot(testingT *testing.T)
 	}
 }
 
+func TestFetchIntradayTodayReadsAllLivePools(t *testing.T) {
+	openStatus := func(raw []byte) []byte {
+		page := strings.Replace(string(raw), `"id": "closed"`, `"id": "open"`, 1)
+		return []byte(strings.Replace(page, `"name": "已收盘"`, `"name": "交易中"`, 1))
+	}
+	sealedOne := openStatus(loadFixtureBytes(t, "sealed_page1.json"))
+	sealedTwo := openStatus(loadFixtureBytes(t, "sealed_page2.json"))
+	broken := openStatus(loadFixtureBytes(t, "broken_page1.json"))
+	down := openStatus(loadFixtureBytes(t, "down_page1.json"))
+	requests := make(map[string]int)
+	testServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, httpRequest *http.Request) {
+		path := httpRequest.URL.Path
+		requests[path]++
+		responseWriter.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(path, "/limit_up_pool"):
+			if httpRequest.URL.Query().Get("page") == "1" {
+				_, _ = responseWriter.Write(sealedOne)
+			} else {
+				_, _ = responseWriter.Write(sealedTwo)
+			}
+		case strings.HasSuffix(path, "/open_limit_pool"):
+			_, _ = responseWriter.Write(broken)
+		case strings.HasSuffix(path, "/lower_limit_pool"):
+			_, _ = responseWriter.Write(down)
+		default:
+			t.Errorf("unexpected intraday path: %s", path)
+			responseWriter.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer testServer.Close()
+
+	thsClient := NewClient(testServer.URL, testServer.Client()).
+		WithMinInterval(0).
+		WithPageLimit(2).
+		WithClock(fixedClock(time.Date(2026, 11, 5, 10, 42, 0, 0, limitup.Shanghai())))
+
+	snapshot, fetchError := thsClient.FetchIntradayToday(context.Background(), limitup.ScopeDefault)
+	if fetchError != nil {
+		t.Fatalf("expected full intraday success, got %v", fetchError)
+	}
+	if snapshot.SealedCount != 3 || snapshot.BrokenCount != 2 || snapshot.DownCount != 2 ||
+		len(snapshot.Events) != 3 || len(snapshot.BrokenEvents) != 2 || len(snapshot.DownEvents) != 2 {
+		t.Fatalf("unexpected full intraday snapshot: %+v", snapshot)
+	}
+	if snapshot.BrokenEvents[0].Pool != limitup.PoolBroken || snapshot.DownEvents[0].Pool != limitup.PoolDown {
+		t.Fatalf("side pools were not tagged correctly: broken=%+v down=%+v", snapshot.BrokenEvents, snapshot.DownEvents)
+	}
+	before := requests["/limit_up_pool"] + requests["/open_limit_pool"] + requests["/lower_limit_pool"]
+	cached, cacheError := thsClient.FetchIntradayToday(context.Background(), limitup.ScopeDefault)
+	after := requests["/limit_up_pool"] + requests["/open_limit_pool"] + requests["/lower_limit_pool"]
+	if cacheError != nil || cached.FetchedAt != snapshot.FetchedAt || before != after {
+		t.Fatalf("expected full intraday cache: %+v requests=%d->%d err=%v", cached, before, after, cacheError)
+	}
+}
+
 func TestFetchSealedTodayRejectsNonTradingDay(testingT *testing.T) {
 	page := strings.Replace(string(loadFixtureBytes(testingT, "sealed_page1.json")), `"id": "closed"`, `"id": "non_trading_day"`, 1)
 	page = strings.Replace(page, `"date": 20261105`, `"date": 20261107`, 1)

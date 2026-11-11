@@ -134,6 +134,10 @@ func (source staticIntradaySource) FetchSealedToday(context.Context, string) (li
 	return source.snapshot, source.err
 }
 
+func (source staticIntradaySource) FetchIntradayToday(context.Context, string) (limitup.IntradaySnapshot, error) {
+	return source.snapshot, source.err
+}
+
 type recordingLimitUpQuoteSource struct {
 	codes  []string
 	quotes map[string]limitup.LiveQuote

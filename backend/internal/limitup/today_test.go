@@ -327,6 +327,53 @@ func TestAnalyzeTodayThemeClusterCanFormCoreWithoutRawCoSeal(t *testing.T) {
 	}
 }
 
+func TestAnalyzeTodayAppliesLiveSidePoolQuality(t *testing.T) {
+	lastSeal := time.Date(2026, 11, 9, 14, 0, 0, 0, Shanghai())
+	snapshot := IntradaySnapshot{
+		TradeDate: "2026-11-09", Source: SourceTHS, Scope: ScopeDefault, SealedCount: 2,
+		FetchedAt: time.Date(2026, 11, 9, 14, 0, 0, 0, Shanghai()), TradeStatus: "open",
+		Events: []Event{
+			{TradeDate: "2026-11-09", Code: "000001", Name: "封板甲", MarketID: 33, MarketType: "HS", Pool: PoolSealed, LastLimitAt: &lastSeal},
+			{TradeDate: "2026-11-09", Code: "000002", Name: "封板乙", MarketID: 33, MarketType: "HS", Pool: PoolSealed, LastLimitAt: &lastSeal},
+		},
+		BrokenCount: 1,
+		BrokenEvents: []Event{
+			{TradeDate: "2026-11-09", Code: "000011", Name: "炸板丙", MarketID: 33, MarketType: "HS", Pool: PoolBroken},
+		},
+		DownCount: 1,
+		DownEvents: []Event{
+			{TradeDate: "2026-11-09", Code: "000012", Name: "跌停丁", MarketID: 33, MarketType: "HS", Pool: PoolDown},
+		},
+	}
+	history := Dataset{
+		Days:   []Day{{TradeDate: "2026-11-06"}},
+		Events: []Event{todayEvent("2026-11-06", "000001", PoolSealed), todayEvent("2026-11-06", "000002", PoolSealed)},
+	}
+	robot := ThemeTag{Code: "885517", Name: "机器人概念", Occurrences: 3, LastDate: "2026-11-06"}
+	profiles := map[string]ThemeStockProfile{
+		"000001": {Code: "000001", Tags: []ThemeTag{robot}},
+		"000002": {Code: "000002", Tags: []ThemeTag{robot}},
+		"000011": {Code: "000011", Tags: []ThemeTag{robot}},
+		"000012": {Code: "000012", Tags: []ThemeTag{robot}},
+	}
+	network, err := AnalyzeToday(context.Background(), TodayInput{
+		Snapshot: snapshot, History: history, HistoryFrom: "2025-11-10",
+		LookbackDays: 365, MinOverlap: 1, TopCores: 2, ThemeProfiles: profiles,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if network.BrokenCount != 1 || network.DownCount != 1 || len(network.ThemeMainline) != 1 {
+		t.Fatalf("live side pools were not carried into the network: %+v", network)
+	}
+	theme := network.ThemeMainline[0]
+	if theme.BrokenCount != 1 || theme.DownCount != 1 ||
+		math.Abs(theme.SealQuality-(2.0/3.5)) > 1e-9 ||
+		math.Abs(theme.Freshness-1) > 1e-9 {
+		t.Fatalf("unexpected live side-pool quality: %+v", theme)
+	}
+}
+
 func TestAnalyzeTodayUsesHistoricalTHSThemeClusters(t *testing.T) {
 	snapshot := IntradaySnapshot{
 		TradeDate: "2026-11-09", Source: SourceTHS, Scope: ScopeDefault, SealedCount: 2,

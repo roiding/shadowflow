@@ -33,13 +33,14 @@ const (
 )
 
 type Client struct {
-	baseURL     string
-	httpClient  *http.Client
-	minInterval time.Duration
-	pageLimit   int
-	clock       func() time.Time
-	intradayMu  sync.Mutex
-	intraday    *limitup.IntradaySnapshot
+	baseURL       string
+	httpClient    *http.Client
+	minInterval   time.Duration
+	pageLimit     int
+	clock         func() time.Time
+	intradayMu    sync.Mutex
+	intraday      *limitup.IntradaySnapshot
+	intradayPools *limitup.IntradaySnapshot
 }
 
 func NewClient(baseURL string, httpClient *http.Client) *Client {
@@ -352,7 +353,7 @@ type parsedPageMeta struct {
 	Limit int
 }
 
-type sealedPageResult struct {
+type intradayPageResult struct {
 	Events     []limitup.Event
 	Meta       parsedPageMeta
 	Status     string
@@ -371,8 +372,7 @@ func (client *Client) FetchSealedToday(ctx context.Context, scope string) (limit
 	client.intradayMu.Lock()
 	if client.intraday != nil && now.Sub(client.intraday.FetchedAt) >= 0 && now.Sub(client.intraday.FetchedAt) < maxIntradayCacheAge &&
 		client.intraday.Scope == scope && client.intraday.TradeDate == now.Format("2006-01-02") {
-		cached := *client.intraday
-		cached.Events = append([]limitup.Event{}, client.intraday.Events...)
+		cached := cloneIntradaySnapshot(client.intraday)
 		client.intradayMu.Unlock()
 		return cached, nil
 	}
@@ -403,7 +403,107 @@ func (client *Client) FetchSealedToday(ctx context.Context, scope string) (limit
 	return limitup.IntradaySnapshot{}, lastErr
 }
 
-func (client *Client) readSealedPages(ctx context.Context, date, dateDigits, scope string) (sealedPageResult, error) {
+// FetchIntradayToday reads the currently sealed, broken and limit-down pools.
+// The latter two are live negative evidence for the mainline quality factor;
+// they are never merged into the sealed member list.
+func (client *Client) FetchIntradayToday(ctx context.Context, scope string) (limitup.IntradaySnapshot, error) {
+	if !limitup.ValidScope(scope) {
+		return limitup.IntradaySnapshot{}, fmt.Errorf("%w: unsupported market scope %s", limitup.ErrInvalid, scope)
+	}
+	now := client.clock().In(limitup.Shanghai())
+	client.intradayMu.Lock()
+	if client.intradayPools != nil && now.Sub(client.intradayPools.FetchedAt) >= 0 &&
+		now.Sub(client.intradayPools.FetchedAt) < maxIntradayCacheAge &&
+		client.intradayPools.Scope == scope && client.intradayPools.TradeDate == now.Format("2006-01-02") {
+		cached := cloneIntradaySnapshot(client.intradayPools)
+		client.intradayMu.Unlock()
+		return cached, nil
+	}
+	client.intradayMu.Unlock()
+
+	date := now.Format("2006-01-02")
+	dateDigits := now.Format("20060102")
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		sealed, err := client.readIntradayPages(ctx, date, dateDigits, scope, limitup.PoolSealed)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if err := client.sleep(ctx); err != nil {
+			return limitup.IntradaySnapshot{}, err
+		}
+		broken, err := client.readIntradayPages(ctx, date, dateDigits, scope, limitup.PoolBroken)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if err := client.sleep(ctx); err != nil {
+			return limitup.IntradaySnapshot{}, err
+		}
+		down, err := client.readIntradayPages(ctx, date, dateDigits, scope, limitup.PoolDown)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if sealed.Status != broken.Status || sealed.Status != down.Status {
+			lastErr = fmt.Errorf("intraday trade status changed between pools")
+			continue
+		}
+		sealedCodes := make(map[string]struct{}, len(sealed.Events))
+		for _, event := range sealed.Events {
+			sealedCodes[event.Code] = struct{}{}
+		}
+		hasConflict := false
+		for _, events := range [][]limitup.Event{broken.Events, down.Events} {
+			for _, event := range events {
+				if _, conflict := sealedCodes[event.Code]; conflict {
+					lastErr = fmt.Errorf("intraday side pool conflicts with sealed stock %s", event.Code)
+					hasConflict = true
+					break
+				}
+			}
+			if hasConflict {
+				break
+			}
+		}
+		if hasConflict {
+			continue
+		}
+		snapshot := limitup.IntradaySnapshot{
+			TradeDate: date, Source: limitup.SourceTHS, Scope: scope, FetchedAt: client.clock().In(limitup.Shanghai()),
+			TradeStatus: sealed.Status, TradeStatusName: sealed.StatusName,
+			SealedCount: len(sealed.Events), Events: sealed.Events,
+			BrokenCount: len(broken.Events), BrokenEvents: broken.Events,
+			DownCount: len(down.Events), DownEvents: down.Events,
+		}
+		client.intradayMu.Lock()
+		client.intradayPools = &snapshot
+		client.intradayMu.Unlock()
+		return snapshot, nil
+	}
+	return limitup.IntradaySnapshot{}, lastErr
+}
+
+func cloneIntradaySnapshot(snapshot *limitup.IntradaySnapshot) limitup.IntradaySnapshot {
+	if snapshot == nil {
+		return limitup.IntradaySnapshot{}
+	}
+	cached := *snapshot
+	cached.Events = append([]limitup.Event{}, snapshot.Events...)
+	cached.BrokenEvents = append([]limitup.Event{}, snapshot.BrokenEvents...)
+	cached.DownEvents = append([]limitup.Event{}, snapshot.DownEvents...)
+	return cached
+}
+
+func (client *Client) readSealedPages(ctx context.Context, date, dateDigits, scope string) (intradayPageResult, error) {
+	return client.readIntradayPages(ctx, date, dateDigits, scope, limitup.PoolSealed)
+}
+
+func (client *Client) readIntradayPages(
+	ctx context.Context,
+	date, dateDigits, scope, poolName string,
+) (intradayPageResult, error) {
 	pageNumber := 1
 	var events []limitup.Event
 	seenCodes := make(map[string]struct{})
@@ -412,49 +512,53 @@ func (client *Client) readSealedPages(ctx context.Context, date, dateDigits, sco
 	expectedPageCount := 0
 	for {
 		if err := ctx.Err(); err != nil {
-			return sealedPageResult{}, err
+			return intradayPageResult{}, err
 		}
 		if pageNumber > 1 {
 			if err := client.sleep(ctx); err != nil {
-				return sealedPageResult{}, err
+				return intradayPageResult{}, err
 			}
 		}
-		pageEvents, _, pageMeta, status, statusName, err := client.fetchSealedPage(ctx, pageNumber, date, dateDigits, scope)
+		pageEvents, _, pageMeta, status, statusName, err := client.fetchIntradayPage(
+			ctx, pageNumber, date, dateDigits, scope, poolName,
+		)
 		if err != nil {
-			return sealedPageResult{}, err
+			return intradayPageResult{}, err
 		}
 		if pageNumber == 1 {
 			if pageMeta.Total < 0 || pageMeta.Total > limitup.MaxDailyEvents || pageMeta.Limit <= 0 {
-				return sealedPageResult{}, fmt.Errorf("invalid intraday page metadata")
+				return intradayPageResult{}, fmt.Errorf("invalid intraday %s page metadata", poolName)
 			}
 			firstMeta, tradeStatus, tradeStatusName = pageMeta, status, statusName
 			if pageMeta.Total == 0 {
 				if len(pageEvents) != 0 {
-					return sealedPageResult{}, fmt.Errorf("empty intraday sealed pool has records")
+					return intradayPageResult{}, fmt.Errorf("empty intraday %s pool has records", poolName)
 				}
-				return sealedPageResult{Events: []limitup.Event{}, Meta: pageMeta, Status: status, StatusName: statusName}, nil
+				return intradayPageResult{Events: []limitup.Event{}, Meta: pageMeta, Status: status, StatusName: statusName}, nil
 			}
 			expectedPageCount = (pageMeta.Total + pageMeta.Limit - 1) / pageMeta.Limit
 			if expectedPageCount > limitup.MaxPoolPages {
-				return sealedPageResult{}, fmt.Errorf("intraday sealed pool exceeds page budget")
+				return intradayPageResult{}, fmt.Errorf("intraday %s pool exceeds page budget", poolName)
 			}
 			if pageMeta.Count != expectedPageCount {
-				return sealedPageResult{}, fmt.Errorf("intraday page count does not match total and limit")
+				return intradayPageResult{}, fmt.Errorf("intraday %s page count does not match total and limit", poolName)
 			}
 		} else if pageMeta.Total != firstMeta.Total || pageMeta.Count != firstMeta.Count ||
 			pageMeta.Limit != firstMeta.Limit || status != tradeStatus {
-			return sealedPageResult{}, fmt.Errorf("intraday sealed pool changed while paginating")
+			return intradayPageResult{}, fmt.Errorf("intraday %s pool changed while paginating", poolName)
 		}
 		expected := pageMeta.Limit
 		if pageNumber == expectedPageCount {
 			expected = pageMeta.Total - pageMeta.Limit*(expectedPageCount-1)
 		}
 		if len(pageEvents) != expected {
-			return sealedPageResult{}, fmt.Errorf("intraday sealed page %d has %d records, expected %d", pageNumber, len(pageEvents), expected)
+			return intradayPageResult{}, fmt.Errorf(
+				"intraday %s page %d has %d records, expected %d", poolName, pageNumber, len(pageEvents), expected,
+			)
 		}
 		for _, event := range pageEvents {
 			if _, duplicate := seenCodes[event.Code]; duplicate {
-				return sealedPageResult{}, fmt.Errorf("intraday sealed pool returned a duplicate stock while paginating")
+				return intradayPageResult{}, fmt.Errorf("intraday %s pool returned a duplicate stock while paginating", poolName)
 			}
 			seenCodes[event.Code] = struct{}{}
 		}
@@ -465,17 +569,29 @@ func (client *Client) readSealedPages(ctx context.Context, date, dateDigits, sco
 		pageNumber++
 	}
 	if len(events) != firstMeta.Total {
-		return sealedPageResult{}, fmt.Errorf("intraday sealed count changed during pagination")
+		return intradayPageResult{}, fmt.Errorf("intraday %s count changed during pagination", poolName)
 	}
-	return sealedPageResult{Events: events, Meta: firstMeta, Status: tradeStatus, StatusName: tradeStatusName}, nil
+	return intradayPageResult{Events: events, Meta: firstMeta, Status: tradeStatus, StatusName: tradeStatusName}, nil
 }
 
 func (client *Client) fetchSealedPage(ctx context.Context, pageNumber int, date, dateDigits, scope string) (
 	[]limitup.Event, json.RawMessage, parsedPageMeta, string, string, error,
 ) {
-	requestURL := fmt.Sprintf("%s/limit_up_pool?page=%d&limit=%d&field=%s&filter=%s&date=%s&order_field=%s&order_type=%s",
-		client.baseURL, pageNumber, client.pageLimit, url.QueryEscape(DefaultFieldList), url.QueryEscape(scope),
-		dateDigits, url.QueryEscape(DefaultOrderField), url.QueryEscape(DefaultOrderType))
+	return client.fetchIntradayPage(ctx, pageNumber, date, dateDigits, scope, limitup.PoolSealed)
+}
+
+func (client *Client) fetchIntradayPage(
+	ctx context.Context,
+	pageNumber int,
+	date, dateDigits, scope, poolName string,
+) ([]limitup.Event, json.RawMessage, parsedPageMeta, string, string, error) {
+	orderField := DefaultOrderField
+	if poolName == limitup.PoolDown {
+		orderField = DefaultDownOrderField
+	}
+	requestURL := fmt.Sprintf("%s/%s?page=%d&limit=%d&field=%s&filter=%s&date=%s&order_field=%s&order_type=%s",
+		client.baseURL, poolEndpoint(poolName), pageNumber, client.pageLimit, url.QueryEscape(DefaultFieldList),
+		url.QueryEscape(scope), dateDigits, url.QueryEscape(orderField), url.QueryEscape(DefaultOrderType))
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, nil, parsedPageMeta{}, "", "", err
@@ -559,7 +675,7 @@ func (client *Client) fetchSealedPage(ctx context.Context, pageNumber int, date,
 	events := make([]limitup.Event, 0, len(data.Info))
 	seen := make(map[string]struct{}, len(data.Info))
 	for _, raw := range data.Info {
-		event, err := parseStockEvent(raw, date, limitup.PoolSealed)
+		event, err := parseStockEvent(raw, date, poolName)
 		if err != nil {
 			return nil, nil, parsedPageMeta{}, "", "", err
 		}

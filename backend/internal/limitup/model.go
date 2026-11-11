@@ -60,10 +60,11 @@ type Snapshot struct {
 	RawPages        []json.RawMessage `json:"-"`
 }
 
-// IntradaySnapshot is a read-only view of the stocks currently sealed at the
-// limit. It deliberately excludes the broken and limit-down pools because the
-// source's daily archive is only a valid final snapshot after the close.
-// Callers must not persist this type into limit_up_day.
+// IntradaySnapshot is a read-only point-in-time view of today's limit-up-side
+// pools. Events contains only currently sealed stocks; BrokenEvents and
+// DownEvents are optional live context used to discount a theme. The source's
+// daily archive is still only valid after the close, so callers must not
+// persist this type into limit_up_day.
 type IntradaySnapshot struct {
 	TradeDate string `json:"trade_date"`
 	Source    string `json:"source"`
@@ -78,6 +79,10 @@ type IntradaySnapshot struct {
 	TradeStatusName string    `json:"trade_status_name"`
 	SealedCount     int       `json:"sealed_count"`
 	Events          []Event   `json:"events"`
+	BrokenCount     int       `json:"broken_count"`
+	BrokenEvents    []Event   `json:"broken_events"`
+	DownCount       int       `json:"down_count"`
+	DownEvents      []Event   `json:"down_events"`
 }
 
 type Day struct {
@@ -109,6 +114,13 @@ type Reader interface {
 
 type IntradayReader interface {
 	FetchSealedToday(context.Context, string) (IntradaySnapshot, error)
+}
+
+// IntradayPoolsReader optionally supplies the currently broken and
+// limit-down pools in addition to the sealed pool. The mainline quality
+// discount uses these live pools when the source supports them.
+type IntradayPoolsReader interface {
+	FetchIntradayToday(context.Context, string) (IntradaySnapshot, error)
 }
 
 // LatestDayReader finds the newest complete archive day strictly before a
@@ -312,14 +324,17 @@ type ThemeStockProfile struct {
 }
 
 type ThemeCluster struct {
-	Code           string     `json:"code"`
-	Name           string     `json:"name"`
-	MemberCount    int        `json:"member_count"`
-	Weight         float64    `json:"weight"`
-	Recency        float64    `json:"recency"`
-	TimeDecay      float64    `json:"time_decay"`
-	LastNewLimitAt *time.Time `json:"last_new_limit_at"`
-	MemberCodes    []string   `json:"member_codes"`
+	Code        string     `json:"code"`
+	Name        string     `json:"name"`
+	MemberCount int        `json:"member_count"`
+	Weight      float64    `json:"weight"`
+	Recency     float64    `json:"recency"`
+	Freshness   float64    `json:"freshness"`
+	SealQuality float64    `json:"seal_quality"`
+	LastSealAt  *time.Time `json:"last_seal_at"`
+	BrokenCount int        `json:"broken_count"`
+	DownCount   int        `json:"down_count"`
+	MemberCodes []string   `json:"member_codes"`
 }
 
 // TodayMainlineGroup is one real-time mainline with its own independently
@@ -440,6 +455,8 @@ type TodayNetwork struct {
 	TradeStatus           string                      `json:"trade_status"`
 	TradeStatusName       string                      `json:"trade_status_name"`
 	SealedCount           int                         `json:"sealed_count"`
+	BrokenCount           int                         `json:"broken_count"`
+	DownCount             int                         `json:"down_count"`
 	HistoryAsOf           string                      `json:"history_as_of"`
 	LookbackDays          int                         `json:"lookback_days"`
 	Scope                 string                      `json:"scope"`
