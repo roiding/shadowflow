@@ -1131,7 +1131,7 @@ export interface paths {
                     min_overlap?: number;
                     /** @description 返回的核心股数量；无有效关系或并列时按核心度、关系数、封板天数及代码稳定排序。 */
                     top?: number;
-                    /** @description 返回的非封板外溢待选股数量，按综合分降序。 */
+                    /** @description 每条实时主线独立返回的非封板外溢待选股数量上限。 */
                     candidates?: number;
                 };
                 header?: never;
@@ -1548,11 +1548,16 @@ export interface components {
             cores: components["schemas"]["LimitUpTodayCore"][];
             /** @description 与今日封板成员历史共现或共享同花顺历史题材主线、但今日未封板的待选股，按综合分降序。 */
             candidates: components["schemas"]["LimitUpTodayCandidate"][];
+            /** @description 每条实时主线独立保留的候选数量上限。 */
             candidate_limit: number;
             /** @description 兼容字段，当前为空；今日主线改用 theme_mainline。 */
             mainline_themes: components["schemas"]["LimitUpMainlineTheme"][];
-            /** @description 由同花顺 Top20 历史累计标签计算出的今日题材主线；至少 2 只今日封板成员共享同一标签，按成员核心度、标签 IDF 和标签近期度加权。不解析今日实时 reason，未分类/其他/无明确原因的题材桶不参与。 */
+            /** @description 由同花顺 Top20 历史累计标签实时计算出的多条题材主线；至少 2 只当前封板成员共享同一标签，按成员核心度、标签 IDF 和标签近期度加权。不解析今日实时 reason，未分类/其他/无明确原因的题材桶不参与。 */
             theme_mainline: components["schemas"]["LimitUpThemeCluster"][];
+            /** @description 每条实时主线各自独立排名的候选组。主线之间不合并为单一主线，同一候选可出现在多个组中。 */
+            mainline_candidates: components["schemas"]["LimitUpTodayMainlineGroup"][];
+            /** @description 两条实时主线共享的当前封板成员；只描述交叉，不合并主线。 */
+            mainline_intersections: components["schemas"]["LimitUpTodayMainlineIntersection"][];
             /** @description 本次候选列表是否取得并应用了盘中行情。false时列表仅为历史观察。 */
             live_candidate: boolean;
             /** @description 已尝试读取候选行情，但至少一只候选或整批行情不可用。 */
@@ -1587,6 +1592,23 @@ export interface components {
             weight: number;
             /** @description 0到1的标签近期度；由该标签在历史Top20中的最近出现日期计算，仅在主线内部降低陈旧标签权重。 */
             recency: number;
+            /** @description 共享该题材的当前封板成员代码，用于计算主线交叉。 */
+            member_codes: string[];
+        };
+        LimitUpTodayMainlineGroup: {
+            theme: components["schemas"]["LimitUpThemeCluster"];
+            /** @description 只按该主线内部公式独立排序的候选，最多 candidate_limit 只。 */
+            candidates: components["schemas"]["LimitUpTodayCandidate"][];
+        };
+        LimitUpTodayMainlineIntersection: {
+            left_code: string;
+            left_name: string;
+            right_code: string;
+            right_name: string;
+            shared_member_count: number;
+            shared_member_codes: string[];
+            /** @description 两个主线当前封板成员集合的 Jaccard。 */
+            jaccard: number;
         };
         LimitUpThemeLink: {
             code: string;
@@ -1644,10 +1666,18 @@ export interface components {
             code: string;
             name: string;
             market_type: string;
-            /** @description 0到100的候选分。有实时行情时=100×(30%实时确认+40%今日主线+20%历史特异性+10%关联覆盖)，再乘最多15%的风险折价；无实时行情时实时项退出，其余三项重新归一化。股票自身近一年涨停次数不直接加分。 */
+            /** @description 0到100的候选分。主线组内使用该组的 mainline_fit；全局候选使用跨主线共振 mainline_score。有实时行情时=100×(30%实时确认+40%主线项+20%历史特异性+10%关联覆盖)，再乘最多15%的风险折价；无实时行情时实时项退出，其余三项重新归一化。 */
             score: number;
-            /** @description 0到1的今日同花顺Top20历史题材主线匹配分。最强主线权重占80%，次强占20%；只匹配一个题材时按该权重的80%计。 */
+            /** @description 0到1的多主线共振分，公式为 1 - ∏(1 - 单主线贴合)。同时命中多条主线时按独立证据叠加，收益递减，不再使用最强80%+次强20%。 */
             mainline_score: number;
+            /** @description 0到1的单主线贴合分：主线权重 × (o+r)/(o+r+2)，其中o为历史出现次数、r为近60日出现次数。主线组内候选按该值计算。 */
+            mainline_fit: number;
+            /** @description 该候选在当前主线组内的排名；全局候选为0。 */
+            mainline_rank: number;
+            /** @description 该候选命中的全部实时主线代码，按贴合度降序。 */
+            mainline_codes: string[];
+            /** @description 命中的实时主线数量；大于1表示该候选跨主线。 */
+            cross_mainline_count: number;
             /** @description 0到1的盘中确认分，由距涨停进度、换手、量比、主力净占比和是否触板组成；行情不可用时为0。 */
             live_score: number;
             /** @description 0到1的历史特异性分，来自按候选与今日核心φ相关系数、共现置信度和核心度加权的强度，并在本批候选中归一化；仅题材候选为0。 */
@@ -1673,7 +1703,7 @@ export interface components {
             strongest_overlap_days: number;
             strongest_heat: number;
             strongest_phi: number;
-            /** @description 今日主线贴合度兼容字段，与mainline_score相同。 */
+            /** @description 兼容字段，与 mainline_score 相同。 */
             theme_score: number;
             /** @description 兼容字段；当前为空，题材标签见 theme_tags。 */
             themes: components["schemas"]["LimitUpThemeRef"][];

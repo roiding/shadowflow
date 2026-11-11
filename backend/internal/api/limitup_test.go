@@ -144,6 +144,26 @@ func (source *recordingLimitUpQuoteSource) ReadLiveQuotes(_ context.Context, cod
 	return source.quotes, nil
 }
 
+func TestTodayCandidateQuoteCodesIncludeEveryMainlineGroup(t *testing.T) {
+	result := limitup.TodayNetwork{
+		Candidates: []limitup.TodayCandidate{{Code: "000003"}},
+		MainlineCandidates: []limitup.TodayMainlineGroup{
+			{Candidates: []limitup.TodayCandidate{{Code: "000003"}, {Code: "000010"}}},
+			{Candidates: []limitup.TodayCandidate{{Code: "000020"}}},
+		},
+	}
+	codes := todayCandidateQuoteCodes(result)
+	expected := []string{"000003", "000010", "000020"}
+	if len(codes) != len(expected) {
+		t.Fatalf("unexpected quote codes: %+v", codes)
+	}
+	for index := range expected {
+		if codes[index] != expected[index] {
+			t.Fatalf("unexpected quote codes: %+v", codes)
+		}
+	}
+}
+
 func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 	server, store := testServer(testingT, "")
 	defer store.Close()

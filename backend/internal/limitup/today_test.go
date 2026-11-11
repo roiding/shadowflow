@@ -350,7 +350,7 @@ func TestAnalyzeTodayUsesHistoricalTHSThemeClusters(t *testing.T) {
 			todayEvent("2026-11-03", "000020", PoolSealed),
 		},
 	}
-	robot := ThemeTag{Code: "885517", Name: "机器人概念", Occurrences: 4, LastDate: "2026-11-06"}
+	robot := ThemeTag{Code: "885517", Name: "机器人概念", Occurrences: 4, RecentOccurrences: 2, LastDate: "2026-11-06"}
 	other := ThemeTag{Code: "885999", Name: "旁支题材", Occurrences: 2, LastDate: "2026-11-06"}
 	profiles := map[string]ThemeStockProfile{
 		"000001": {Code: "000001", Name: "股票000001", LabelDays: 4, Tags: []ThemeTag{robot}},
@@ -379,7 +379,7 @@ func TestAnalyzeTodayUsesHistoricalTHSThemeClusters(t *testing.T) {
 		byCode[candidate.Code] = candidate
 	}
 	themed := byCode["000010"]
-	if math.Abs(themed.ThemeScore-0.8) > 1e-9 || len(themed.ThemeTags) != 1 || themed.ThemeTags[0].Code != robot.Code {
+	if math.Abs(themed.ThemeScore-(6.0/8.0)) > 1e-9 || len(themed.ThemeTags) != 1 || themed.ThemeTags[0].Code != robot.Code {
 		t.Fatalf("mainline candidate did not receive theme alignment: %+v", themed)
 	}
 	unthemed := byCode["000020"]
@@ -390,9 +390,91 @@ func TestAnalyzeTodayUsesHistoricalTHSThemeClusters(t *testing.T) {
 		t.Fatalf("theme alignment did not lift the mainline candidate: %+v", network.Candidates)
 	}
 	themeOnly, exists := byCode["000030"]
-	if !exists || math.Abs(themeOnly.ThemeScore-0.8) > 1e-9 || themeOnly.EffectiveLinks != 0 ||
+	if !exists || math.Abs(themeOnly.ThemeScore-(6.0/8.0)) > 1e-9 || themeOnly.EffectiveLinks != 0 ||
 		themeOnly.Strength != 0 || themeOnly.Score <= 0 {
 		t.Fatalf("theme-only candidate was not added explicitly: %+v", themeOnly)
+	}
+	if len(network.MainlineCandidates) != 1 || len(network.MainlineCandidates[0].Candidates) == 0 {
+		t.Fatalf("per-mainline candidates were not built: %+v", network.MainlineCandidates)
+	}
+	if len(network.MainlineCandidates[0].Theme.MemberCodes) != 2 {
+		t.Fatalf("mainline member intersection evidence is missing: %+v", network.MainlineCandidates[0].Theme)
+	}
+}
+
+func TestAnalyzeTodayBuildsIntersectingMainlineCandidateGroups(t *testing.T) {
+	snapshot := IntradaySnapshot{
+		TradeDate: "2026-11-09", Source: SourceTHS, Scope: ScopeDefault, SealedCount: 3,
+		FetchedAt: time.Date(2026, 11, 9, 10, 42, 0, 0, Shanghai()), TradeStatus: "open",
+		Events: []Event{
+			todayEvent("2026-11-09", "000001", PoolSealed),
+			todayEvent("2026-11-09", "000002", PoolSealed),
+			todayEvent("2026-11-09", "000003", PoolSealed),
+		},
+	}
+	history := Dataset{
+		Days:   []Day{{TradeDate: "2026-11-06"}},
+		Events: []Event{todayEvent("2026-11-06", "000001", PoolSealed)},
+	}
+	robot := ThemeTag{Code: "885517", Name: "机器人概念", Occurrences: 5, RecentOccurrences: 2, LastDate: "2026-11-06"}
+	energy := ThemeTag{Code: "885431", Name: "新能源汽车", Occurrences: 5, RecentOccurrences: 2, LastDate: "2026-11-06"}
+	profiles := map[string]ThemeStockProfile{
+		"000001": {Code: "000001", Name: "甲", LabelDays: 2, Tags: []ThemeTag{robot}},
+		"000002": {Code: "000002", Name: "乙", LabelDays: 2, Tags: []ThemeTag{robot, energy}},
+		"000003": {Code: "000003", Name: "丙", LabelDays: 2, Tags: []ThemeTag{energy}},
+		"000010": {Code: "000010", Name: "双主线候选", LabelDays: 2, Tags: []ThemeTag{robot, energy}},
+		"000020": {Code: "000020", Name: "机器人候选", LabelDays: 2, Tags: []ThemeTag{robot}},
+		"000030": {Code: "000030", Name: "新能源候选", LabelDays: 2, Tags: []ThemeTag{energy}},
+	}
+	network, err := AnalyzeToday(context.Background(), TodayInput{
+		Snapshot: snapshot, History: history, HistoryFrom: "2025-11-10",
+		LookbackDays: 365, MinOverlap: 1, TopCores: 3, CandidateLimit: 5,
+		ThemeProfiles: profiles,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(network.ThemeMainline) != 2 || len(network.MainlineCandidates) != 2 {
+		t.Fatalf("two real-time mainlines must remain separate: %+v %+v", network.ThemeMainline, network.MainlineCandidates)
+	}
+	groups := make(map[string]TodayMainlineGroup, len(network.MainlineCandidates))
+	for _, group := range network.MainlineCandidates {
+		groups[group.Theme.Code] = group
+	}
+	robotGroup, robotExists := groups[robot.Code]
+	energyGroup, energyExists := groups[energy.Code]
+	if !robotExists || !energyExists {
+		t.Fatalf("mainline candidate groups are incomplete: %+v", groups)
+	}
+	hasCandidate := func(group TodayMainlineGroup, code string) bool {
+		for _, candidate := range group.Candidates {
+			if candidate.Code == code {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasCandidate(robotGroup, "000010") || !hasCandidate(energyGroup, "000010") ||
+		!hasCandidate(robotGroup, "000020") || !hasCandidate(energyGroup, "000030") {
+		t.Fatalf("candidate intersection was not preserved across mainlines: robot=%+v energy=%+v", robotGroup, energyGroup)
+	}
+	var crossed *TodayCandidate
+	for index := range robotGroup.Candidates {
+		if robotGroup.Candidates[index].Code == "000010" {
+			crossed = &robotGroup.Candidates[index]
+			break
+		}
+	}
+	if crossed == nil || crossed.CrossMainlineCount != 2 || len(crossed.MainlineCodes) != 2 {
+		t.Fatalf("cross-mainline candidate metadata is missing: %+v", crossed)
+	}
+	if len(network.MainlineIntersections) != 1 {
+		t.Fatalf("expected one mainline intersection: %+v", network.MainlineIntersections)
+	}
+	intersection := network.MainlineIntersections[0]
+	if intersection.SharedMemberCount != 1 || len(intersection.SharedMemberCodes) != 1 ||
+		intersection.SharedMemberCodes[0] != "000002" {
+		t.Fatalf("mainline intersection members are wrong: %+v", intersection)
 	}
 }
 

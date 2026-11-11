@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -212,10 +213,7 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 		// Two-stage read: first derive the bounded historical candidate list,
 		// then fetch quotes for those candidates only. The first pass never
 		// scans the market or asks EastMoney for today's sealed members.
-		codes := make([]string, 0, len(result.Candidates))
-		for _, candidate := range result.Candidates {
-			codes = append(codes, candidate.Code)
-		}
+		codes := todayCandidateQuoteCodes(result)
 		if len(codes) == 0 {
 			liveQuoteStatus = "empty"
 		} else if quotes, quoteErr := server.limitUpQuotes.ReadLiveQuotes(request.Context(), codes); quoteErr != nil {
@@ -243,6 +241,31 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 		"snapshot_fetched_at": snapshot.FetchedAt, "live_candidates": result.LiveCandidate,
 		"live_quote_status": liveQuoteStatus,
 	}})
+}
+
+func todayCandidateQuoteCodes(result limitup.TodayNetwork) []string {
+	seen := make(map[string]struct{}, len(result.Candidates))
+	codes := make([]string, 0, len(result.Candidates))
+	add := func(code string) {
+		if code == "" {
+			return
+		}
+		if _, duplicate := seen[code]; duplicate {
+			return
+		}
+		seen[code] = struct{}{}
+		codes = append(codes, code)
+	}
+	for _, candidate := range result.Candidates {
+		add(candidate.Code)
+	}
+	for _, group := range result.MainlineCandidates {
+		for _, candidate := range group.Candidates {
+			add(candidate.Code)
+		}
+	}
+	sort.Strings(codes)
+	return codes
 }
 
 func (server *Server) limitUpError(response http.ResponseWriter, err error) {

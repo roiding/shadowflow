@@ -76,8 +76,37 @@ func TestThemeMatchScoreIgnoresUnclassifiedTags(t *testing.T) {
 		{Code: "000000", Name: "其他概念", Occurrences: 5},
 		{Code: "885517", Name: "机器人概念", Occurrences: 2},
 	}, []ThemeCluster{{Code: "885517", Name: "机器人概念", Weight: 0.8}})
-	if math.Abs(score-0.64) > 1e-9 || len(tags) != 1 || tags[0].Code != "885517" {
+	if math.Abs(score-0.4) > 1e-9 || len(tags) != 1 || tags[0].Code != "885517" {
 		t.Fatalf("unexpected theme match: score=%v tags=%+v", score, tags)
+	}
+}
+
+func TestThemeMatchScoreUsesAllMatchingMainlinesWithDiminishingReturns(t *testing.T) {
+	tags := []ThemeTag{
+		{Code: "885517", Name: "机器人概念", Occurrences: 4},
+		{Code: "885431", Name: "新能源汽车", Occurrences: 4},
+		{Code: "885806", Name: "华为概念", Occurrences: 4},
+	}
+	mainline := []ThemeCluster{
+		{Code: "885517", Name: "机器人概念", Weight: 1},
+		{Code: "885431", Name: "新能源汽车", Weight: 0.8},
+		{Code: "885806", Name: "华为概念", Weight: 0.6},
+	}
+	fits := candidateThemeFits(tags, mainline)
+	if len(fits) != 3 {
+		t.Fatalf("all matching mainlines must be retained: %+v", fits)
+	}
+	expected := 1.0
+	for _, fit := range fits {
+		expected *= 1 - fit.Fit
+	}
+	expected = 1 - expected
+	score, matched := themeMatchScore(tags, mainline)
+	if math.Abs(score-expected) > 1e-9 || len(matched) != 3 {
+		t.Fatalf("unexpected multi-mainline resonance: score=%v expected=%v tags=%+v", score, expected, matched)
+	}
+	if score <= fits[0].Fit {
+		t.Fatalf("additional mainline matches must add resonance: score=%v best=%v", score, fits[0].Fit)
 	}
 }
 

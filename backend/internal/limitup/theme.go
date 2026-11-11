@@ -159,11 +159,11 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 		return []ThemeCluster{}
 	}
 	type aggregate struct {
-		code    string
-		name    string
-		members int
-		weight  float64
-		recency float64
+		code        string
+		name        string
+		memberCodes map[string]struct{}
+		weight      float64
+		recency     float64
 	}
 	documentFrequency := themeDocumentFrequency(profiles)
 	byTheme := make(map[string]*aggregate)
@@ -180,10 +180,13 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 			seen[tag.Code] = struct{}{}
 			item := byTheme[tag.Code]
 			if item == nil {
-				item = &aggregate{code: tag.Code, name: tag.Name}
+				item = &aggregate{
+					code: tag.Code, name: tag.Name,
+					memberCodes: make(map[string]struct{}),
+				}
 				byTheme[tag.Code] = item
 			}
-			item.members++
+			item.memberCodes[member.Code] = struct{}{}
 			item.weight += (1 + member.CoreScore/100) * themeIDF(tag.Code, documentFrequency, len(profiles))
 			item.recency = math.Max(item.recency, themeRecency(tag, member.LastLimitAt))
 		}
@@ -192,7 +195,7 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 	for _, item := range byTheme {
 		// A label carried by only one sealed stock is not a shared theme,
 		// even when that stock is the strongest stock in the pool.
-		if item.members >= 2 {
+		if len(item.memberCodes) >= 2 {
 			list = append(list, *item)
 		}
 	}
@@ -211,8 +214,8 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 		if list[left].weight != list[right].weight {
 			return list[left].weight > list[right].weight
 		}
-		if list[left].members != list[right].members {
-			return list[left].members > list[right].members
+		if len(list[left].memberCodes) != len(list[right].memberCodes) {
+			return len(list[left].memberCodes) > len(list[right].memberCodes)
 		}
 		return list[left].code < list[right].code
 	})
@@ -221,9 +224,15 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 	}
 	result := make([]ThemeCluster, 0, len(list))
 	for _, item := range list {
+		memberCodes := make([]string, 0, len(item.memberCodes))
+		for code := range item.memberCodes {
+			memberCodes = append(memberCodes, code)
+		}
+		sort.Strings(memberCodes)
 		result = append(result, ThemeCluster{
-			Code: item.code, Name: item.name, MemberCount: item.members,
+			Code: item.code, Name: item.name, MemberCount: len(memberCodes),
 			Weight: item.weight / maxWeight, Recency: clamp01(item.recency),
+			MemberCodes: memberCodes,
 		})
 	}
 	return result
@@ -332,23 +341,32 @@ func topThemeTags(tags []ThemeTag, limit int) []ThemeTag {
 	return result
 }
 
-func themeMatchScore(tags []ThemeTag, mainline []ThemeCluster) (float64, []ThemeTag) {
+type themeFit struct {
+	Cluster ThemeCluster
+	Tag     ThemeTag
+	Fit     float64
+}
+
+func themeTagEvidence(tag ThemeTag) float64 {
+	occurrences := math.Max(0, float64(tag.Occurrences))
+	recent := math.Max(0, float64(tag.RecentOccurrences))
+	evidence := occurrences + recent
+	return evidence / (evidence + 2)
+}
+
+func candidateThemeFits(tags []ThemeTag, mainline []ThemeCluster) []themeFit {
 	tags = normaliseThemeTags(tags)
 	if len(tags) == 0 || len(mainline) == 0 {
-		return 0, []ThemeTag{}
+		return []themeFit{}
 	}
-	weights := make(map[string]float64, len(mainline))
+	clusters := make(map[string]ThemeCluster, len(mainline))
 	for _, cluster := range mainline {
-		weights[cluster.Code] = cluster.Weight
-	}
-	type weightedTag struct {
-		tag    ThemeTag
-		weight float64
+		clusters[cluster.Code] = cluster
 	}
 	seen := make(map[string]struct{}, len(tags))
-	weighted := make([]weightedTag, 0, len(tags))
+	fits := make([]themeFit, 0, len(tags))
 	for _, tag := range tags {
-		weight, exists := weights[tag.Code]
+		cluster, exists := clusters[tag.Code]
 		if !exists {
 			continue
 		}
@@ -356,37 +374,55 @@ func themeMatchScore(tags []ThemeTag, mainline []ThemeCluster) (float64, []Theme
 			continue
 		}
 		seen[tag.Code] = struct{}{}
-		weighted = append(weighted, weightedTag{tag: tag, weight: weight})
-	}
-	if len(weighted) == 0 {
-		return 0, []ThemeTag{}
-	}
-	sort.SliceStable(weighted, func(left, right int) bool {
-		if weighted[left].weight != weighted[right].weight {
-			return weighted[left].weight > weighted[right].weight
+		fit := clamp01(cluster.Weight * themeTagEvidence(tag))
+		if fit <= 0 {
+			continue
 		}
-		if weighted[left].tag.Occurrences != weighted[right].tag.Occurrences {
-			return weighted[left].tag.Occurrences > weighted[right].tag.Occurrences
+		fits = append(fits, themeFit{Cluster: cluster, Tag: tag, Fit: fit})
+	}
+	sort.SliceStable(fits, func(left, right int) bool {
+		if fits[left].Fit != fits[right].Fit {
+			return fits[left].Fit > fits[right].Fit
 		}
-		return weighted[left].tag.Code < weighted[right].tag.Code
+		if fits[left].Tag.Occurrences != fits[right].Tag.Occurrences {
+			return fits[left].Tag.Occurrences > fits[right].Tag.Occurrences
+		}
+		return fits[left].Tag.Code < fits[right].Tag.Code
 	})
-	// A stock matching a single theme should not automatically receive a
-	// perfect score. Reward the strongest match, with a small contribution
-	// from the second match; broad tags then cannot saturate the mainline.
-	score := weighted[0].weight
-	if len(weighted) > 1 {
-		score = 0.8*weighted[0].weight + 0.2*weighted[1].weight
-	} else {
-		score *= 0.8
+	return fits
+}
+
+func themeFitScore(fits []themeFit) float64 {
+	if len(fits) == 0 {
+		return 0
 	}
-	if score > 1 {
-		score = 1
+	// Noisy-OR treats every matched mainline as an independent piece of
+	// evidence. A second and third direction increase resonance with
+	// diminishing returns instead of being forced into a fixed 80/20 split.
+	remaining := 1.0
+	for _, fit := range fits {
+		remaining *= 1 - clamp01(fit.Fit)
 	}
-	matched := make([]ThemeTag, 0, min(5, len(weighted)))
-	for _, item := range weighted[:min(5, len(weighted))] {
-		matched = append(matched, item.tag)
+	return clamp01(1 - remaining)
+}
+
+func themeTagsFromFits(fits []themeFit, limit int) []ThemeTag {
+	if limit <= 0 {
+		limit = len(fits)
 	}
-	return score, matched
+	if len(fits) > limit {
+		fits = fits[:limit]
+	}
+	tags := make([]ThemeTag, 0, len(fits))
+	for _, fit := range fits {
+		tags = append(tags, fit.Tag)
+	}
+	return tags
+}
+
+func themeMatchScore(tags []ThemeTag, mainline []ThemeCluster) (float64, []ThemeTag) {
+	fits := candidateThemeFits(tags, mainline)
+	return themeFitScore(fits), themeTagsFromFits(fits, 5)
 }
 
 // applyTodayThemeProfiles blends the historical THS cluster score into the
@@ -407,13 +443,16 @@ func applyTodayThemeProfiles(
 	for index := range candidates {
 		byCode[candidates[index].Code] = index
 		profile, exists := profiles[candidates[index].Code]
-		themeScore, matched := 0.0, []ThemeTag{}
+		fits, themeScore, matched := []themeFit{}, 0.0, []ThemeTag{}
 		if exists {
-			themeScore, matched = themeMatchScore(profile.Tags, mainline)
+			fits = candidateThemeFits(profile.Tags, mainline)
+			themeScore = themeFitScore(fits)
+			matched = themeTagsFromFits(fits, 5)
 			if len(matched) == 0 {
 				matched = topThemeTags(profile.Tags, 3)
 			}
 		}
+		candidates[index].themeFits = fits
 		candidates[index].ThemeScore = themeScore
 		candidates[index].ThemeTags = matched
 	}
@@ -424,7 +463,9 @@ func applyTodayThemeProfiles(
 		if _, exists := byCode[code]; exists {
 			continue
 		}
-		themeScore, matched := themeMatchScore(profile.Tags, mainline)
+		fits := candidateThemeFits(profile.Tags, mainline)
+		themeScore := themeFitScore(fits)
+		matched := themeTagsFromFits(fits, 5)
 		if themeScore <= 0 || len(matched) == 0 {
 			continue
 		}
@@ -446,7 +487,8 @@ func applyTodayThemeProfiles(
 			TouchDays:    touchDays,
 			LastSealDate: lastSealDate[code],
 			ThemeScore:   themeScore, ThemeTags: matched,
-			Themes: []ThemeRef{}, TopLinks: []CandidateLink{},
+			themeFits: fits,
+			Themes:    []ThemeRef{}, TopLinks: []CandidateLink{},
 			EffectiveLinks: len(links),
 			Coverage:       float64(len(links)) / float64(max(1, len(members))),
 			RiskFlags:      []string{},

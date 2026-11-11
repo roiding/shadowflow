@@ -312,11 +312,32 @@ type ThemeStockProfile struct {
 }
 
 type ThemeCluster struct {
-	Code        string  `json:"code"`
-	Name        string  `json:"name"`
-	MemberCount int     `json:"member_count"`
-	Weight      float64 `json:"weight"`
-	Recency     float64 `json:"recency"`
+	Code        string   `json:"code"`
+	Name        string   `json:"name"`
+	MemberCount int      `json:"member_count"`
+	Weight      float64  `json:"weight"`
+	Recency     float64  `json:"recency"`
+	MemberCodes []string `json:"member_codes"`
+}
+
+// TodayMainlineGroup is one real-time mainline with its own independently
+// ranked candidates. A stock can appear in several groups when it matches
+// several intersecting mainlines.
+type TodayMainlineGroup struct {
+	Theme      ThemeCluster     `json:"theme"`
+	Candidates []TodayCandidate `json:"candidates"`
+}
+
+// TodayMainlineIntersection describes the sealed members shared by two
+// mainlines. It is descriptive only and does not merge the two mainlines.
+type TodayMainlineIntersection struct {
+	LeftCode          string   `json:"left_code"`
+	LeftName          string   `json:"left_name"`
+	RightCode         string   `json:"right_code"`
+	RightName         string   `json:"right_name"`
+	SharedMemberCount int      `json:"shared_member_count"`
+	SharedMemberCodes []string `json:"shared_member_codes"`
+	Jaccard           float64  `json:"jaccard"`
 }
 
 // ThemeCooccurrence is one stock-theme-day row joined to another stock that
@@ -372,6 +393,10 @@ type TodayCandidate struct {
 	MarketType           string          `json:"market_type"`
 	Score                float64         `json:"score"`
 	MainlineScore        float64         `json:"mainline_score"`
+	MainlineFit          float64         `json:"mainline_fit"`
+	MainlineRank         int             `json:"mainline_rank"`
+	MainlineCodes        []string        `json:"mainline_codes"`
+	CrossMainlineCount   int             `json:"cross_mainline_count"`
 	LiveScore            float64         `json:"live_score"`
 	HistoryScore         float64         `json:"history_score"`
 	RiskScore            float64         `json:"risk_score"`
@@ -404,28 +429,31 @@ type TodayCandidate struct {
 	RiskFlags            []string        `json:"risk_flags"`
 	quoteFetchedAt       time.Time
 	listingDate          string
+	themeFits            []themeFit
 }
 
 type TodayNetwork struct {
-	TradeDate        string           `json:"trade_date"`
-	SnapshotAt       time.Time        `json:"snapshot_at"`
-	TradeStatus      string           `json:"trade_status"`
-	TradeStatusName  string           `json:"trade_status_name"`
-	SealedCount      int              `json:"sealed_count"`
-	HistoryAsOf      string           `json:"history_as_of"`
-	LookbackDays     int              `json:"lookback_days"`
-	Scope            string           `json:"scope"`
-	MinOverlap       int              `json:"min_overlap"`
-	Coverage         Coverage         `json:"coverage"`
-	HistoryAvailable bool             `json:"history_available"`
-	Members          []TodayMember    `json:"members"`
-	Cores            []TodayCore      `json:"cores"`
-	Candidates       []TodayCandidate `json:"candidates"`
-	CandidateLimit   int              `json:"candidate_limit"`
-	MainlineThemes   []MainlineTheme  `json:"mainline_themes"`
-	ThemeMainline    []ThemeCluster   `json:"theme_mainline"`
-	LiveCandidate    bool             `json:"live_candidate"`
-	LiveUnavailable  bool             `json:"live_unavailable"`
+	TradeDate             string                      `json:"trade_date"`
+	SnapshotAt            time.Time                   `json:"snapshot_at"`
+	TradeStatus           string                      `json:"trade_status"`
+	TradeStatusName       string                      `json:"trade_status_name"`
+	SealedCount           int                         `json:"sealed_count"`
+	HistoryAsOf           string                      `json:"history_as_of"`
+	LookbackDays          int                         `json:"lookback_days"`
+	Scope                 string                      `json:"scope"`
+	MinOverlap            int                         `json:"min_overlap"`
+	Coverage              Coverage                    `json:"coverage"`
+	HistoryAvailable      bool                        `json:"history_available"`
+	Members               []TodayMember               `json:"members"`
+	Cores                 []TodayCore                 `json:"cores"`
+	Candidates            []TodayCandidate            `json:"candidates"`
+	CandidateLimit        int                         `json:"candidate_limit"`
+	MainlineThemes        []MainlineTheme             `json:"mainline_themes"`
+	ThemeMainline         []ThemeCluster              `json:"theme_mainline"`
+	MainlineCandidates    []TodayMainlineGroup        `json:"mainline_candidates"`
+	MainlineIntersections []TodayMainlineIntersection `json:"mainline_intersections"`
+	LiveCandidate         bool                        `json:"live_candidate"`
+	LiveUnavailable       bool                        `json:"live_unavailable"`
 }
 
 // LiveQuote is the read-only quote projection used to confirm an intraday

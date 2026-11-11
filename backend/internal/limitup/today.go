@@ -398,6 +398,8 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 			members, allSealDates, allTouchDates, lastSealDate, candidatePairs, input.MinOverlap)
 	}
 	candidatesOut = scoreTodayCandidates(candidatesOut, input.LiveQuotes)
+	mainlineCandidates := buildMainlineCandidateGroups(candidatesOut, themeMainline, input.CandidateLimit, input.LiveQuotes != nil)
+	mainlineIntersections := buildMainlineIntersections(themeMainline)
 	if len(candidatesOut) > input.CandidateLimit {
 		candidatesOut = candidatesOut[:input.CandidateLimit]
 	}
@@ -408,6 +410,19 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 			if !candidate.LiveAvailable {
 				liveUnavailable = true
 				break
+			}
+		}
+		if !liveUnavailable {
+			for _, group := range mainlineCandidates {
+				for _, candidate := range group.Candidates {
+					if !candidate.LiveAvailable {
+						liveUnavailable = true
+						break
+					}
+				}
+				if liveUnavailable {
+					break
+				}
 			}
 		}
 	}
@@ -458,6 +473,7 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 		Members: membersOut, Cores: cores,
 		Candidates: candidatesOut, CandidateLimit: input.CandidateLimit,
 		MainlineThemes: []MainlineTheme{}, ThemeMainline: themeMainline,
+		MainlineCandidates: mainlineCandidates, MainlineIntersections: mainlineIntersections,
 		LiveCandidate: liveCandidate, LiveUnavailable: liveUnavailable,
 	}, ctx.Err()
 }
@@ -647,6 +663,13 @@ func scoreTodayCandidates(candidates []TodayCandidate, live map[string]LiveQuote
 	for index := range candidates {
 		candidate := &candidates[index]
 		candidate.MainlineScore = candidate.ThemeScore
+		candidate.MainlineCodes = make([]string, 0, len(candidate.themeFits))
+		candidate.MainlineFit = 0
+		for _, fit := range candidate.themeFits {
+			candidate.MainlineCodes = append(candidate.MainlineCodes, fit.Cluster.Code)
+			candidate.MainlineFit = math.Max(candidate.MainlineFit, fit.Fit)
+		}
+		candidate.CrossMainlineCount = len(candidate.MainlineCodes)
 		candidate.HistoryScore = normalise(candidate.HistoryScore, maxHistory)
 		candidate.LimitRatio = limitUpRatio(candidate.Code) * 100
 		candidate.RiskFlags = []string{}
@@ -659,20 +682,11 @@ func scoreTodayCandidates(candidates []TodayCandidate, live map[string]LiveQuote
 		risk := candidateRiskScore(candidate)
 		candidate.RiskScore = risk.score
 		candidate.RiskFlags = append(candidate.RiskFlags, risk.flags...)
-		score := 0.0
-		if liveMode {
-			score = 100 * (TodayCandidateWeightLive*liveScore +
-				TodayCandidateWeightMainline*candidate.MainlineScore +
-				TodayCandidateWeightHistory*candidate.HistoryScore +
-				TodayCandidateWeightCoverage*candidate.Coverage)
-		} else {
-			activeWeight := TodayCandidateWeightMainline + TodayCandidateWeightHistory + TodayCandidateWeightCoverage
-			score = 100 * (TodayCandidateWeightMainline*candidate.MainlineScore +
-				TodayCandidateWeightHistory*candidate.HistoryScore +
-				TodayCandidateWeightCoverage*candidate.Coverage) / activeWeight
-		}
-		score *= 1 - TodayCandidateMaxRiskDiscount*(1-risk.score)
-		candidate.Score = clamp01(score/100) * 100
+		candidate.Score = blendedCandidateScore(
+			candidate.LiveScore, candidate.MainlineScore,
+			candidate.HistoryScore, candidate.Coverage,
+			candidate.RiskScore, liveMode,
+		)
 	}
 	sort.SliceStable(candidates, func(left, right int) bool {
 		if candidates[left].Score != candidates[right].Score {
@@ -687,6 +701,130 @@ func scoreTodayCandidates(candidates []TodayCandidate, live map[string]LiveQuote
 		return candidates[left].Code < candidates[right].Code
 	})
 	return candidates
+}
+
+func blendedCandidateScore(
+	liveScore, mainlineScore, historyScore, coverage, riskScore float64,
+	liveMode bool,
+) float64 {
+	score := 0.0
+	if liveMode {
+		score = 100 * (TodayCandidateWeightLive*liveScore +
+			TodayCandidateWeightMainline*mainlineScore +
+			TodayCandidateWeightHistory*historyScore +
+			TodayCandidateWeightCoverage*coverage)
+	} else {
+		activeWeight := TodayCandidateWeightMainline + TodayCandidateWeightHistory + TodayCandidateWeightCoverage
+		score = 100 * (TodayCandidateWeightMainline*mainlineScore +
+			TodayCandidateWeightHistory*historyScore +
+			TodayCandidateWeightCoverage*coverage) / activeWeight
+	}
+	score *= 1 - TodayCandidateMaxRiskDiscount*(1-riskScore)
+	return clamp01(score/100) * 100
+}
+
+func buildMainlineCandidateGroups(
+	candidates []TodayCandidate,
+	mainline []ThemeCluster,
+	limit int,
+	liveMode bool,
+) []TodayMainlineGroup {
+	if len(mainline) == 0 {
+		return []TodayMainlineGroup{}
+	}
+	groups := make([]TodayMainlineGroup, 0, len(mainline))
+	for _, cluster := range mainline {
+		items := make([]TodayCandidate, 0)
+		for _, candidate := range candidates {
+			var fit *themeFit
+			for index := range candidate.themeFits {
+				if candidate.themeFits[index].Cluster.Code == cluster.Code {
+					fit = &candidate.themeFits[index]
+					break
+				}
+			}
+			if fit == nil || fit.Fit <= 0 {
+				continue
+			}
+			item := candidate
+			item.MainlineFit = fit.Fit
+			item.MainlineRank = 0
+			item.Score = blendedCandidateScore(
+				item.LiveScore, fit.Fit, item.HistoryScore,
+				item.Coverage, item.RiskScore, liveMode,
+			)
+			items = append(items, item)
+		}
+		sort.SliceStable(items, func(left, right int) bool {
+			if items[left].Score != items[right].Score {
+				return items[left].Score > items[right].Score
+			}
+			if items[left].MainlineFit != items[right].MainlineFit {
+				return items[left].MainlineFit > items[right].MainlineFit
+			}
+			if items[left].HistoryScore != items[right].HistoryScore {
+				return items[left].HistoryScore > items[right].HistoryScore
+			}
+			return items[left].Code < items[right].Code
+		})
+		if limit > 0 && len(items) > limit {
+			items = items[:limit]
+		}
+		for index := range items {
+			items[index].MainlineRank = index + 1
+		}
+		groups = append(groups, TodayMainlineGroup{Theme: cluster, Candidates: items})
+	}
+	return groups
+}
+
+func buildMainlineIntersections(mainline []ThemeCluster) []TodayMainlineIntersection {
+	if len(mainline) < 2 {
+		return []TodayMainlineIntersection{}
+	}
+	result := make([]TodayMainlineIntersection, 0)
+	for left := 0; left < len(mainline); left++ {
+		leftMembers := make(map[string]struct{}, len(mainline[left].MemberCodes))
+		for _, code := range mainline[left].MemberCodes {
+			leftMembers[code] = struct{}{}
+		}
+		for right := left + 1; right < len(mainline); right++ {
+			shared := make([]string, 0)
+			for _, code := range mainline[right].MemberCodes {
+				if _, exists := leftMembers[code]; exists {
+					shared = append(shared, code)
+				}
+			}
+			if len(shared) == 0 {
+				continue
+			}
+			sort.Strings(shared)
+			union := len(mainline[left].MemberCodes) + len(mainline[right].MemberCodes) - len(shared)
+			jaccard := 0.0
+			if union > 0 {
+				jaccard = float64(len(shared)) / float64(union)
+			}
+			result = append(result, TodayMainlineIntersection{
+				LeftCode: mainline[left].Code, LeftName: mainline[left].Name,
+				RightCode: mainline[right].Code, RightName: mainline[right].Name,
+				SharedMemberCount: len(shared), SharedMemberCodes: shared,
+				Jaccard: jaccard,
+			})
+		}
+	}
+	sort.SliceStable(result, func(left, right int) bool {
+		if result[left].SharedMemberCount != result[right].SharedMemberCount {
+			return result[left].SharedMemberCount > result[right].SharedMemberCount
+		}
+		if result[left].Jaccard != result[right].Jaccard {
+			return result[left].Jaccard > result[right].Jaccard
+		}
+		if result[left].LeftCode != result[right].LeftCode {
+			return result[left].LeftCode < result[right].LeftCode
+		}
+		return result[left].RightCode < result[right].RightCode
+	})
+	return result
 }
 
 func liveCandidateScore(candidate *TodayCandidate, quotes map[string]LiveQuote) (float64, bool) {

@@ -22,5 +22,8 @@ test('generated API schema tracks the OpenAPI contract', () => {
   assert.match(schema, /quote_status\?: "ready" \| "warming" \| "stale" \| "unavailable"/)
   assert.match(schema, /source_version\?: number/)
   assert.match(schema, /LimitUpTodayNetwork:/)
+  assert.match(schema, /LimitUpTodayMainlineGroup:/)
+  assert.match(schema, /mainline_candidates:/)
+  assert.match(schema, /mainline_intersections:/)
   assert.match(schema, /history_excludes_today: true/)
 })
