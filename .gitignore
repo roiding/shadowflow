@@ -23,3 +23,8 @@ frontend/node_modules/.tmp/
 backend/backfill_concept
 backend/backfill_minutes
 backend/backfill_stock
+
+# Python/runtime artifacts
+__pycache__/
+*.py[cod]
+events.jsonl
