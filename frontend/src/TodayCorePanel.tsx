@@ -386,7 +386,7 @@ function CandidateTable({
   onOpenStock,
   candidates: candidateInput,
   title = '外溢待选',
-  description = '先按实时多主线与历史特异性选股，再用启动承接、剩余空间、换手、量比和资金流排序；已触板未封会扣分，近期涨停次数本身不加分，不是推荐。',
+  description = '先按实时多主线与历史特异性选股，再用启动承接、剩余空间、换手、量比、主力和暗盘资金排序；换手、主力和暗盘资金按个股自身同一时点历史分位，量比直接使用东财自身基准，已触板未封会扣分，近期涨停次数本身不加分，不是推荐。',
 }: {
   network: LimitUpTodayNetwork
   onOpenStock: (code: string, name: string) => void
@@ -422,15 +422,15 @@ function CandidateTable({
                 <span className="linkage-column-label">
                   综合分
                   <MetricHint label="外溢综合分" formula="100 × (30% 盘中承接 + 40% 主线项 + 20% 历史 + 10% 覆盖) × 风险折价">
-                    有候选行情时，盘中承接占 30%、主线项占 40%、历史特异性占 20%、关联覆盖占 10%。主线项在单主线表内使用该主线的贴合分，在跨主线表内使用多主线共振分。盘中承接衡量启动后的承接质量与剩余空间，不奖励接近涨停，也不把触板当成加分；已触板未封会扣分。换手、量比和主力净占比使用本次候选池内的横截面分位，不直接拿绝对值横比。历史特异性用 φ 相关系数衡量候选是否专门跟随今日核心，已扣除双方各自封板频率并收缩稀疏样本。ST、上市不足60日、低换手、追涨和资金流出等风险只做最多 15% 的折价，不作为正分。股票近一年涨停次数本身不直接加分；行情不可用时实时项退出，其余三项重新归一化并明确标记为“仅历史观察”。
+                    有候选行情时，盘中承接占 30%、主线项占 40%、历史特异性占 20%、关联覆盖占 10%。主线项在单主线表内使用该主线的贴合分，在跨主线表内使用多主线共振分。盘中承接衡量启动后的承接质量与剩余空间，不奖励接近涨停，也不把触板当成加分；已触板未封会扣分。换手、主力和暗盘资金使用每只股票最近20个交易日、同一5分钟时点的自身历史分位，样本少于5日时不参与该项，不用其他股票补位；量比直接使用东财已按个股自身近5日基准计算的字段，不再做跨股票分位。历史特异性用 φ 相关系数衡量候选是否专门跟随今日核心，已扣除双方各自封板频率并收缩稀疏样本。ST、上市不足60日、低换手、追涨和资金流出等风险只做最多 15% 的折价，不作为正分。股票近一年涨停次数本身不直接加分；行情不可用时实时项退出，其余三项重新归一化并明确标记为“仅历史观察”。
                   </MetricHint>
                 </span>
               </th>
               <th>
                 <span className="linkage-column-label">
                   盘中确认
-                  <MetricHint label="盘中确认" formula="启动承接 30% + 剩余空间 20% + 换手横截面分位 20% + 量比横截面分位 15% + 资金横截面分位 15%；触板未封扣 20%">
-                    只对最终候选批量读取东财行情，不扫描全市场，也不写入日终归档。启动承接按涨幅相对涨停幅度的早期确认计算，剩余空间按距涨停的绝对空间计算；不再把涨幅进度或触板当成正向加分。换手、量比和主力净占比按本次候选池内的横截面分位计算，避免不同流通盘和不同资金体量的绝对值直接横比；候选不足3只时回退到规则阈值。距涨停按前收和板块涨跌幅计算：主板普通与主板 ST 10%、创业板/科创板 20%、北交所 30%。盘中最高价达到按前收四舍五入后的涨停价即标记触板；已触板但当前未封属于失败板观察，盘中确认扣 20%。缺少行情时本列显示“仅历史观察”，不能把历史分当成盘中确认。
+                  <MetricHint label="盘中确认" formula="启动承接 30% + 剩余空间 20% + 换手自身历史分位 15% + 量比 10% + 主力资金自身历史分位 10% + 暗盘资金自身历史分位 15%；触板未封扣 20%">
+                    只对最终候选批量读取东财行情和暗盘 tick，不扫描全市场，也不写入日终归档。启动承接按涨幅相对涨停幅度的早期确认计算，剩余空间按距涨停的绝对空间计算；不再把涨幅进度或触板当成正向加分。换手、主力和暗盘资金按每只股票最近20个交易日、同一5分钟时点的自身历史计算分位，避免把不同股票的日常流动性水平放在一起比较；样本少于5日时不参与该项，不借用其他股票的分位。量比直接使用东财 f10 的自身基准值，它已经是个股当前累计成交量相对自身近期同时段均量的比较。距涨停按前收和板块涨跌幅计算：主板普通与主板 ST 10%、创业板/科创板 20%、北交所 30%。盘中最高价达到按前收四舍五入后的涨停价即标记触板；已触板但当前未封属于失败板观察，盘中确认扣 20%。缺少行情时本列显示“仅历史观察”，不能把历史分当成盘中确认。
                   </MetricHint>
                 </span>
               </th>
@@ -456,7 +456,7 @@ function CandidateTable({
                 <span className="linkage-column-label">
                   风险扣分
                   <MetricHint label="风险扣分" formula="0 = 未命中风险规则；越高越需要人工复核">
-                    风险扣分由盘中追涨、已触板未封、距涨停空间不足、主力净流出、资金处于候选池后10%、换手或量比处于候选池前10%、ST、上市不足60日、低流动性等规则累计；它不是买入信号。风险只让综合分最多折价 15%，具体扣分和命中原因逐行展示。
+                    风险扣分由盘中追涨、已触板未封、距涨停空间不足、主力或暗盘资金净流出、资金处于自身历史后10%、换手处于自身历史前10%、量比过热、历史样本不足、ST、上市不足60日、低流动性等规则累计；它不是买入信号。风险只让综合分最多折价 15%，具体扣分和命中原因逐行展示。
                   </MetricHint>
                 </span>
               </th>
@@ -507,12 +507,12 @@ function CandidateTable({
                             : ''}
                         </small>
                         {(candidate.turnover_percentile !== null && candidate.turnover_percentile !== undefined) ||
-                        (candidate.volume_ratio_percentile !== null && candidate.volume_ratio_percentile !== undefined) ||
-                        (candidate.main_flow_percentile !== null && candidate.main_flow_percentile !== undefined) ? (
+                        (candidate.main_flow_percentile !== null && candidate.main_flow_percentile !== undefined) ||
+                        (candidate.dark_money_percentile !== null && candidate.dark_money_percentile !== undefined) ? (
                           <small>
-                            横截面分位 换 {formatNumber(candidate.turnover_percentile, 0)}
-                            {' · '}量 {formatNumber(candidate.volume_ratio_percentile, 0)}
-                            {' · '}资金 {formatNumber(candidate.main_flow_percentile, 0)}
+                            自身历史分位 换 {formatNumber(candidate.turnover_percentile, 0)}
+                            {' · '}主力 {formatNumber(candidate.main_flow_percentile, 0)}
+                            {' · '}暗盘 {formatNumber(candidate.dark_money_percentile, 0)}
                           </small>
                         ) : null}
                         {candidate.main_net_inflow_pct !== null && candidate.main_net_inflow_pct !== undefined ? (
@@ -524,6 +524,16 @@ function CandidateTable({
                           </small>
                         ) : (
                           <small>主力资金 --</small>
+                        )}
+                        {candidate.dark_money !== null && candidate.dark_money !== undefined ? (
+                          <small className={candidate.dark_money > 0 ? 'positive' : candidate.dark_money < 0 ? 'negative' : ''}>
+                            暗盘 {formatMoney(candidate.dark_money)}
+                            {candidate.dark_money_pct !== null && candidate.dark_money_pct !== undefined
+                              ? ` · 占成交 ${formatPercentPoint(candidate.dark_money_pct)}`
+                              : ''}
+                          </small>
+                        ) : (
+                          <small>暗盘资金 --</small>
                         )}
                       </>
                     ) : (

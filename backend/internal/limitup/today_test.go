@@ -2,7 +2,6 @@ package limitup
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -533,9 +532,29 @@ func TestTodayCandidateWeightsSumToOne(t *testing.T) {
 		t.Fatalf("candidate weights must sum to one, got %v", total)
 	}
 	liveTotal := TodayLiveWeightStart + TodayLiveWeightRoom + TodayLiveWeightTurnover +
-		TodayLiveWeightVolume + TodayLiveWeightFlow
+		TodayLiveWeightVolume + TodayLiveWeightFlow + TodayLiveWeightDark
 	if math.Abs(liveTotal-1) > 1e-12 {
 		t.Fatalf("live confirmation weights must sum to one, got %v", liveTotal)
+	}
+}
+
+func TestLatestResearchMinuteIndexUsesCompletedBucket(t *testing.T) {
+	cases := []struct {
+		at    time.Time
+		index int
+		valid bool
+	}{
+		{time.Date(2026, 11, 11, 9, 34, 0, 0, Shanghai()), 0, false},
+		{time.Date(2026, 11, 11, 10, 42, 0, 0, Shanghai()), 13, true},
+		{time.Date(2026, 11, 11, 11, 45, 0, 0, Shanghai()), 23, true},
+		{time.Date(2026, 11, 11, 14, 30, 0, 0, Shanghai()), 41, true},
+		{time.Date(2026, 11, 11, 19, 20, 0, 0, Shanghai()), 47, true},
+	}
+	for _, test := range cases {
+		index, valid := LatestResearchMinuteIndex(test.at)
+		if index != test.index || valid != test.valid {
+			t.Fatalf("minute index for %s = %d/%v, want %d/%v", test.at, index, valid, test.index, test.valid)
+		}
 	}
 }
 
@@ -550,7 +569,7 @@ func TestScoreTodayCandidatesDoesNotRewardRecentLimitCount(t *testing.T) {
 			SealDays: 2, TouchDays: 2, LastSealDate: "2026-11-05", HistoryScore: 0.7,
 		},
 	}
-	scored := scoreTodayCandidates(candidates, nil)
+	scored := scoreTodayCandidates(candidates, nil, nil, nil)
 	if scored[0].Code != "000002" || scored[0].Score <= scored[1].Score {
 		t.Fatalf("today's mainline must outrank a recent-limit-frequency candidate: %+v", scored)
 	}
@@ -573,7 +592,7 @@ func TestLiveCandidateUsesBoardSpecificLimitRatio(t *testing.T) {
 			ChangePct: 0.15, TurnoverRate: 0.05, ListingDate: "20200101", FetchedAt: now,
 		},
 	}
-	scored := scoreTodayCandidates([]TodayCandidate{main, gem}, quotes)
+	scored := scoreTodayCandidates([]TodayCandidate{main, gem}, quotes, nil, nil)
 	byCode := make(map[string]TodayCandidate, len(scored))
 	for _, candidate := range scored {
 		byCode[candidate.Code] = candidate
@@ -612,7 +631,7 @@ func TestLiveCandidatePrefersRoomAndPenalizesTouchedLimit(t *testing.T) {
 			MainFlowPct: floatPointer(5), ListingDate: "20200101", FetchedAt: now,
 		},
 	}
-	scored := scoreTodayCandidates(candidates, quotes)
+	scored := scoreTodayCandidates(candidates, quotes, nil, nil)
 	byCode := make(map[string]TodayCandidate, len(scored))
 	for _, candidate := range scored {
 		byCode[candidate.Code] = candidate
@@ -640,82 +659,116 @@ func TestLiveCandidatePrefersRoomAndPenalizesTouchedLimit(t *testing.T) {
 	}
 }
 
-func TestLiveCandidateUsesCandidatePoolPercentiles(t *testing.T) {
+func TestLiveCandidateUsesOwnHistoricalTurnoverPercentile(t *testing.T) {
 	now := time.Date(2026, 11, 11, 14, 30, 0, 0, Shanghai())
 	candidates := []TodayCandidate{
-		{Code: "600001", Name: "低换手", ThemeScore: 0, HistoryScore: 0, LastSealDate: "2026-11-01", SealDays: 1},
-		{Code: "600002", Name: "中换手", ThemeScore: 0, HistoryScore: 0, LastSealDate: "2026-11-01", SealDays: 1},
-		{Code: "600003", Name: "高换手", ThemeScore: 0, HistoryScore: 0, LastSealDate: "2026-11-01", SealDays: 1},
+		{Code: "600001", Name: "自身历史高换手", ThemeScore: 0, HistoryScore: 0, LastSealDate: "2026-11-01", SealDays: 1},
+		{Code: "600002", Name: "自身历史低换手", ThemeScore: 0, HistoryScore: 0, LastSealDate: "2026-11-01", SealDays: 1},
 	}
 	quotes := map[string]LiveQuote{
 		"600001": {
 			Code: "600001", Available: true, PreviousClose: 10, HighPrice: 10.4,
-			ChangePct: 0.04, TurnoverRate: 0.02, VolumeRatio: floatPointer(1),
-			MainFlowPct: floatPointer(5), Turnover: 100_000_000, ListingDate: "20200101", FetchedAt: now,
+			ChangePct: 0.04, TurnoverRate: 0.03, Turnover: 100_000_000,
+			ListingDate: "20200101", FetchedAt: now,
 		},
 		"600002": {
 			Code: "600002", Available: true, PreviousClose: 10, HighPrice: 10.4,
-			ChangePct: 0.04, TurnoverRate: 0.05, VolumeRatio: floatPointer(1),
-			MainFlowPct: floatPointer(5), Turnover: 100_000_000, ListingDate: "20200101", FetchedAt: now,
-		},
-		"600003": {
-			Code: "600003", Available: true, PreviousClose: 10, HighPrice: 10.4,
-			ChangePct: 0.04, TurnoverRate: 0.10, VolumeRatio: floatPointer(1),
-			MainFlowPct: floatPointer(5), Turnover: 100_000_000, ListingDate: "20200101", FetchedAt: now,
+			ChangePct: 0.04, TurnoverRate: 0.06, Turnover: 100_000_000,
+			ListingDate: "20200101", FetchedAt: now,
 		},
 	}
-	scored := scoreTodayCandidates(candidates, quotes)
+	histories := map[string]CandidateHistoryMetrics{
+		"600001": {TurnoverRates: []float64{1, 1.2, 1.4, 1.6, 1.8}},
+		"600002": {TurnoverRates: []float64{8, 9, 10, 11, 12}},
+	}
+	scored := scoreTodayCandidates(candidates, quotes, histories, nil)
 	byCode := make(map[string]TodayCandidate, len(scored))
 	for _, candidate := range scored {
 		byCode[candidate.Code] = candidate
 	}
-	if byCode["600003"].LiveScore <= byCode["600001"].LiveScore {
-		t.Fatalf("cross-sectional turnover percentile was not used: %+v", scored)
+	if byCode["600001"].LiveScore <= byCode["600002"].LiveScore {
+		t.Fatalf("a stock should be judged against its own turnover history: %+v", scored)
 	}
-	if byCode["600003"].TurnoverPercentile == nil ||
-		math.Abs(*byCode["600003"].TurnoverPercentile-83.33333333333334) > 1e-6 {
-		t.Fatalf("turnover percentile was not exposed: %+v", byCode["600003"].TurnoverPercentile)
+	if byCode["600001"].TurnoverPercentile == nil ||
+		math.Abs(*byCode["600001"].TurnoverPercentile-100) > 1e-6 ||
+		byCode["600002"].TurnoverPercentile == nil ||
+		math.Abs(*byCode["600002"].TurnoverPercentile-0) > 1e-6 {
+		t.Fatalf("self-history turnover percentiles were not exposed: %+v", byCode)
 	}
 }
 
-func TestHighTurnoverRiskUsesCandidatePoolPercentile(t *testing.T) {
+func TestHighTurnoverRiskUsesOwnHistoryPercentile(t *testing.T) {
 	now := time.Date(2026, 11, 11, 14, 30, 0, 0, Shanghai())
-	candidates := make([]TodayCandidate, 0, 5)
-	quotes := make(map[string]LiveQuote, 5)
-	for index := 0; index < 5; index++ {
-		code := fmt.Sprintf("600%03d", index+1)
-		candidates = append(candidates, TodayCandidate{
-			Code: code, Name: code, ThemeScore: 0, HistoryScore: 0,
-			LastSealDate: "2026-11-01", SealDays: 1,
-		})
-		quotes[code] = LiveQuote{
-			Code: code, Available: true, PreviousClose: 10, HighPrice: 10.4,
-			ChangePct: 0.04, TurnoverRate: 0.01 * float64(index+1),
-			VolumeRatio: floatPointer(1), MainFlowPct: floatPointer(5),
+	candidate := TodayCandidate{
+		Code: "600001", Name: "自身历史放量", ThemeScore: 0, HistoryScore: 0,
+		LastSealDate: "2026-11-01", SealDays: 1,
+	}
+	scored := scoreTodayCandidates([]TodayCandidate{candidate}, map[string]LiveQuote{
+		"600001": {
+			Code: "600001", Available: true, PreviousClose: 10, HighPrice: 10.4,
+			ChangePct: 0.04, TurnoverRate: 0.10,
 			Turnover: 100_000_000, ListingDate: "20200101", FetchedAt: now,
-		}
-	}
-	scored := scoreTodayCandidates(candidates, quotes)
-	var highest *TodayCandidate
-	for index := range scored {
-		if scored[index].Code == "600005" {
-			highest = &scored[index]
-			break
-		}
-	}
-	if highest == nil || highest.TurnoverPercentile == nil ||
-		*highest.TurnoverPercentile < 90 {
-		t.Fatalf("highest turnover percentile is missing: %+v", highest)
+		},
+	}, map[string]CandidateHistoryMetrics{
+		"600001": {TurnoverRates: []float64{1, 2, 3, 4, 5}},
+	}, nil)
+	if len(scored) != 1 || scored[0].TurnoverPercentile == nil ||
+		*scored[0].TurnoverPercentile < 90 {
+		t.Fatalf("self-history turnover percentile is missing: %+v", scored)
 	}
 	found := false
-	for _, flag := range highest.RiskFlags {
-		if flag == "换手处于候选池前10%" {
+	for _, flag := range scored[0].RiskFlags {
+		if flag == "换手处于自身历史前10%" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("candidate-pool turnover risk flag is missing: %+v", highest.RiskFlags)
+		t.Fatalf("self-history turnover risk flag is missing: %+v", scored[0].RiskFlags)
+	}
+}
+
+func TestLiveCandidateUsesDarkMoneySelfHistoryPercentile(t *testing.T) {
+	now := time.Date(2026, 11, 11, 14, 30, 0, 0, Shanghai())
+	candidate := TodayCandidate{
+		Code: "600001", Name: "暗盘样本", ThemeScore: 0, HistoryScore: 0,
+		LastSealDate: "2026-11-01", SealDays: 1,
+	}
+	scored := scoreTodayCandidates([]TodayCandidate{candidate}, map[string]LiveQuote{
+		"600001": {
+			Code: "600001", Available: true, PreviousClose: 10, HighPrice: 10.4,
+			ChangePct: 0.04, TurnoverRate: 0.05, Turnover: 100_000_000,
+			ListingDate: "20200101", FetchedAt: now,
+		},
+	}, map[string]CandidateHistoryMetrics{
+		"600001": {DarkFlowPcts: []float64{1, 2, 3, 4, 5}},
+	}, map[string]LiveDarkMoney{
+		"600001": {Code: "600001", Available: true, DarkMoney: 10_000_000},
+	})
+	if len(scored) != 1 || scored[0].DarkMoney == nil || *scored[0].DarkMoney != 10_000_000 ||
+		scored[0].DarkMoneyPct == nil || math.Abs(*scored[0].DarkMoneyPct-10) > 1e-9 ||
+		scored[0].DarkFlowPercentile == nil || math.Abs(*scored[0].DarkFlowPercentile-100) > 1e-9 {
+		t.Fatalf("dark-money self-history percentile was not used: %+v", scored)
+	}
+}
+
+func TestSparseSelfHistoryShrinksTowardNeutral(t *testing.T) {
+	if got := shrinkSparsePercentile(1, 5); math.Abs(got-0.75) > 1e-9 {
+		t.Fatalf("5-sample percentile should shrink to 0.75, got %v", got)
+	}
+	if got := shrinkSparsePercentile(1, 20); math.Abs(got-0.9) > 1e-9 {
+		t.Fatalf("20-sample percentile should shrink to 0.9, got %v", got)
+	}
+	if got := shrinkSparsePercentile(0, 20); math.Abs(got-0.1) > 1e-9 {
+		t.Fatalf("zero percentile should shrink to 0.1, got %v", got)
+	}
+}
+
+func TestCandidateCoverageIsSquareRootDamped(t *testing.T) {
+	low := blendedCandidateScore(0.5, 0.5, 0.5, 0.25, 1, true)
+	high := blendedCandidateScore(0.5, 0.5, 0.5, 1, 1, true)
+	if math.Abs((high-low)-5) > 1e-9 {
+		t.Fatalf("coverage should be square-root damped, low=%v high=%v", low, high)
 	}
 }
 
@@ -730,7 +783,7 @@ func TestLiveCandidateRiskFlagsIncludeSTNewListingAndLowLiquidity(t *testing.T) 
 			ChangePct: 0.01, TurnoverRate: 0.005, VolumeRatio: floatPointer(0.3),
 			ListingDate: "20261020", FetchedAt: now,
 		},
-	})
+	}, nil, nil)
 	if len(scored) != 1 || scored[0].RiskScore >= 1 || scored[0].RiskPenalty <= 0 {
 		t.Fatalf("risk score was not reduced: %+v", scored)
 	}

@@ -30,9 +30,18 @@ const (
 	// a flat stock; remaining room is a separate positive factor.
 	TodayLiveWeightStart    = 0.30
 	TodayLiveWeightRoom     = 0.20
-	TodayLiveWeightTurnover = 0.20
-	TodayLiveWeightVolume   = 0.15
-	TodayLiveWeightFlow     = 0.15
+	TodayLiveWeightTurnover = 0.15
+	TodayLiveWeightVolume   = 0.10
+	TodayLiveWeightFlow     = 0.10
+	TodayLiveWeightDark     = 0.15
+	// A stock needs its own same-minute history before a percentile is
+	// meaningful. Missing samples are left out and the remaining live
+	// components are renormalised instead of borrowing another stock's scale.
+	TodayLiveHistoryMinimumSamples = 5
+	// Keep the self-history window fixed so the intraday view does not depend
+	// on an ever-growing local archive. The hot database must retain at least
+	// this many trading days for the full window to be available.
+	TodayLiveHistoryWindowDays = 20
 
 	// Risk is a bounded discount, not a positive score component. A clean
 	// candidate keeps its full score; ST, low liquidity and other flags can
@@ -62,6 +71,13 @@ type TodayInput struct {
 	// spillover candidates. When it is nil the endpoint still returns the
 	// historical view, but marks the response as not live-confirmed.
 	LiveQuotes map[string]LiveQuote
+	// LiveDarkMoney is the current same-day dark-money tick for each
+	// candidate. It is optional because upstream may not expose every stock.
+	LiveDarkMoney map[string]LiveDarkMoney
+	// CandidateHistory contains each candidate's own historical samples at
+	// the same intraday minute. It is intentionally per-stock: turnover and
+	// fund-flow levels are not comparable across stocks.
+	CandidateHistory map[string]CandidateHistoryMetrics
 }
 
 // AnalyzeToday computes a relationship graph whose nodes are the stocks sealed
@@ -438,7 +454,7 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 		candidatesOut = applyTodayThemeProfiles(candidatesOut, themeMainline, input.ThemeProfiles,
 			members, allSealDates, allTouchDates, lastSealDate, candidatePairs, input.MinOverlap)
 	}
-	candidatesOut = scoreTodayCandidates(candidatesOut, input.LiveQuotes)
+	candidatesOut = scoreTodayCandidates(candidatesOut, input.LiveQuotes, input.CandidateHistory, input.LiveDarkMoney)
 	mainlineCandidates := buildMainlineCandidateGroups(candidatesOut, themeMainline, input.CandidateLimit, input.LiveQuotes != nil)
 	mainlineIntersections := buildMainlineIntersections(themeMainline)
 	if len(candidatesOut) > input.CandidateLimit {
@@ -693,7 +709,12 @@ func buildTodayCandidates(
 // bounded discount instead of a positive component. When live quotes were not
 // requested, the remaining weights are renormalised so a historical-only view
 // is still ordered explicitly as such.
-func scoreTodayCandidates(candidates []TodayCandidate, live map[string]LiveQuote) []TodayCandidate {
+func scoreTodayCandidates(
+	candidates []TodayCandidate,
+	live map[string]LiveQuote,
+	history map[string]CandidateHistoryMetrics,
+	darkMoney map[string]LiveDarkMoney,
+) []TodayCandidate {
 	if len(candidates) == 0 {
 		return candidates
 	}
@@ -715,15 +736,33 @@ func scoreTodayCandidates(candidates []TodayCandidate, live map[string]LiveQuote
 		candidate.HistoryScore = normalise(candidate.HistoryScore, maxHistory)
 		candidate.LimitRatio = limitUpRatio(candidate.Code) * 100
 		candidate.RiskFlags = []string{}
+		candidate.TurnoverPercentile = nil
+		candidate.MainFlowPercentile = nil
+		candidate.DarkFlowPercentile = nil
+		candidate.DarkMoney = nil
+		candidate.DarkMoneyPct = nil
+		candidate.darkMoneyAvailable = false
+		candidate.TurnoverHistoryDays = 0
+		candidate.MainFlowHistoryDays = 0
+		candidate.DarkFlowHistoryDays = 0
 		candidate.LiveAvailable = populateLiveCandidate(candidate, live)
+		if candidate.LiveAvailable {
+			if dark, exists := darkMoney[candidate.Code]; exists && dark.Available &&
+				candidate.TurnoverAmount != nil && *candidate.TurnoverAmount > 0 {
+				amount := dark.DarkMoney
+				percent := amount / *candidate.TurnoverAmount * 100
+				candidate.DarkMoney = &amount
+				candidate.DarkMoneyPct = &percent
+				candidate.darkMoneyAvailable = true
+			}
+		}
 		if liveMode && !candidate.LiveAvailable {
 			candidate.RiskFlags = append(candidate.RiskFlags, "未取得盘中行情")
 		}
 	}
-	distribution := newLiveDistribution(candidates)
 	for index := range candidates {
 		candidate := &candidates[index]
-		candidate.LiveScore = liveCandidateScore(candidate, distribution)
+		candidate.LiveScore = liveCandidateScore(candidate, history)
 		risk := candidateRiskScore(candidate)
 		candidate.RiskScore = risk.score
 		candidate.RiskPenalty = (1 - risk.score) * 100
@@ -758,12 +797,12 @@ func blendedCandidateScore(
 		score = 100 * (TodayCandidateWeightLive*liveScore +
 			TodayCandidateWeightMainline*mainlineScore +
 			TodayCandidateWeightHistory*historyScore +
-			TodayCandidateWeightCoverage*coverage)
+			TodayCandidateWeightCoverage*math.Sqrt(clamp01(coverage)))
 	} else {
 		activeWeight := TodayCandidateWeightMainline + TodayCandidateWeightHistory + TodayCandidateWeightCoverage
 		score = 100 * (TodayCandidateWeightMainline*mainlineScore +
 			TodayCandidateWeightHistory*historyScore +
-			TodayCandidateWeightCoverage*coverage) / activeWeight
+			TodayCandidateWeightCoverage*math.Sqrt(clamp01(coverage))) / activeWeight
 	}
 	score *= 1 - TodayCandidateMaxRiskDiscount*(1-riskScore)
 	return clamp01(score/100) * 100
@@ -873,44 +912,28 @@ func buildMainlineIntersections(mainline []ThemeCluster) []TodayMainlineIntersec
 	return result
 }
 
-type liveDistribution struct {
-	turnover    []float64
-	volumeRatio []float64
-	mainFlow    []float64
-}
-
-func newLiveDistribution(candidates []TodayCandidate) liveDistribution {
-	distribution := liveDistribution{}
-	for _, candidate := range candidates {
-		if !candidate.LiveAvailable {
-			continue
-		}
-		if candidate.TurnoverRate != nil {
-			distribution.turnover = append(distribution.turnover, *candidate.TurnoverRate)
-		}
-		if candidate.VolumeRatio != nil {
-			distribution.volumeRatio = append(distribution.volumeRatio, *candidate.VolumeRatio)
-		}
-		if candidate.MainNetInflowPct != nil {
-			distribution.mainFlow = append(distribution.mainFlow, *candidate.MainNetInflowPct)
-		}
+func selfPercentile(values []float64, value float64) (float64, bool) {
+	if len(values) < TodayLiveHistoryMinimumSamples {
+		return 0, false
 	}
-	sort.Float64s(distribution.turnover)
-	sort.Float64s(distribution.volumeRatio)
-	sort.Float64s(distribution.mainFlow)
-	return distribution
-}
-
-func (distribution liveDistribution) percentile(values []float64, value float64) (float64, bool) {
-	if len(values) < 3 {
-		return 0.5, false
-	}
-	less := sort.SearchFloat64s(values, value)
+	sorted := append([]float64(nil), values...)
+	sort.Float64s(sorted)
+	less := sort.SearchFloat64s(sorted, value)
 	equal := 0
-	for index := less; index < len(values) && values[index] == value; index++ {
+	for index := less; index < len(sorted) && sorted[index] == value; index++ {
 		equal++
 	}
-	return (float64(less) + 0.5*float64(equal)) / float64(len(values)), true
+	return (float64(less) + 0.5*float64(equal)) / float64(len(sorted)), true
+}
+
+func shrinkSparsePercentile(quality float64, samples int) float64 {
+	if samples <= 0 {
+		return 0.5
+	}
+	// A 20-day window is the target. With fewer observations, shrink toward
+	// neutral instead of letting a 5-day outlier act like a full window.
+	confidence := float64(samples) / float64(samples+5)
+	return 0.5 + (clamp01(quality)-0.5)*confidence
 }
 
 func populateLiveCandidate(candidate *TodayCandidate, quotes map[string]LiveQuote) bool {
@@ -951,7 +974,7 @@ func populateLiveCandidate(candidate *TodayCandidate, quotes map[string]LiveQuot
 	return true
 }
 
-func liveCandidateScore(candidate *TodayCandidate, distribution liveDistribution) float64 {
+func liveCandidateScore(candidate *TodayCandidate, histories map[string]CandidateHistoryMetrics) float64 {
 	if !candidate.LiveAvailable || candidate.ChangePercent == nil ||
 		candidate.TurnoverRate == nil || candidate.DistanceToLimit == nil {
 		return 0
@@ -959,48 +982,51 @@ func liveCandidateScore(candidate *TodayCandidate, distribution liveDistribution
 	change := *candidate.ChangePercent / 100
 	limitRatio := candidate.LimitRatio / 100
 	distance := *candidate.DistanceToLimit / 100
-	turnover := *candidate.TurnoverRate / 100
 	progress := clamp01(change / limitRatio)
 	startQuality := clamp01((progress - 0.08) / 0.30)
-	roomQuality := clamp01(distance / (limitRatio * 0.5))
-	turnoverQuality, turnoverCrossSectional := distribution.percentile(
-		distribution.turnover, *candidate.TurnoverRate,
-	)
-	if !turnoverCrossSectional {
-		turnoverQuality = clamp01(turnover / 0.08)
-	} else {
-		percentile := turnoverQuality * 100
-		candidate.TurnoverPercentile = &percentile
-	}
+	// Square-root compression keeps the room component useful across the
+	// whole distance range instead of saturating at half the limit and then
+	// rewarding a late chase.
+	roomQuality := clamp01(math.Sqrt(clamp01(distance / limitRatio)))
 	weightedScore := TodayLiveWeightStart*startQuality +
-		TodayLiveWeightRoom*roomQuality +
-		TodayLiveWeightTurnover*turnoverQuality
-	activeWeight := TodayLiveWeightStart + TodayLiveWeightRoom + TodayLiveWeightTurnover
+		TodayLiveWeightRoom*roomQuality
+	activeWeight := TodayLiveWeightStart + TodayLiveWeightRoom
+	history := histories[candidate.Code]
+	candidate.TurnoverHistoryDays = len(history.TurnoverRates)
+	candidate.MainFlowHistoryDays = len(history.MainFlowPcts)
+	candidate.DarkFlowHistoryDays = len(history.DarkFlowPcts)
+	if quality, available := selfPercentile(history.TurnoverRates, *candidate.TurnoverRate); available {
+		percentile := quality * 100
+		candidate.TurnoverPercentile = &percentile
+		quality = shrinkSparsePercentile(quality, len(history.TurnoverRates))
+		weightedScore += TodayLiveWeightTurnover * quality
+		activeWeight += TodayLiveWeightTurnover
+	}
 	if candidate.VolumeRatio != nil {
-		volumeQuality, crossSectional := distribution.percentile(
-			distribution.volumeRatio, *candidate.VolumeRatio,
-		)
-		if !crossSectional {
-			volumeQuality = clamp01(*candidate.VolumeRatio / 2)
-		} else {
-			percentile := volumeQuality * 100
-			candidate.VolumeRatioPercentile = &percentile
-		}
+		// EastMoney's volume ratio is already self-normalised: current
+		// cumulative volume divided by this stock's own recent same-time
+		// average. Use it directly instead of comparing stocks to each other.
+		volumeQuality := clamp01(*candidate.VolumeRatio / 2)
 		weightedScore += TodayLiveWeightVolume * volumeQuality
 		activeWeight += TodayLiveWeightVolume
 	}
 	if candidate.MainNetInflowPct != nil {
-		flowQuality, crossSectional := distribution.percentile(
-			distribution.mainFlow, *candidate.MainNetInflowPct,
-		)
-		if !crossSectional {
-			flowQuality = clamp01(0.5 + *candidate.MainNetInflowPct/10)
-		} else {
-			percentile := flowQuality * 100
+		if quality, available := selfPercentile(history.MainFlowPcts, *candidate.MainNetInflowPct); available {
+			percentile := quality * 100
 			candidate.MainFlowPercentile = &percentile
+			quality = shrinkSparsePercentile(quality, len(history.MainFlowPcts))
+			weightedScore += TodayLiveWeightFlow * quality
+			activeWeight += TodayLiveWeightFlow
 		}
-		weightedScore += TodayLiveWeightFlow * flowQuality
-		activeWeight += TodayLiveWeightFlow
+	}
+	if candidate.darkMoneyAvailable && candidate.DarkMoneyPct != nil {
+		if quality, available := selfPercentile(history.DarkFlowPcts, *candidate.DarkMoneyPct); available {
+			percentile := quality * 100
+			candidate.DarkFlowPercentile = &percentile
+			quality = shrinkSparsePercentile(quality, len(history.DarkFlowPcts))
+			weightedScore += TodayLiveWeightDark * quality
+			activeWeight += TodayLiveWeightDark
+		}
 	}
 	score := weightedScore / activeWeight
 	if candidate.TouchedLimit {
@@ -1047,15 +1073,15 @@ func candidateRiskScore(candidate *TodayCandidate) candidateRisk {
 	}
 	if candidate.TurnoverPercentile != nil && *candidate.TurnoverPercentile >= 90 {
 		score -= 0.10
-		flags = append(flags, "换手处于候选池前10%")
+		flags = append(flags, "换手处于自身历史前10%")
 	}
 	if candidate.VolumeRatio != nil && *candidate.VolumeRatio < 0.5 {
 		score -= 0.10
 		flags = append(flags, "量比不足0.5")
 	}
-	if candidate.VolumeRatioPercentile != nil && *candidate.VolumeRatioPercentile >= 90 {
+	if candidate.VolumeRatio != nil && *candidate.VolumeRatio >= 3 {
 		score -= 0.10
-		flags = append(flags, "量比处于候选池前10%")
+		flags = append(flags, "量比过热")
 	}
 	if candidate.MainNetInflowPct != nil && *candidate.MainNetInflowPct < 0 {
 		score -= 0.10
@@ -1064,7 +1090,30 @@ func candidateRiskScore(candidate *TodayCandidate) candidateRisk {
 	if candidate.MainFlowPercentile != nil && *candidate.MainFlowPercentile <= 10 &&
 		candidate.MainNetInflowPct != nil && *candidate.MainNetInflowPct >= 0 {
 		score -= 0.05
-		flags = append(flags, "资金处于候选池后10%")
+		flags = append(flags, "资金处于自身历史后10%")
+	}
+	if candidate.DarkMoneyPct != nil && *candidate.DarkMoneyPct < 0 {
+		score -= 0.10
+		flags = append(flags, "暗盘资金净流出")
+	}
+	if candidate.DarkFlowPercentile != nil && *candidate.DarkFlowPercentile <= 10 &&
+		candidate.DarkMoneyPct != nil && *candidate.DarkMoneyPct >= 0 {
+		score -= 0.05
+		flags = append(flags, "暗盘资金处于自身历史后10%")
+	}
+	if candidate.LiveAvailable {
+		if candidate.TurnoverHistoryDays < TodayLiveHistoryMinimumSamples {
+			flags = append(flags, "换手历史样本不足")
+		}
+		if candidate.MainNetInflowPct != nil &&
+			candidate.MainFlowHistoryDays < TodayLiveHistoryMinimumSamples {
+			flags = append(flags, "资金历史样本不足")
+		}
+		if !candidate.darkMoneyAvailable {
+			flags = append(flags, "未取得暗盘资金")
+		} else if candidate.DarkFlowHistoryDays < TodayLiveHistoryMinimumSamples {
+			flags = append(flags, "暗盘资金历史样本不足")
+		}
 	}
 	if candidate.TurnoverAmount != nil && *candidate.TurnoverAmount < 20_000_000 {
 		score -= 0.10
@@ -1098,6 +1147,29 @@ func limitUpRatio(code string) float64 {
 		return 0.30
 	default:
 		return 0.10
+	}
+}
+
+// LatestResearchMinuteIndex maps the current Shanghai time to the most recent
+// completed five-minute bucket (0=09:35 ... 47=15:00). Same-minute historical
+// comparisons must use this bucket rather than a full-day average.
+func LatestResearchMinuteIndex(at time.Time) (int, bool) {
+	if at.IsZero() {
+		return 0, false
+	}
+	local := at.In(Shanghai())
+	minutes := local.Hour()*60 + local.Minute()
+	switch {
+	case minutes < 9*60+35:
+		return 0, false
+	case minutes <= 11*60+30:
+		return (minutes - (9*60 + 35)) / 5, true
+	case minutes < 13*60+5:
+		return 23, true
+	case minutes <= 15*60:
+		return 24 + (minutes-(13*60+5))/5, true
+	default:
+		return 47, true
 	}
 }
 

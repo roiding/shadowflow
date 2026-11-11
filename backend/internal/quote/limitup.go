@@ -65,7 +65,7 @@ func (source *LimitUpLiveQuoteSource) ReadLiveQuotes(ctx context.Context, codes 
 			Code: quote.StockCode, Available: quote.Available,
 			LatestPrice: quote.LatestPrice, PreviousClose: quote.PreviousClose,
 			HighPrice: quote.HighPrice, ChangePct: quote.ChangePct,
-			TurnoverRate: quote.TurnoverRate, Turnover: quote.Turnover,
+			TurnoverRate: quote.TurnoverRate, Volume: quote.Volume, Turnover: quote.Turnover,
 			QuoteTime: quote.QuoteTime, FetchedAt: quote.FetchedAt,
 			ListingDate: quote.ListingDate,
 		}

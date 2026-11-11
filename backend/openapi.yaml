@@ -514,13 +514,15 @@ paths:
                   data: { $ref: "#/components/schemas/LimitUpTodayNetwork" }
                   meta:
                     type: object
-                    required: [snapshot_only, history_excludes_today, snapshot_fetched_at, live_candidates, live_quote_status]
+                    required: [snapshot_only, history_excludes_today, snapshot_fetched_at, live_candidates, live_quote_status, live_dark_money_status, candidate_history_days]
                     properties:
                       snapshot_only: { type: boolean, const: true }
                       history_excludes_today: { type: boolean, const: true }
                       snapshot_fetched_at: { type: string, format: date-time }
                       live_candidates: { type: boolean, description: 是否已把盘中行情应用到候选列表。 }
                       live_quote_status: { type: string, enum: [disabled, empty, unavailable, partial, ready], description: 候选行情读取状态。 }
+                      live_dark_money_status: { type: string, enum: [disabled, empty, unavailable, partial, ready], description: 候选暗盘资金读取状态。 }
+                      candidate_history_days: { type: integer, description: 候选自身历史分位固定使用的交易日窗口。 }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
@@ -1101,7 +1103,7 @@ components:
         last_shared_date: { type: string, format: date }
     LimitUpTodayCandidate:
       type: object
-      required: [code, name, market_type, score, mainline_score, mainline_fit, mainline_rank, mainline_codes, cross_mainline_count, live_score, history_score, risk_score, risk_penalty, strength, coverage, effective_links, seal_days, touch_days, last_seal_date, last_shared_date, strongest_core_code, strongest_core_name, strongest_overlap_days, strongest_heat, strongest_phi, theme_score, themes, theme_tags, top_links, live_available, limit_ratio, touched_limit, risk_flags]
+      required: [code, name, market_type, score, mainline_score, mainline_fit, mainline_rank, mainline_codes, cross_mainline_count, live_score, history_score, risk_score, risk_penalty, strength, coverage, effective_links, seal_days, touch_days, last_seal_date, last_shared_date, strongest_core_code, strongest_core_name, strongest_overlap_days, strongest_heat, strongest_phi, theme_score, themes, theme_tags, top_links, live_available, limit_ratio, touched_limit, risk_flags, turnover_history_days, main_flow_history_days, dark_money_history_days]
       properties:
         code: { type: string }
         name: { type: string }
@@ -1115,7 +1117,7 @@ components:
           description: 该候选命中的全部实时主线代码，按贴合度降序。
           items: { type: string }
         cross_mainline_count: { type: integer, description: 命中的实时主线数量；大于1表示该候选跨主线。 }
-        live_score: { type: number, description: 0到1的盘中承接确认分：启动承接30%+剩余空间20%+换手横截面分位20%+量比横截面分位15%+主力净占比横截面分位15%，缺少量比或资金时按可用项重新归一化；已触板但当前未封扣20%。不奖励接近涨停，触板不是加分项。行情不可用时为0。 }
+        live_score: { type: number, description: 0到1的盘中承接确认分：启动承接30%+剩余空间20%+换手自身历史分位15%+量比10%+主力资金自身历史分位10%+暗盘资金自身历史分位15%；换手、主力和暗盘按该股最近20个交易日、同一5分钟时点的自身历史计算，量比直接使用东财自身基准值，样本不足的项退出并按可用项重新归一化；已触板但当前未封扣20%。不奖励接近涨停，触板不是加分项。行情不可用时为0。 }
         history_score: { type: number, description: 0到1的历史特异性分，来自按候选与今日核心φ相关系数、共现置信度和核心度加权的强度，并在本批候选中归一化；仅题材候选为0。 }
         risk_score: { type: number, description: 0到1的执行风险安全度，1表示未命中风险规则；最终只作为最多15%的折价，不直接作为正分。 }
         risk_penalty: { type: number, description: 0到100的风险扣分，等于(1-risk_score)×100；0表示未命中风险规则，越高越需要人工复核。 }
@@ -1149,16 +1151,21 @@ components:
         volume_ratio: { type: [number, "null"], description: 盘中量比；上游未返回时省略。 }
         main_net_inflow: { type: [number, "null"], description: 主力净流入金额，单位元；负值表示净流出。 }
         main_net_inflow_pct: { type: [number, "null"], description: 主力净占比，单位为百分点，-7.15代表-7.15%。 }
-        turnover_percentile: { type: [number, "null"], description: 本次候选池内换手率的横截面分位，0到100；样本少于3只时不计算。 }
-        volume_ratio_percentile: { type: [number, "null"], description: 本次候选池内量比的横截面分位，0到100；样本少于3只时不计算。 }
-        main_flow_percentile: { type: [number, "null"], description: 本次候选池内主力净占比的横截面分位，0到100；样本少于3只时不计算。 }
+        dark_money: { type: [number, "null"], description: 盘中暗盘资金累计净额，单位元；负值表示净流出。 }
+        dark_money_pct: { type: [number, "null"], description: 暗盘资金净额占当日成交额的比例，单位为百分点。 }
+        turnover_percentile: { type: [number, "null"], description: 该股当前换手率相对自身最近20个交易日同一5分钟时点历史的百分位，0到100；样本少于5日时不计算。 }
+        main_flow_percentile: { type: [number, "null"], description: 该股当前主力净占比相对自身最近20个交易日同一5分钟时点历史的百分位，0到100；样本少于5日时不计算。 }
+        dark_money_percentile: { type: [number, "null"], description: 该股当前暗盘资金占成交额比例相对自身最近20个交易日同一5分钟时点历史的百分位，0到100；样本少于5日时不计算。 }
+        turnover_history_days: { type: integer, description: 本次参与换手自身历史分位的样本交易日数。 }
+        main_flow_history_days: { type: integer, description: 本次参与资金自身历史分位的样本交易日数。 }
+        dark_money_history_days: { type: integer, description: 本次参与暗盘资金自身历史分位的样本交易日数。 }
         turnover_amount: { type: [number, "null"], description: 盘中成交额，单位元；低于2000万会触发低流动性风险提示。 }
         distance_to_limit: { type: [number, "null"], description: 距涨停空间，单位为百分点；创业板/科创板按20%、主板普通与主板ST按10%。 }
         limit_ratio: { type: number, description: 该股票适用的涨停幅度，单位为百分点：主板普通与主板ST 10、创业板/科创板20、北交所30。 }
         touched_limit: { type: boolean, description: 盘中最高价是否触及按前收计算的涨停价。 }
         risk_flags:
           type: array
-          description: 盘中行情缺失、追涨、已触板未封、距涨停空间不足、主力净流出、资金处于候选池后10%、换手或量比处于候选池前10%、ST、上市不足60日、低流动性等风险提示；存在提示不代表自动排除。
+          description: 盘中行情缺失、追涨、已触板未封、距涨停空间不足、主力或暗盘资金净流出、资金处于自身历史后10%、换手处于自身历史前10%、量比过热、自身历史样本不足、ST、上市不足60日、低流动性等风险提示；存在提示不代表自动排除。
           items: { type: string }
     BoardQuoteMeta:
       type: object

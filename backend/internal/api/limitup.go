@@ -20,6 +20,10 @@ type boardThemeFallbackReader interface {
 	CurrentBoardMembershipStats(context.Context) (map[string]int, int, error)
 }
 
+type candidateHistoryReader interface {
+	ReadCandidateHistoryMetrics(context.Context, string, []string, int, int) (map[string]limitup.CandidateHistoryMetrics, error)
+}
+
 func limitUpQuery(request *http.Request) (limitup.Query, error) {
 	values := request.URL.Query()
 	allowed := map[string]bool{"as_of": true, "days": true, "scope": true, "event": true, "min_overlap": true, "limit": true, "order": true}
@@ -273,6 +277,7 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 		}
 	}
 	liveQuoteStatus := "disabled"
+	liveDarkMoneyStatus := "disabled"
 	if server.limitUpQuotes != nil {
 		// Two-stage read: first derive the bounded historical candidate list,
 		// then fetch quotes for those candidates only. The first pass never
@@ -280,14 +285,48 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 		codes := todayCandidateQuoteCodes(result)
 		if len(codes) == 0 {
 			liveQuoteStatus = "empty"
+			liveDarkMoneyStatus = "empty"
 		} else if quotes, quoteErr := server.limitUpQuotes.ReadLiveQuotes(request.Context(), codes); quoteErr != nil {
 			server.logger.Warn("read today-core candidate quotes", "error", quoteErr)
 			result.LiveUnavailable = true
 			liveQuoteStatus = "unavailable"
+			liveDarkMoneyStatus = "unavailable"
 		} else if len(quotes) == 0 {
 			result.LiveUnavailable = true
 			liveQuoteStatus = "unavailable"
+			liveDarkMoneyStatus = "unavailable"
 		} else {
+			if historyReader, ok := server.store.(candidateHistoryReader); ok && historyAsOf != "" {
+				minuteIndex, validMinute := limitup.LatestResearchMinuteIndex(snapshot.FetchedAt.In(server.location))
+				if validMinute {
+					historyMetrics, historyErr := historyReader.ReadCandidateHistoryMetrics(
+						request.Context(), historyAsOf, codes, limitup.TodayLiveHistoryWindowDays, minuteIndex,
+					)
+					if historyErr != nil {
+						server.logger.Warn("read candidate self-history metrics", "error", historyErr)
+					} else {
+						input.CandidateHistory = historyMetrics
+					}
+				}
+			}
+			if server.limitUpDarkMoney != nil {
+				darkMoney, darkErr := server.limitUpDarkMoney.ReadLiveDarkMoney(
+					request.Context(), snapshot.TradeDate, codes, snapshot.FetchedAt.In(server.location),
+				)
+				if darkErr != nil {
+					server.logger.Warn("read today-core live dark money", "error", darkErr)
+					liveDarkMoneyStatus = "unavailable"
+				}
+				if len(darkMoney) > 0 {
+					input.LiveDarkMoney = darkMoney
+					liveDarkMoneyStatus = "ready"
+					if darkErr != nil {
+						liveDarkMoneyStatus = "partial"
+					}
+				} else if darkErr == nil {
+					liveDarkMoneyStatus = "empty"
+				}
+			}
 			input.LiveQuotes = quotes
 			result, err = limitup.AnalyzeToday(request.Context(), input)
 			if err != nil {
@@ -303,7 +342,8 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 	writeJSON(response, http.StatusOK, envelope{Data: result, Meta: map[string]any{
 		"snapshot_only": true, "history_excludes_today": true,
 		"snapshot_fetched_at": snapshot.FetchedAt, "live_candidates": result.LiveCandidate,
-		"live_quote_status": liveQuoteStatus,
+		"live_quote_status": liveQuoteStatus, "live_dark_money_status": liveDarkMoneyStatus,
+		"candidate_history_days": limitup.TodayLiveHistoryWindowDays,
 	}})
 }
 

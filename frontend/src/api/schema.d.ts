@@ -1162,6 +1162,13 @@ export interface paths {
                                  * @enum {string}
                                  */
                                 live_quote_status: "disabled" | "empty" | "unavailable" | "partial" | "ready";
+                                /**
+                                 * @description 候选暗盘资金读取状态。
+                                 * @enum {string}
+                                 */
+                                live_dark_money_status: "disabled" | "empty" | "unavailable" | "partial" | "ready";
+                                /** @description 候选自身历史分位固定使用的交易日窗口。 */
+                                candidate_history_days: number;
                             };
                         };
                     };
@@ -1700,7 +1707,7 @@ export interface components {
             mainline_codes: string[];
             /** @description 命中的实时主线数量；大于1表示该候选跨主线。 */
             cross_mainline_count: number;
-            /** @description 0到1的盘中承接确认分：启动承接30%+剩余空间20%+换手横截面分位20%+量比横截面分位15%+主力净占比横截面分位15%，缺少量比或资金时按可用项重新归一化；已触板但当前未封扣20%。不奖励接近涨停，触板不是加分项。行情不可用时为0。 */
+            /** @description 0到1的盘中承接确认分：启动承接30%+剩余空间20%+换手自身历史分位15%+量比10%+主力资金自身历史分位10%+暗盘资金自身历史分位15%；换手、主力和暗盘按该股最近20个交易日、同一5分钟时点的自身历史计算，量比直接使用东财自身基准值，样本不足的项退出并按可用项重新归一化；已触板但当前未封扣20%。不奖励接近涨停，触板不是加分项。行情不可用时为0。 */
             live_score: number;
             /** @description 0到1的历史特异性分，来自按候选与今日核心φ相关系数、共现置信度和核心度加权的强度，并在本批候选中归一化；仅题材候选为0。 */
             history_score: number;
@@ -1746,12 +1753,22 @@ export interface components {
             main_net_inflow?: number | null;
             /** @description 主力净占比，单位为百分点，-7.15代表-7.15%。 */
             main_net_inflow_pct?: number | null;
-            /** @description 本次候选池内换手率的横截面分位，0到100；样本少于3只时不计算。 */
+            /** @description 盘中暗盘资金累计净额，单位元；负值表示净流出。 */
+            dark_money?: number | null;
+            /** @description 暗盘资金净额占当日成交额的比例，单位为百分点。 */
+            dark_money_pct?: number | null;
+            /** @description 该股当前换手率相对自身最近20个交易日同一5分钟时点历史的百分位，0到100；样本少于5日时不计算。 */
             turnover_percentile?: number | null;
-            /** @description 本次候选池内量比的横截面分位，0到100；样本少于3只时不计算。 */
-            volume_ratio_percentile?: number | null;
-            /** @description 本次候选池内主力净占比的横截面分位，0到100；样本少于3只时不计算。 */
+            /** @description 该股当前主力净占比相对自身最近20个交易日同一5分钟时点历史的百分位，0到100；样本少于5日时不计算。 */
             main_flow_percentile?: number | null;
+            /** @description 该股当前暗盘资金占成交额比例相对自身最近20个交易日同一5分钟时点历史的百分位，0到100；样本少于5日时不计算。 */
+            dark_money_percentile?: number | null;
+            /** @description 本次参与换手自身历史分位的样本交易日数。 */
+            turnover_history_days: number;
+            /** @description 本次参与资金自身历史分位的样本交易日数。 */
+            main_flow_history_days: number;
+            /** @description 本次参与暗盘资金自身历史分位的样本交易日数。 */
+            dark_money_history_days: number;
             /** @description 盘中成交额，单位元；低于2000万会触发低流动性风险提示。 */
             turnover_amount?: number | null;
             /** @description 距涨停空间，单位为百分点；创业板/科创板按20%、主板普通与主板ST按10%。 */
@@ -1760,7 +1777,7 @@ export interface components {
             limit_ratio: number;
             /** @description 盘中最高价是否触及按前收计算的涨停价。 */
             touched_limit: boolean;
-            /** @description 盘中行情缺失、追涨、已触板未封、距涨停空间不足、主力净流出、资金处于候选池后10%、换手或量比处于候选池前10%、ST、上市不足60日、低流动性等风险提示；存在提示不代表自动排除。 */
+            /** @description 盘中行情缺失、追涨、已触板未封、距涨停空间不足、主力或暗盘资金净流出、资金处于自身历史后10%、换手处于自身历史前10%、量比过热、自身历史样本不足、ST、上市不足60日、低流动性等风险提示；存在提示不代表自动排除。 */
             risk_flags: string[];
         };
         BoardQuoteMeta: {
