@@ -1688,7 +1688,7 @@ export interface components {
             code: string;
             name: string;
             market_type: string;
-            /** @description 0到100的候选分。主线组内使用该组的 mainline_fit；全局候选使用跨主线共振 mainline_score。有实时行情时=100×(30%实时确认+40%主线项+20%历史特异性+10%关联覆盖)，再乘最多15%的风险折价；无实时行情时实时项退出，其余三项重新归一化。 */
+            /** @description 0到100的候选分。主线组内使用该组的 mainline_fit；全局候选使用跨主线共振 mainline_score。有实时行情时=100×(30%盘中承接+40%主线项+20%历史特异性+10%关联覆盖)，再乘最多15%的风险折价；无实时行情时实时项退出，其余三项重新归一化。 */
             score: number;
             /** @description 0到1的多主线共振分，公式为 1 - ∏(1 - 单主线贴合)。同时命中多条主线时按独立证据叠加，收益递减，不再使用最强80%+次强20%。 */
             mainline_score: number;
@@ -1700,12 +1700,14 @@ export interface components {
             mainline_codes: string[];
             /** @description 命中的实时主线数量；大于1表示该候选跨主线。 */
             cross_mainline_count: number;
-            /** @description 0到1的盘中确认分，由距涨停进度、换手、量比、主力净占比和是否触板组成；行情不可用时为0。 */
+            /** @description 0到1的盘中承接确认分：启动承接30%+剩余空间20%+换手横截面分位20%+量比横截面分位15%+主力净占比横截面分位15%，缺少量比或资金时按可用项重新归一化；已触板但当前未封扣20%。不奖励接近涨停，触板不是加分项。行情不可用时为0。 */
             live_score: number;
             /** @description 0到1的历史特异性分，来自按候选与今日核心φ相关系数、共现置信度和核心度加权的强度，并在本批候选中归一化；仅题材候选为0。 */
             history_score: number;
-            /** @description 0到1的执行风险分，1表示未命中风险规则；最终只作为最多15%的折价，不直接作为正分。 */
+            /** @description 0到1的执行风险安全度，1表示未命中风险规则；最终只作为最多15%的折价，不直接作为正分。 */
             risk_score: number;
+            /** @description 0到100的风险扣分，等于(1-risk_score)×100；0表示未命中风险规则，越高越需要人工复核。 */
+            risk_penalty: number;
             /** @description 主线关联度：与最强 3 个今日成员的核心度加权 φ 均值，并按共现次数收缩稀疏样本；已扣除候选股自身封板频率。 */
             strength: number;
             /** @description 关联到的今日封板成员数除以今日封板总数。 */
@@ -1744,6 +1746,12 @@ export interface components {
             main_net_inflow?: number | null;
             /** @description 主力净占比，单位为百分点，-7.15代表-7.15%。 */
             main_net_inflow_pct?: number | null;
+            /** @description 本次候选池内换手率的横截面分位，0到100；样本少于3只时不计算。 */
+            turnover_percentile?: number | null;
+            /** @description 本次候选池内量比的横截面分位，0到100；样本少于3只时不计算。 */
+            volume_ratio_percentile?: number | null;
+            /** @description 本次候选池内主力净占比的横截面分位，0到100；样本少于3只时不计算。 */
+            main_flow_percentile?: number | null;
             /** @description 盘中成交额，单位元；低于2000万会触发低流动性风险提示。 */
             turnover_amount?: number | null;
             /** @description 距涨停空间，单位为百分点；创业板/科创板按20%、主板普通与主板ST按10%。 */
@@ -1752,7 +1760,7 @@ export interface components {
             limit_ratio: number;
             /** @description 盘中最高价是否触及按前收计算的涨停价。 */
             touched_limit: boolean;
-            /** @description 盘中行情缺失、ST、上市不足60日、低换手、量比不足等风险提示；存在提示不代表自动排除。 */
+            /** @description 盘中行情缺失、追涨、已触板未封、距涨停空间不足、主力净流出、资金处于候选池后10%、换手或量比处于候选池前10%、ST、上市不足60日、低流动性等风险提示；存在提示不代表自动排除。 */
             risk_flags: string[];
         };
         BoardQuoteMeta: {

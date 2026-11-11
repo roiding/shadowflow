@@ -423,48 +423,52 @@ type MainlineTheme struct {
 }
 
 type TodayCandidate struct {
-	Code                 string          `json:"code"`
-	Name                 string          `json:"name"`
-	MarketType           string          `json:"market_type"`
-	Score                float64         `json:"score"`
-	MainlineScore        float64         `json:"mainline_score"`
-	MainlineFit          float64         `json:"mainline_fit"`
-	MainlineRank         int             `json:"mainline_rank"`
-	MainlineCodes        []string        `json:"mainline_codes"`
-	CrossMainlineCount   int             `json:"cross_mainline_count"`
-	LiveScore            float64         `json:"live_score"`
-	HistoryScore         float64         `json:"history_score"`
-	RiskScore            float64         `json:"risk_score"`
-	Strength             float64         `json:"strength"`
-	Coverage             float64         `json:"coverage"`
-	EffectiveLinks       int             `json:"effective_links"`
-	SealDays             int             `json:"seal_days"`
-	TouchDays            int             `json:"touch_days"`
-	LastSealDate         string          `json:"last_seal_date"`
-	LastSharedDate       string          `json:"last_shared_date"`
-	StrongestCoreCode    string          `json:"strongest_core_code"`
-	StrongestCoreName    string          `json:"strongest_core_name"`
-	StrongestOverlapDays int             `json:"strongest_overlap_days"`
-	StrongestHeat        float64         `json:"strongest_heat"`
-	StrongestPhi         float64         `json:"strongest_phi"`
-	ThemeScore           float64         `json:"theme_score"`
-	Themes               []ThemeRef      `json:"themes"`
-	ThemeTags            []ThemeTag      `json:"theme_tags"`
-	TopLinks             []CandidateLink `json:"top_links"`
-	LiveAvailable        bool            `json:"live_available"`
-	ChangePercent        *float64        `json:"change_percent,omitempty"`
-	TurnoverRate         *float64        `json:"turnover_rate,omitempty"`
-	VolumeRatio          *float64        `json:"volume_ratio,omitempty"`
-	MainNetInflow        *float64        `json:"main_net_inflow,omitempty"`
-	MainNetInflowPct     *float64        `json:"main_net_inflow_pct,omitempty"`
-	TurnoverAmount       *float64        `json:"turnover_amount,omitempty"`
-	DistanceToLimit      *float64        `json:"distance_to_limit,omitempty"`
-	LimitRatio           float64         `json:"limit_ratio"`
-	TouchedLimit         bool            `json:"touched_limit"`
-	RiskFlags            []string        `json:"risk_flags"`
-	quoteFetchedAt       time.Time
-	listingDate          string
-	themeFits            []themeFit
+	Code                  string          `json:"code"`
+	Name                  string          `json:"name"`
+	MarketType            string          `json:"market_type"`
+	Score                 float64         `json:"score"`
+	MainlineScore         float64         `json:"mainline_score"`
+	MainlineFit           float64         `json:"mainline_fit"`
+	MainlineRank          int             `json:"mainline_rank"`
+	MainlineCodes         []string        `json:"mainline_codes"`
+	CrossMainlineCount    int             `json:"cross_mainline_count"`
+	LiveScore             float64         `json:"live_score"`
+	HistoryScore          float64         `json:"history_score"`
+	RiskScore             float64         `json:"risk_score"`
+	RiskPenalty           float64         `json:"risk_penalty"`
+	Strength              float64         `json:"strength"`
+	Coverage              float64         `json:"coverage"`
+	EffectiveLinks        int             `json:"effective_links"`
+	SealDays              int             `json:"seal_days"`
+	TouchDays             int             `json:"touch_days"`
+	LastSealDate          string          `json:"last_seal_date"`
+	LastSharedDate        string          `json:"last_shared_date"`
+	StrongestCoreCode     string          `json:"strongest_core_code"`
+	StrongestCoreName     string          `json:"strongest_core_name"`
+	StrongestOverlapDays  int             `json:"strongest_overlap_days"`
+	StrongestHeat         float64         `json:"strongest_heat"`
+	StrongestPhi          float64         `json:"strongest_phi"`
+	ThemeScore            float64         `json:"theme_score"`
+	Themes                []ThemeRef      `json:"themes"`
+	ThemeTags             []ThemeTag      `json:"theme_tags"`
+	TopLinks              []CandidateLink `json:"top_links"`
+	LiveAvailable         bool            `json:"live_available"`
+	ChangePercent         *float64        `json:"change_percent,omitempty"`
+	TurnoverRate          *float64        `json:"turnover_rate,omitempty"`
+	VolumeRatio           *float64        `json:"volume_ratio,omitempty"`
+	MainNetInflow         *float64        `json:"main_net_inflow,omitempty"`
+	MainNetInflowPct      *float64        `json:"main_net_inflow_pct,omitempty"`
+	TurnoverPercentile    *float64        `json:"turnover_percentile,omitempty"`
+	VolumeRatioPercentile *float64        `json:"volume_ratio_percentile,omitempty"`
+	MainFlowPercentile    *float64        `json:"main_flow_percentile,omitempty"`
+	TurnoverAmount        *float64        `json:"turnover_amount,omitempty"`
+	DistanceToLimit       *float64        `json:"distance_to_limit,omitempty"`
+	LimitRatio            float64         `json:"limit_ratio"`
+	TouchedLimit          bool            `json:"touched_limit"`
+	RiskFlags             []string        `json:"risk_flags"`
+	quoteFetchedAt        time.Time
+	listingDate           string
+	themeFits             []themeFit
 }
 
 type TodayNetwork struct {

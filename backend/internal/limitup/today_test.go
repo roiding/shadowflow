@@ -2,6 +2,7 @@ package limitup
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -531,6 +532,11 @@ func TestTodayCandidateWeightsSumToOne(t *testing.T) {
 	if math.Abs(total-1) > 1e-12 {
 		t.Fatalf("candidate weights must sum to one, got %v", total)
 	}
+	liveTotal := TodayLiveWeightStart + TodayLiveWeightRoom + TodayLiveWeightTurnover +
+		TodayLiveWeightVolume + TodayLiveWeightFlow
+	if math.Abs(liveTotal-1) > 1e-12 {
+		t.Fatalf("live confirmation weights must sum to one, got %v", liveTotal)
+	}
 }
 
 func TestScoreTodayCandidatesDoesNotRewardRecentLimitCount(t *testing.T) {
@@ -568,11 +574,148 @@ func TestLiveCandidateUsesBoardSpecificLimitRatio(t *testing.T) {
 		},
 	}
 	scored := scoreTodayCandidates([]TodayCandidate{main, gem}, quotes)
-	if scored[0].Code != "600001" || scored[0].LimitRatio != 10 || scored[1].LimitRatio != 20 ||
-		!scored[0].TouchedLimit || scored[1].TouchedLimit ||
-		scored[0].DistanceToLimit == nil || *scored[0].DistanceToLimit <= 0 ||
-		scored[1].DistanceToLimit == nil || math.Abs(*scored[1].DistanceToLimit-5) > 1e-9 {
+	byCode := make(map[string]TodayCandidate, len(scored))
+	for _, candidate := range scored {
+		byCode[candidate.Code] = candidate
+	}
+	mainScored, mainExists := byCode["600001"]
+	gemScored, gemExists := byCode["300001"]
+	if !mainExists || !gemExists || mainScored.LimitRatio != 10 || gemScored.LimitRatio != 20 ||
+		!mainScored.TouchedLimit || gemScored.TouchedLimit ||
+		mainScored.DistanceToLimit == nil || *mainScored.DistanceToLimit <= 0 ||
+		gemScored.DistanceToLimit == nil || math.Abs(*gemScored.DistanceToLimit-5) > 1e-9 {
 		t.Fatalf("board-specific limit distance or touch flag is wrong: %+v", scored)
+	}
+}
+
+func TestLiveCandidatePrefersRoomAndPenalizesTouchedLimit(t *testing.T) {
+	now := time.Date(2026, 11, 11, 14, 30, 0, 0, Shanghai())
+	candidates := []TodayCandidate{
+		{Code: "600001", Name: "接近涨停", ThemeScore: 0, HistoryScore: 0},
+		{Code: "600002", Name: "仍有空间", ThemeScore: 0, HistoryScore: 0},
+		{Code: "600003", Name: "触板未封", ThemeScore: 0, HistoryScore: 0},
+	}
+	quotes := map[string]LiveQuote{
+		"600001": {
+			Code: "600001", Available: true, PreviousClose: 10, HighPrice: 10.9,
+			ChangePct: 0.087, TurnoverRate: 0.05, VolumeRatio: floatPointer(1),
+			MainFlowPct: floatPointer(5), ListingDate: "20200101", FetchedAt: now,
+		},
+		"600002": {
+			Code: "600002", Available: true, PreviousClose: 10, HighPrice: 10.5,
+			ChangePct: 0.04, TurnoverRate: 0.05, VolumeRatio: floatPointer(1),
+			MainFlowPct: floatPointer(5), ListingDate: "20200101", FetchedAt: now,
+		},
+		"600003": {
+			Code: "600003", Available: true, PreviousClose: 10, HighPrice: 11,
+			ChangePct: 0.04, TurnoverRate: 0.05, VolumeRatio: floatPointer(1),
+			MainFlowPct: floatPointer(5), ListingDate: "20200101", FetchedAt: now,
+		},
+	}
+	scored := scoreTodayCandidates(candidates, quotes)
+	byCode := make(map[string]TodayCandidate, len(scored))
+	for _, candidate := range scored {
+		byCode[candidate.Code] = candidate
+	}
+	if byCode["600002"].LiveScore <= byCode["600001"].LiveScore {
+		t.Fatalf("remaining room must outrank near-limit progress: %+v", scored)
+	}
+	if byCode["600003"].LiveScore >= byCode["600002"].LiveScore {
+		t.Fatalf("touched-but-unsealed must be penalized, not rewarded: %+v", scored)
+	}
+	for _, expected := range []string{"涨幅接近涨停", "距涨停不足1.5%"} {
+		found := false
+		for _, flag := range byCode["600001"].RiskFlags {
+			if flag == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing risk flag %q: %+v", expected, byCode["600001"].RiskFlags)
+		}
+	}
+	if byCode["600003"].RiskPenalty <= byCode["600002"].RiskPenalty {
+		t.Fatalf("touched-but-unsealed risk penalty was not applied: %+v", scored)
+	}
+}
+
+func TestLiveCandidateUsesCandidatePoolPercentiles(t *testing.T) {
+	now := time.Date(2026, 11, 11, 14, 30, 0, 0, Shanghai())
+	candidates := []TodayCandidate{
+		{Code: "600001", Name: "低换手", ThemeScore: 0, HistoryScore: 0, LastSealDate: "2026-11-01", SealDays: 1},
+		{Code: "600002", Name: "中换手", ThemeScore: 0, HistoryScore: 0, LastSealDate: "2026-11-01", SealDays: 1},
+		{Code: "600003", Name: "高换手", ThemeScore: 0, HistoryScore: 0, LastSealDate: "2026-11-01", SealDays: 1},
+	}
+	quotes := map[string]LiveQuote{
+		"600001": {
+			Code: "600001", Available: true, PreviousClose: 10, HighPrice: 10.4,
+			ChangePct: 0.04, TurnoverRate: 0.02, VolumeRatio: floatPointer(1),
+			MainFlowPct: floatPointer(5), Turnover: 100_000_000, ListingDate: "20200101", FetchedAt: now,
+		},
+		"600002": {
+			Code: "600002", Available: true, PreviousClose: 10, HighPrice: 10.4,
+			ChangePct: 0.04, TurnoverRate: 0.05, VolumeRatio: floatPointer(1),
+			MainFlowPct: floatPointer(5), Turnover: 100_000_000, ListingDate: "20200101", FetchedAt: now,
+		},
+		"600003": {
+			Code: "600003", Available: true, PreviousClose: 10, HighPrice: 10.4,
+			ChangePct: 0.04, TurnoverRate: 0.10, VolumeRatio: floatPointer(1),
+			MainFlowPct: floatPointer(5), Turnover: 100_000_000, ListingDate: "20200101", FetchedAt: now,
+		},
+	}
+	scored := scoreTodayCandidates(candidates, quotes)
+	byCode := make(map[string]TodayCandidate, len(scored))
+	for _, candidate := range scored {
+		byCode[candidate.Code] = candidate
+	}
+	if byCode["600003"].LiveScore <= byCode["600001"].LiveScore {
+		t.Fatalf("cross-sectional turnover percentile was not used: %+v", scored)
+	}
+	if byCode["600003"].TurnoverPercentile == nil ||
+		math.Abs(*byCode["600003"].TurnoverPercentile-83.33333333333334) > 1e-6 {
+		t.Fatalf("turnover percentile was not exposed: %+v", byCode["600003"].TurnoverPercentile)
+	}
+}
+
+func TestHighTurnoverRiskUsesCandidatePoolPercentile(t *testing.T) {
+	now := time.Date(2026, 11, 11, 14, 30, 0, 0, Shanghai())
+	candidates := make([]TodayCandidate, 0, 5)
+	quotes := make(map[string]LiveQuote, 5)
+	for index := 0; index < 5; index++ {
+		code := fmt.Sprintf("600%03d", index+1)
+		candidates = append(candidates, TodayCandidate{
+			Code: code, Name: code, ThemeScore: 0, HistoryScore: 0,
+			LastSealDate: "2026-11-01", SealDays: 1,
+		})
+		quotes[code] = LiveQuote{
+			Code: code, Available: true, PreviousClose: 10, HighPrice: 10.4,
+			ChangePct: 0.04, TurnoverRate: 0.01 * float64(index+1),
+			VolumeRatio: floatPointer(1), MainFlowPct: floatPointer(5),
+			Turnover: 100_000_000, ListingDate: "20200101", FetchedAt: now,
+		}
+	}
+	scored := scoreTodayCandidates(candidates, quotes)
+	var highest *TodayCandidate
+	for index := range scored {
+		if scored[index].Code == "600005" {
+			highest = &scored[index]
+			break
+		}
+	}
+	if highest == nil || highest.TurnoverPercentile == nil ||
+		*highest.TurnoverPercentile < 90 {
+		t.Fatalf("highest turnover percentile is missing: %+v", highest)
+	}
+	found := false
+	for _, flag := range highest.RiskFlags {
+		if flag == "换手处于候选池前10%" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("candidate-pool turnover risk flag is missing: %+v", highest.RiskFlags)
 	}
 }
 
@@ -588,7 +731,7 @@ func TestLiveCandidateRiskFlagsIncludeSTNewListingAndLowLiquidity(t *testing.T) 
 			ListingDate: "20261020", FetchedAt: now,
 		},
 	})
-	if len(scored) != 1 || scored[0].RiskScore >= 1 {
+	if len(scored) != 1 || scored[0].RiskScore >= 1 || scored[0].RiskPenalty <= 0 {
 		t.Fatalf("risk score was not reduced: %+v", scored)
 	}
 	for _, expected := range []string{"ST", "上市不足60日", "换手不足1%", "量比不足0.5", "成交额不足2000万", "近一年无收盘封板"} {

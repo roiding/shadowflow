@@ -25,6 +25,15 @@ const (
 	TodayCandidateWeightHistory  = 0.20
 	TodayCandidateWeightCoverage = 0.10
 
+	// The live confirmation is a support-quality check, not a race to the limit.
+	// Progress toward the limit is only used to distinguish an early move from
+	// a flat stock; remaining room is a separate positive factor.
+	TodayLiveWeightStart    = 0.30
+	TodayLiveWeightRoom     = 0.20
+	TodayLiveWeightTurnover = 0.20
+	TodayLiveWeightVolume   = 0.15
+	TodayLiveWeightFlow     = 0.15
+
 	// Risk is a bounded discount, not a positive score component. A clean
 	// candidate keeps its full score; ST, low liquidity and other flags can
 	// reduce it by at most 15%.
@@ -706,14 +715,18 @@ func scoreTodayCandidates(candidates []TodayCandidate, live map[string]LiveQuote
 		candidate.HistoryScore = normalise(candidate.HistoryScore, maxHistory)
 		candidate.LimitRatio = limitUpRatio(candidate.Code) * 100
 		candidate.RiskFlags = []string{}
-		liveScore, liveAvailable := liveCandidateScore(candidate, live)
-		candidate.LiveAvailable = liveAvailable
-		candidate.LiveScore = liveScore
-		if liveMode && !liveAvailable {
+		candidate.LiveAvailable = populateLiveCandidate(candidate, live)
+		if liveMode && !candidate.LiveAvailable {
 			candidate.RiskFlags = append(candidate.RiskFlags, "未取得盘中行情")
 		}
+	}
+	distribution := newLiveDistribution(candidates)
+	for index := range candidates {
+		candidate := &candidates[index]
+		candidate.LiveScore = liveCandidateScore(candidate, distribution)
 		risk := candidateRiskScore(candidate)
 		candidate.RiskScore = risk.score
+		candidate.RiskPenalty = (1 - risk.score) * 100
 		candidate.RiskFlags = append(candidate.RiskFlags, risk.flags...)
 		candidate.Score = blendedCandidateScore(
 			candidate.LiveScore, candidate.MainlineScore,
@@ -860,13 +873,53 @@ func buildMainlineIntersections(mainline []ThemeCluster) []TodayMainlineIntersec
 	return result
 }
 
-func liveCandidateScore(candidate *TodayCandidate, quotes map[string]LiveQuote) (float64, bool) {
+type liveDistribution struct {
+	turnover    []float64
+	volumeRatio []float64
+	mainFlow    []float64
+}
+
+func newLiveDistribution(candidates []TodayCandidate) liveDistribution {
+	distribution := liveDistribution{}
+	for _, candidate := range candidates {
+		if !candidate.LiveAvailable {
+			continue
+		}
+		if candidate.TurnoverRate != nil {
+			distribution.turnover = append(distribution.turnover, *candidate.TurnoverRate)
+		}
+		if candidate.VolumeRatio != nil {
+			distribution.volumeRatio = append(distribution.volumeRatio, *candidate.VolumeRatio)
+		}
+		if candidate.MainNetInflowPct != nil {
+			distribution.mainFlow = append(distribution.mainFlow, *candidate.MainNetInflowPct)
+		}
+	}
+	sort.Float64s(distribution.turnover)
+	sort.Float64s(distribution.volumeRatio)
+	sort.Float64s(distribution.mainFlow)
+	return distribution
+}
+
+func (distribution liveDistribution) percentile(values []float64, value float64) (float64, bool) {
+	if len(values) < 3 {
+		return 0.5, false
+	}
+	less := sort.SearchFloat64s(values, value)
+	equal := 0
+	for index := less; index < len(values) && values[index] == value; index++ {
+		equal++
+	}
+	return (float64(less) + 0.5*float64(equal)) / float64(len(values)), true
+}
+
+func populateLiveCandidate(candidate *TodayCandidate, quotes map[string]LiveQuote) bool {
 	if quotes == nil {
-		return 0, false
+		return false
 	}
 	quote, exists := quotes[candidate.Code]
 	if !exists || !quote.Available || quote.PreviousClose <= 0 {
-		return 0, false
+		return false
 	}
 	change := quote.ChangePct
 	turnover := quote.TurnoverRate
@@ -895,23 +948,67 @@ func liveCandidateScore(candidate *TodayCandidate, quotes map[string]LiveQuote) 
 	}
 	turnoverAmount := float64(quote.Turnover)
 	candidate.TurnoverAmount = &turnoverAmount
-	progress := clamp01(change / limitRatio)
-	turnoverQuality := clamp01(turnover / 0.08)
-	weightedScore := 0.55*progress + 0.20*turnoverQuality
-	activeWeight := 0.75
-	if quote.VolumeRatio != nil {
-		weightedScore += 0.15 * clamp01(*quote.VolumeRatio/2)
-		activeWeight += 0.15
+	return true
+}
+
+func liveCandidateScore(candidate *TodayCandidate, distribution liveDistribution) float64 {
+	if !candidate.LiveAvailable || candidate.ChangePercent == nil ||
+		candidate.TurnoverRate == nil || candidate.DistanceToLimit == nil {
+		return 0
 	}
-	if quote.MainFlowPct != nil {
-		weightedScore += 0.10 * clamp01(0.5+*quote.MainFlowPct/20)
-		activeWeight += 0.10
+	change := *candidate.ChangePercent / 100
+	limitRatio := candidate.LimitRatio / 100
+	distance := *candidate.DistanceToLimit / 100
+	turnover := *candidate.TurnoverRate / 100
+	progress := clamp01(change / limitRatio)
+	startQuality := clamp01((progress - 0.08) / 0.30)
+	roomQuality := clamp01(distance / (limitRatio * 0.5))
+	turnoverQuality, turnoverCrossSectional := distribution.percentile(
+		distribution.turnover, *candidate.TurnoverRate,
+	)
+	if !turnoverCrossSectional {
+		turnoverQuality = clamp01(turnover / 0.08)
+	} else {
+		percentile := turnoverQuality * 100
+		candidate.TurnoverPercentile = &percentile
+	}
+	weightedScore := TodayLiveWeightStart*startQuality +
+		TodayLiveWeightRoom*roomQuality +
+		TodayLiveWeightTurnover*turnoverQuality
+	activeWeight := TodayLiveWeightStart + TodayLiveWeightRoom + TodayLiveWeightTurnover
+	if candidate.VolumeRatio != nil {
+		volumeQuality, crossSectional := distribution.percentile(
+			distribution.volumeRatio, *candidate.VolumeRatio,
+		)
+		if !crossSectional {
+			volumeQuality = clamp01(*candidate.VolumeRatio / 2)
+		} else {
+			percentile := volumeQuality * 100
+			candidate.VolumeRatioPercentile = &percentile
+		}
+		weightedScore += TodayLiveWeightVolume * volumeQuality
+		activeWeight += TodayLiveWeightVolume
+	}
+	if candidate.MainNetInflowPct != nil {
+		flowQuality, crossSectional := distribution.percentile(
+			distribution.mainFlow, *candidate.MainNetInflowPct,
+		)
+		if !crossSectional {
+			flowQuality = clamp01(0.5 + *candidate.MainNetInflowPct/10)
+		} else {
+			percentile := flowQuality * 100
+			candidate.MainFlowPercentile = &percentile
+		}
+		weightedScore += TodayLiveWeightFlow * flowQuality
+		activeWeight += TodayLiveWeightFlow
 	}
 	score := weightedScore / activeWeight
 	if candidate.TouchedLimit {
-		score += 0.08
+		// A stock that has already touched the limit but is not sealed is a
+		// failed-board observation, not a stronger buy confirmation.
+		score = math.Max(0, score-0.20)
 	}
-	return clamp01(score), true
+	return clamp01(score)
 }
 
 type candidateRisk struct {
@@ -930,17 +1027,44 @@ func candidateRiskScore(candidate *TodayCandidate) candidateRisk {
 		score -= 0.25
 		flags = append(flags, "当日跌幅超过2%")
 	}
+	if candidate.ChangePercent != nil && candidate.LimitRatio > 0 &&
+		*candidate.ChangePercent/candidate.LimitRatio >= 0.75 {
+		score -= 0.10
+		flags = append(flags, "涨幅接近涨停")
+	}
+	if candidate.TouchedLimit {
+		score -= 0.20
+		flags = append(flags, "已触板未封")
+	}
+	if candidate.LiveAvailable && candidate.DistanceToLimit != nil &&
+		*candidate.DistanceToLimit <= 1.5 && !candidate.TouchedLimit {
+		score -= 0.10
+		flags = append(flags, "距涨停不足1.5%")
+	}
 	if candidate.TurnoverRate != nil && *candidate.TurnoverRate < 1 {
 		score -= 0.10
 		flags = append(flags, "换手不足1%")
 	}
-	if candidate.TurnoverRate != nil && *candidate.TurnoverRate >= 20 {
+	if candidate.TurnoverPercentile != nil && *candidate.TurnoverPercentile >= 90 {
 		score -= 0.10
-		flags = append(flags, "换手超过20%")
+		flags = append(flags, "换手处于候选池前10%")
 	}
 	if candidate.VolumeRatio != nil && *candidate.VolumeRatio < 0.5 {
 		score -= 0.10
 		flags = append(flags, "量比不足0.5")
+	}
+	if candidate.VolumeRatioPercentile != nil && *candidate.VolumeRatioPercentile >= 90 {
+		score -= 0.10
+		flags = append(flags, "量比处于候选池前10%")
+	}
+	if candidate.MainNetInflowPct != nil && *candidate.MainNetInflowPct < 0 {
+		score -= 0.10
+		flags = append(flags, "主力净流出")
+	}
+	if candidate.MainFlowPercentile != nil && *candidate.MainFlowPercentile <= 10 &&
+		candidate.MainNetInflowPct != nil && *candidate.MainNetInflowPct >= 0 {
+		score -= 0.05
+		flags = append(flags, "资金处于候选池后10%")
 	}
 	if candidate.TurnoverAmount != nil && *candidate.TurnoverAmount < 20_000_000 {
 		score -= 0.10

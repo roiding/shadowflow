@@ -386,7 +386,7 @@ function CandidateTable({
   onOpenStock,
   candidates: candidateInput,
   title = '外溢待选',
-  description = '先按实时多主线与历史特异性选股，再用盘中涨幅、量比、换手、资金与触板确认排序；近期涨停次数本身不加分，不是推荐。',
+  description = '先按实时多主线与历史特异性选股，再用启动承接、剩余空间、换手、量比和资金流排序；已触板未封会扣分，近期涨停次数本身不加分，不是推荐。',
 }: {
   network: LimitUpTodayNetwork
   onOpenStock: (code: string, name: string) => void
@@ -421,16 +421,16 @@ function CandidateTable({
               <th>
                 <span className="linkage-column-label">
                   综合分
-                  <MetricHint label="外溢综合分" formula="100 × (30% 实时 + 40% 主线项 + 20% 历史 + 10% 覆盖) × 风险折价">
-                    有候选行情时，实时确认占 30%、主线项占 40%、历史特异性占 20%、关联覆盖占 10%。主线项在单主线表内使用该主线的贴合分，在跨主线表内使用多主线共振分。实时确认综合涨幅距涨停的进度、换手、量比、主力净占比和是否触板；历史特异性用 φ 相关系数衡量候选是否专门跟随今日核心，已扣除双方各自封板频率并收缩稀疏样本。ST、上市不足60日、低换手、量比不足等风险只做最多 15% 的折价，不作为正分。股票近一年涨停次数本身不直接加分；行情不可用时实时项退出，其余三项重新归一化并明确标记为“仅历史观察”。
+                  <MetricHint label="外溢综合分" formula="100 × (30% 盘中承接 + 40% 主线项 + 20% 历史 + 10% 覆盖) × 风险折价">
+                    有候选行情时，盘中承接占 30%、主线项占 40%、历史特异性占 20%、关联覆盖占 10%。主线项在单主线表内使用该主线的贴合分，在跨主线表内使用多主线共振分。盘中承接衡量启动后的承接质量与剩余空间，不奖励接近涨停，也不把触板当成加分；已触板未封会扣分。换手、量比和主力净占比使用本次候选池内的横截面分位，不直接拿绝对值横比。历史特异性用 φ 相关系数衡量候选是否专门跟随今日核心，已扣除双方各自封板频率并收缩稀疏样本。ST、上市不足60日、低换手、追涨和资金流出等风险只做最多 15% 的折价，不作为正分。股票近一年涨停次数本身不直接加分；行情不可用时实时项退出，其余三项重新归一化并明确标记为“仅历史观察”。
                   </MetricHint>
                 </span>
               </th>
               <th>
                 <span className="linkage-column-label">
                   盘中确认
-                  <MetricHint label="盘中确认" formula="涨幅进度 55% + 换手 20% + 量比 15% + 主力净占比 10%，触板另加 8%">
-                    只对最终候选批量读取东财行情，不扫描全市场，也不写入日终归档。距涨停按前收和板块涨跌幅计算：主板普通与主板 ST 10%、创业板/科创板 20%、北交所 30%。盘中最高价达到按前收四舍五入后的涨停价即标记触板。缺少行情时本列显示“仅历史观察”，不能把历史分当成盘中确认。
+                  <MetricHint label="盘中确认" formula="启动承接 30% + 剩余空间 20% + 换手横截面分位 20% + 量比横截面分位 15% + 资金横截面分位 15%；触板未封扣 20%">
+                    只对最终候选批量读取东财行情，不扫描全市场，也不写入日终归档。启动承接按涨幅相对涨停幅度的早期确认计算，剩余空间按距涨停的绝对空间计算；不再把涨幅进度或触板当成正向加分。换手、量比和主力净占比按本次候选池内的横截面分位计算，避免不同流通盘和不同资金体量的绝对值直接横比；候选不足3只时回退到规则阈值。距涨停按前收和板块涨跌幅计算：主板普通与主板 ST 10%、创业板/科创板 20%、北交所 30%。盘中最高价达到按前收四舍五入后的涨停价即标记触板；已触板但当前未封属于失败板观察，盘中确认扣 20%。缺少行情时本列显示“仅历史观察”，不能把历史分当成盘中确认。
                   </MetricHint>
                 </span>
               </th>
@@ -452,7 +452,14 @@ function CandidateTable({
               </th>
               <th>关联核心 / 覆盖</th>
               <th>历史股性</th>
-              <th>风险</th>
+              <th>
+                <span className="linkage-column-label">
+                  风险扣分
+                  <MetricHint label="风险扣分" formula="0 = 未命中风险规则；越高越需要人工复核">
+                    风险扣分由盘中追涨、已触板未封、距涨停空间不足、主力净流出、资金处于候选池后10%、换手或量比处于候选池前10%、ST、上市不足60日、低流动性等规则累计；它不是买入信号。风险只让综合分最多折价 15%，具体扣分和命中原因逐行展示。
+                  </MetricHint>
+                </span>
+              </th>
               <th>操作</th>
             </tr>
           </thead>
@@ -460,6 +467,7 @@ function CandidateTable({
             {candidates.map((candidate, index) => {
               const riskFlags = candidate.risk_flags ?? []
               const riskDiscount = (1 - (candidate.risk_score ?? 1)) * 15
+              const riskPenalty = candidate.risk_penalty ?? (1 - (candidate.risk_score ?? 1)) * 100
               const mainlineValue = candidate.mainline_score ?? 0
               const matchedMainlines = (candidate.mainline_codes ?? [])
                 .map((code) => mainlineNameByCode.get(code))
@@ -498,6 +506,15 @@ function CandidateTable({
                             ? ` · 成交 ${formatMoney(candidate.turnover_amount)}`
                             : ''}
                         </small>
+                        {(candidate.turnover_percentile !== null && candidate.turnover_percentile !== undefined) ||
+                        (candidate.volume_ratio_percentile !== null && candidate.volume_ratio_percentile !== undefined) ||
+                        (candidate.main_flow_percentile !== null && candidate.main_flow_percentile !== undefined) ? (
+                          <small>
+                            横截面分位 换 {formatNumber(candidate.turnover_percentile, 0)}
+                            {' · '}量 {formatNumber(candidate.volume_ratio_percentile, 0)}
+                            {' · '}资金 {formatNumber(candidate.main_flow_percentile, 0)}
+                          </small>
+                        ) : null}
                         {candidate.main_net_inflow_pct !== null && candidate.main_net_inflow_pct !== undefined ? (
                           <small className={candidate.main_net_inflow_pct > 0 ? 'positive' : candidate.main_net_inflow_pct < 0 ? 'negative' : ''}>
                             主力 {formatPercentPoint(candidate.main_net_inflow_pct)}
@@ -557,12 +574,12 @@ function CandidateTable({
                     <small>最近封板 {candidate.last_seal_date || '--'}</small>
                   </td>
                   <td className="today-core-candidate-risk">
-                    <strong>{formatNumber((candidate.risk_score ?? 1) * 100, 0)}</strong>
-                    <small>{riskDiscount > 0 ? `最多折价 ${formatNumber(riskDiscount, 1)} 分` : '无风险折价'}</small>
+                    <strong>{formatNumber(riskPenalty, 0)}</strong>
+                    <small>{riskDiscount > 0 ? `综合分折价 ${formatNumber(riskDiscount, 1)} 分` : '无风险折价'}</small>
                     <div className="today-core-risk-flags">
                       {riskFlags.length > 0 ? riskFlags.slice(0, 2).map((flag) => (
                         <span key={flag} title={flag}>{flag}</span>
-                      )) : <span className="clear">未见硬风险</span>}
+                      )) : <span className="clear">未见触发项</span>}
                       {riskFlags.length > 2 && <span title={riskFlags.slice(2).join('、')}>+{riskFlags.length - 2}</span>}
                     </div>
                   </td>
@@ -623,7 +640,7 @@ function MainlineCandidateSections({
         network={network}
         onOpenStock={onOpenStock}
         title="统一候选结果"
-        description="所有实时主线的候选先去重，再按实时确认、主线共振、历史特异性和关联覆盖统一排序；每只股票只出现一次。"
+        description="所有实时主线的候选先去重，再按盘中承接、主线共振、历史特异性和关联覆盖统一排序；每只股票只出现一次。"
       />
     </>
   )

@@ -66,6 +66,7 @@ test('today core explains its score and historical relationship metrics', () => 
     '多主线共振',
     '外溢综合分',
     '盘中确认',
+    '风险扣分',
     '历史特异性',
   ]) {
     assert.ok(todayCoreSource.includes(`<MetricHint label="${label}"`), `missing today-core hint for ${label}`)
@@ -74,6 +75,12 @@ test('today core explains its score and historical relationship metrics', () => 
   assert.ok(todayCoreSource.includes('炸板按半个封板损失'))
   assert.ok(todayCoreSource.includes('没有有效历史标签时，使用本地东财概念/行业关系兜底'))
   assert.ok(!todayCoreSource.includes('近期度'))
+  assert.ok(!todayCoreSource.includes('涨幅进度 55%'))
+  assert.ok(!todayCoreSource.includes('触板另加 8%'))
+  assert.ok(todayCoreSource.includes('盘中确认扣 20%'))
+  assert.ok(todayCoreSource.includes('启动承接 30% + 剩余空间 20%'))
+  assert.ok(todayCoreSource.includes('换手横截面分位 20%'))
+  assert.ok(todayCoreSource.includes('横截面分位'))
   assert.ok(todayCoreSource.includes('统一候选结果'))
   assert.ok(todayCoreSource.includes('不再按主线重复列表'))
   assert.ok(!todayCoreSource.includes('多主线备选'))

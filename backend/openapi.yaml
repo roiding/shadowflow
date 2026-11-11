@@ -1101,12 +1101,12 @@ components:
         last_shared_date: { type: string, format: date }
     LimitUpTodayCandidate:
       type: object
-      required: [code, name, market_type, score, mainline_score, mainline_fit, mainline_rank, mainline_codes, cross_mainline_count, live_score, history_score, risk_score, strength, coverage, effective_links, seal_days, touch_days, last_seal_date, last_shared_date, strongest_core_code, strongest_core_name, strongest_overlap_days, strongest_heat, strongest_phi, theme_score, themes, theme_tags, top_links, live_available, limit_ratio, touched_limit, risk_flags]
+      required: [code, name, market_type, score, mainline_score, mainline_fit, mainline_rank, mainline_codes, cross_mainline_count, live_score, history_score, risk_score, risk_penalty, strength, coverage, effective_links, seal_days, touch_days, last_seal_date, last_shared_date, strongest_core_code, strongest_core_name, strongest_overlap_days, strongest_heat, strongest_phi, theme_score, themes, theme_tags, top_links, live_available, limit_ratio, touched_limit, risk_flags]
       properties:
         code: { type: string }
         name: { type: string }
         market_type: { type: string }
-        score: { type: number, description: 0到100的候选分。主线组内使用该组的 mainline_fit；全局候选使用跨主线共振 mainline_score。有实时行情时=100×(30%实时确认+40%主线项+20%历史特异性+10%关联覆盖)，再乘最多15%的风险折价；无实时行情时实时项退出，其余三项重新归一化。 }
+        score: { type: number, description: 0到100的候选分。主线组内使用该组的 mainline_fit；全局候选使用跨主线共振 mainline_score。有实时行情时=100×(30%盘中承接+40%主线项+20%历史特异性+10%关联覆盖)，再乘最多15%的风险折价；无实时行情时实时项退出，其余三项重新归一化。 }
         mainline_score: { type: number, description: 0到1的多主线共振分，公式为 1 - ∏(1 - 单主线贴合)。同时命中多条主线时按独立证据叠加，收益递减，不再使用最强80%+次强20%。 }
         mainline_fit: { type: number, description: 0到1的单主线贴合分：主线权重 × (o+r)/(o+r+2)，其中o为历史出现次数、r为近60日出现次数。主线组内候选按该值计算。 }
         mainline_rank: { type: integer, description: 该候选在当前主线组内的排名；全局候选为0。 }
@@ -1115,9 +1115,10 @@ components:
           description: 该候选命中的全部实时主线代码，按贴合度降序。
           items: { type: string }
         cross_mainline_count: { type: integer, description: 命中的实时主线数量；大于1表示该候选跨主线。 }
-        live_score: { type: number, description: 0到1的盘中确认分，由距涨停进度、换手、量比、主力净占比和是否触板组成；行情不可用时为0。 }
+        live_score: { type: number, description: 0到1的盘中承接确认分：启动承接30%+剩余空间20%+换手横截面分位20%+量比横截面分位15%+主力净占比横截面分位15%，缺少量比或资金时按可用项重新归一化；已触板但当前未封扣20%。不奖励接近涨停，触板不是加分项。行情不可用时为0。 }
         history_score: { type: number, description: 0到1的历史特异性分，来自按候选与今日核心φ相关系数、共现置信度和核心度加权的强度，并在本批候选中归一化；仅题材候选为0。 }
-        risk_score: { type: number, description: 0到1的执行风险分，1表示未命中风险规则；最终只作为最多15%的折价，不直接作为正分。 }
+        risk_score: { type: number, description: 0到1的执行风险安全度，1表示未命中风险规则；最终只作为最多15%的折价，不直接作为正分。 }
+        risk_penalty: { type: number, description: 0到100的风险扣分，等于(1-risk_score)×100；0表示未命中风险规则，越高越需要人工复核。 }
         strength: { type: number, description: 主线关联度：与最强 3 个今日成员的核心度加权 φ 均值，并按共现次数收缩稀疏样本；已扣除候选股自身封板频率。 }
         coverage: { type: number, description: 关联到的今日封板成员数除以今日封板总数。 }
         effective_links: { type: integer }
@@ -1148,13 +1149,16 @@ components:
         volume_ratio: { type: [number, "null"], description: 盘中量比；上游未返回时省略。 }
         main_net_inflow: { type: [number, "null"], description: 主力净流入金额，单位元；负值表示净流出。 }
         main_net_inflow_pct: { type: [number, "null"], description: 主力净占比，单位为百分点，-7.15代表-7.15%。 }
+        turnover_percentile: { type: [number, "null"], description: 本次候选池内换手率的横截面分位，0到100；样本少于3只时不计算。 }
+        volume_ratio_percentile: { type: [number, "null"], description: 本次候选池内量比的横截面分位，0到100；样本少于3只时不计算。 }
+        main_flow_percentile: { type: [number, "null"], description: 本次候选池内主力净占比的横截面分位，0到100；样本少于3只时不计算。 }
         turnover_amount: { type: [number, "null"], description: 盘中成交额，单位元；低于2000万会触发低流动性风险提示。 }
         distance_to_limit: { type: [number, "null"], description: 距涨停空间，单位为百分点；创业板/科创板按20%、主板普通与主板ST按10%。 }
         limit_ratio: { type: number, description: 该股票适用的涨停幅度，单位为百分点：主板普通与主板ST 10、创业板/科创板20、北交所30。 }
         touched_limit: { type: boolean, description: 盘中最高价是否触及按前收计算的涨停价。 }
         risk_flags:
           type: array
-          description: 盘中行情缺失、ST、上市不足60日、低换手、量比不足等风险提示；存在提示不代表自动排除。
+          description: 盘中行情缺失、追涨、已触板未封、距涨停空间不足、主力净流出、资金处于候选池后10%、换手或量比处于候选池前10%、ST、上市不足60日、低流动性等风险提示；存在提示不代表自动排除。
           items: { type: string }
     BoardQuoteMeta:
       type: object
