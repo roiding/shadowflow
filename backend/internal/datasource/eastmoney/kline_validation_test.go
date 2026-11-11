@@ -163,3 +163,32 @@ func TestHistoricalKlineRebuildsZeroAuctionFirstBarFromOneMinute(t *testing.T) {
 		t.Fatalf("first bar amplitude was not recomputed: %v", first.Amplitude)
 	}
 }
+
+func TestZeroAuctionFirstBarAcceptsOneLotVolumeDrift(t *testing.T) {
+	loc := time.FixedZone("Asia/Shanghai", 8*3600)
+	date := "2026-11-10"
+	oneMinuteRows := []string{
+		"2026-11-10 09:31,48.22,48.98,49.09,47.99,135,659974.00,2.31,2.83,1.35,0.02",
+		"2026-11-10 09:32,48.97,48.92,49.25,48.90,354,1737464.00,0.71,-0.12,-0.06,0.04",
+		"2026-11-10 09:33,49.19,49.02,49.32,48.94,147,725250.00,0.78,0.20,0.10,0.02",
+		"2026-11-10 09:34,49.02,49.07,49.07,49.00,56,276350.00,0.14,0.10,0.05,0.01",
+		"2026-11-10 09:35,49.14,48.81,49.14,48.80,40,194313.00,0.69,-0.53,-0.26,0.00",
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"rc": 0, "data": map[string]any{"klines": oneMinuteRows}})
+	}))
+	defer server.Close()
+	stock := graymarket.RankRecord{Code: "688768", Market: 1, OpenPrice: 48.22, HighPrice: 51.00, LowPrice: 47.99, ClosePrice: 50.59, PreviousClose: 47.63, SnapshotAt: time.Date(2026, 11, 10, 15, 0, 0, 0, loc)}
+	bar := graymarket.StockKlinePoint{
+		SnapshotAt: time.Date(2026, 11, 10, 9, 35, 0, 0, loc),
+		OpenPrice:  47.63, HighPrice: 49.32, LowPrice: 47.63, ClosePrice: 48.81,
+		Volume: 733, Turnover: 3593351,
+	}
+	client := NewClient("unused", server.Client(), 100).WithStockKlineBaseURL(server.URL)
+	if err := client.correctZeroAuctionFirstBar(context.Background(), date, stock, &bar); err != nil {
+		t.Fatalf("one-lot volume drift rejected: %v", err)
+	}
+	if !samePrice(bar.OpenPrice, 48.22) || !samePrice(bar.LowPrice, 47.99) || bar.Volume != 732 {
+		t.Fatalf("first bar was not rebuilt despite one-lot drift: %+v", bar)
+	}
+}

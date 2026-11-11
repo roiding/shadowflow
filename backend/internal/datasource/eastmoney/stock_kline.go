@@ -425,7 +425,14 @@ func (c *Client) correctZeroAuctionFirstBar(ctx context.Context, tradeDate strin
 	if !samePrice(highPrice, bar.HighPrice) || !samePrice(closePrice, bar.ClosePrice) {
 		return fmt.Errorf("one-minute OHLC does not match the five-minute bar")
 	}
-	if volume != bar.Volume {
+	// The five-minute bucket can include one extra auction print that the
+	// one-minute series does not, so allow a one-lot drift while still
+	// rejecting a materially different volume.
+	volumeDrift := volume - bar.Volume
+	if volumeDrift < 0 {
+		volumeDrift = -volumeDrift
+	}
+	if volumeDrift > 1 {
 		return fmt.Errorf("one-minute volume %d does not match five-minute volume %d", volume, bar.Volume)
 	}
 	bar.OpenPrice, bar.HighPrice, bar.LowPrice, bar.ClosePrice = openPrice, highPrice, lowPrice, closePrice
