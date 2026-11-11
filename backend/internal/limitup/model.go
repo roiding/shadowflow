@@ -316,6 +316,7 @@ type ThemeCluster struct {
 	Name        string  `json:"name"`
 	MemberCount int     `json:"member_count"`
 	Weight      float64 `json:"weight"`
+	Recency     float64 `json:"recency"`
 }
 
 // ThemeCooccurrence is one stock-theme-day row joined to another stock that
@@ -370,6 +371,10 @@ type TodayCandidate struct {
 	Name                 string          `json:"name"`
 	MarketType           string          `json:"market_type"`
 	Score                float64         `json:"score"`
+	MainlineScore        float64         `json:"mainline_score"`
+	LiveScore            float64         `json:"live_score"`
+	HistoryScore         float64         `json:"history_score"`
+	RiskScore            float64         `json:"risk_score"`
 	Strength             float64         `json:"strength"`
 	Coverage             float64         `json:"coverage"`
 	EffectiveLinks       int             `json:"effective_links"`
@@ -386,6 +391,19 @@ type TodayCandidate struct {
 	Themes               []ThemeRef      `json:"themes"`
 	ThemeTags            []ThemeTag      `json:"theme_tags"`
 	TopLinks             []CandidateLink `json:"top_links"`
+	LiveAvailable        bool            `json:"live_available"`
+	ChangePercent        *float64        `json:"change_percent,omitempty"`
+	TurnoverRate         *float64        `json:"turnover_rate,omitempty"`
+	VolumeRatio          *float64        `json:"volume_ratio,omitempty"`
+	MainNetInflow        *float64        `json:"main_net_inflow,omitempty"`
+	MainNetInflowPct     *float64        `json:"main_net_inflow_pct,omitempty"`
+	TurnoverAmount       *float64        `json:"turnover_amount,omitempty"`
+	DistanceToLimit      *float64        `json:"distance_to_limit,omitempty"`
+	LimitRatio           float64         `json:"limit_ratio"`
+	TouchedLimit         bool            `json:"touched_limit"`
+	RiskFlags            []string        `json:"risk_flags"`
+	quoteFetchedAt       time.Time
+	listingDate          string
 }
 
 type TodayNetwork struct {
@@ -406,4 +424,30 @@ type TodayNetwork struct {
 	CandidateLimit   int              `json:"candidate_limit"`
 	MainlineThemes   []MainlineTheme  `json:"mainline_themes"`
 	ThemeMainline    []ThemeCluster   `json:"theme_mainline"`
+	LiveCandidate    bool             `json:"live_candidate"`
+	LiveUnavailable  bool             `json:"live_unavailable"`
+}
+
+// LiveQuote is the read-only quote projection used to confirm an intraday
+// spillover candidate. It deliberately excludes the upstream payload and
+// archive fields that are not needed for today's monitoring view.
+type LiveQuote struct {
+	Code          string    `json:"code"`
+	Available     bool      `json:"available"`
+	LatestPrice   float64   `json:"latest_price"`
+	PreviousClose float64   `json:"previous_close"`
+	HighPrice     float64   `json:"high_price"`
+	ChangePct     float64   `json:"change_pct"`
+	TurnoverRate  float64   `json:"turnover_rate"`
+	VolumeRatio   *float64  `json:"volume_ratio,omitempty"`
+	MainNetInflow *float64  `json:"main_net_inflow,omitempty"`
+	MainFlowPct   *float64  `json:"main_net_inflow_pct,omitempty"`
+	ListingDate   string    `json:"listing_date,omitempty"`
+	Turnover      int64     `json:"turnover"`
+	QuoteTime     string    `json:"quote_time"`
+	FetchedAt     time.Time `json:"fetched_at"`
+}
+
+type LiveQuoteReader interface {
+	ReadLiveQuotes(context.Context, []string) (map[string]LiveQuote, error)
 }

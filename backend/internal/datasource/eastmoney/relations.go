@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -137,7 +138,7 @@ func (c *Client) FetchStockQuotes(ctx context.Context, relations []graymarket.St
 		params := url.Values{
 			"fltt":   {"2"},
 			"invt":   {"2"},
-			"fields": {"f2,f3,f4,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f124"},
+			"fields": {"f2,f3,f4,f5,f6,f7,f8,f10,f12,f13,f14,f15,f16,f17,f18,f26,f62,f124,f184"},
 			"secids": {strings.Join(secids, ",")},
 		}
 		_, rows, err := c.fetchQuotePage(ctx, "/api/qt/ulist.np/get", params)
@@ -151,24 +152,33 @@ func (c *Client) FetchStockQuotes(ctx context.Context, relations []graymarket.St
 				continue
 			}
 			latestPrice, available := optionalFloat(row, "f2")
+			volumeRatio, volumeRatioAvailable := optionalNumber(row, "f10")
+			mainNetInflow, mainNetInflowAvailable := optionalNumber(row, "f62")
+			mainNetInflowPct, mainNetInflowPctAvailable := optionalNumber(row, "f184")
 			quotes[fmt.Sprintf("%d.%s", intValue(row, "f13"), code)] = graymarket.StockQuote{
-				StockCode:     code,
-				StockMarket:   intValue(row, "f13"),
-				StockName:     optionalString(row, "f14"),
-				LatestPrice:   latestPrice,
-				OpenPrice:     floatValue(row, "f17"),
-				HighPrice:     floatValue(row, "f15"),
-				LowPrice:      floatValue(row, "f16"),
-				PreviousClose: floatValue(row, "f18"),
-				ChangePct:     floatValue(row, "f3") / 100,
-				ChangeValue:   floatValue(row, "f4"),
-				Volume:        intValue(row, "f5"),
-				Turnover:      intValue(row, "f6"),
-				TurnoverRate:  floatValue(row, "f8") / 100,
-				Amplitude:     floatValue(row, "f7") / 100,
-				QuoteTime:     formatQuoteUpdateTime(optionalString(row, "f124")),
-				FetchedAt:     fetchedAt,
-				Available:     available,
+				StockCode:            code,
+				StockMarket:          intValue(row, "f13"),
+				StockName:            optionalString(row, "f14"),
+				LatestPrice:          latestPrice,
+				OpenPrice:            floatValue(row, "f17"),
+				HighPrice:            floatValue(row, "f15"),
+				LowPrice:             floatValue(row, "f16"),
+				PreviousClose:        floatValue(row, "f18"),
+				ChangePct:            floatValue(row, "f3") / 100,
+				ChangeValue:          floatValue(row, "f4"),
+				Volume:               intValue(row, "f5"),
+				Turnover:             intValue(row, "f6"),
+				TurnoverRate:         floatValue(row, "f8") / 100,
+				VolumeRatio:          volumeRatio,
+				VolumeRatioAvailable: volumeRatioAvailable,
+				MainNetInflow:        mainNetInflow,
+				MainNetInflowPct:     mainNetInflowPct,
+				FundFlowAvailable:    mainNetInflowAvailable && mainNetInflowPctAvailable,
+				ListingDate:          optionalString(row, "f26"),
+				Amplitude:            floatValue(row, "f7") / 100,
+				QuoteTime:            formatQuoteUpdateTime(optionalString(row, "f124")),
+				FetchedAt:            fetchedAt,
+				Available:            available,
 			}
 		}
 	}
@@ -197,6 +207,22 @@ func optionalFloat(row map[string]json.RawMessage, key string) (float64, bool) {
 	}
 	value, err := strconv.ParseFloat(text, 64)
 	if err != nil || value <= 0 {
+		return 0, false
+	}
+	return value, true
+}
+
+func optionalNumber(row map[string]json.RawMessage, key string) (float64, bool) {
+	raw, exists := row[key]
+	if !exists || bytes.Equal(raw, []byte("null")) {
+		return 0, false
+	}
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err != nil {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(number.String(), 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0, false
 	}
 	return value, true

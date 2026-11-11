@@ -134,6 +134,16 @@ func (source staticIntradaySource) FetchSealedToday(context.Context, string) (li
 	return source.snapshot, source.err
 }
 
+type recordingLimitUpQuoteSource struct {
+	codes  []string
+	quotes map[string]limitup.LiveQuote
+}
+
+func (source *recordingLimitUpQuoteSource) ReadLiveQuotes(_ context.Context, codes []string) (map[string]limitup.LiveQuote, error) {
+	source.codes = append([]string(nil), codes...)
+	return source.quotes, nil
+}
+
 func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 	server, store := testServer(testingT, "")
 	defer store.Close()
@@ -204,8 +214,16 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 		testingT.Fatal(err)
 	}
 	snapshotAt := time.Date(2026, 11, 9, 10, 42, 0, 0, limitup.Shanghai())
+	quoteSource := &recordingLimitUpQuoteSource{quotes: map[string]limitup.LiveQuote{
+		"000003": {
+			Code: "000003", Available: true, PreviousClose: 10, LatestPrice: 10.6, HighPrice: 10.7,
+			ChangePct: 0.06, TurnoverRate: 0.032, VolumeRatio: floatTestPointer(1.4),
+			QuoteTime: "10:42:00", FetchedAt: snapshotAt,
+		},
+	}}
 	server, err := New(store, server.calendar, server.logger, Options{
-		ScanRatePerMinute: 10000,
+		ScanRatePerMinute:  10000,
+		LimitUpQuoteSource: quoteSource,
 		LimitUpIntradaySource: staticIntradaySource{snapshot: limitup.IntradaySnapshot{
 			TradeDate: "2026-11-09", Source: limitup.SourceTHS, Scope: limitup.ScopeDefault, FetchedAt: snapshotAt,
 			TradeStatus: "open", TradeStatusName: "交易中", SealedCount: 3,
@@ -249,8 +267,12 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 		testingT.Fatalf("unexpected today's core ranking: %+v", result.Data.Cores)
 	}
 	if len(result.Data.Candidates) != 1 || result.Data.Candidates[0].Code != "000003" ||
-		result.Data.Candidates[0].EffectiveLinks != 2 {
+		result.Data.Candidates[0].EffectiveLinks != 2 || !result.Data.Candidates[0].LiveAvailable ||
+		result.Data.Candidates[0].LimitRatio != 10 || !result.Data.LiveCandidate || result.Data.LiveUnavailable {
 		testingT.Fatalf("unexpected non-sealed candidates: %+v", result.Data.Candidates)
+	}
+	if len(quoteSource.codes) != 1 || quoteSource.codes[0] != "000003" {
+		testingT.Fatalf("live quotes must be requested for the final candidate only: %+v", quoteSource.codes)
 	}
 	if len(result.Data.ThemeMainline) != 1 || result.Data.ThemeMainline[0].Code != "885517" ||
 		result.Data.ThemeMainline[0].MemberCount != 2 {
@@ -261,6 +283,10 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 			testingT.Fatalf("THS theme tags were not wired into today members: %+v", member)
 		}
 	}
+}
+
+func floatTestPointer(value float64) *float64 {
+	return &value
 }
 
 func TestLimitUpTodayNetworkRequiresIntradaySource(testingT *testing.T) {

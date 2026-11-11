@@ -26,10 +26,10 @@ func ParseRankType(value string) (RankType, error) {
 type SnapshotKind string
 
 const (
-	SnapshotMinuteWork SnapshotKind = "minute_work"
-	SnapshotResearch5m SnapshotKind = "research_5m"
-	SnapshotDailyClose SnapshotKind = "daily_close"
-	SnapshotStockKline SnapshotKind = "stock_kline_5m"
+	SnapshotMinuteWork    SnapshotKind = "minute_work"
+	SnapshotResearch5m    SnapshotKind = "research_5m"
+	SnapshotDailyClose    SnapshotKind = "daily_close"
+	SnapshotStockKline    SnapshotKind = "stock_kline_5m"
 	SnapshotLimitUpEvents SnapshotKind = "limit_up_events"
 )
 
@@ -168,7 +168,7 @@ const (
 	// per-day daily-bar cross-check (upstream BSE series disagree with their
 	// own daily bar on auction and after-hours prints).
 	KlineSourceFiveMinuteBackfill = "stock_kline_5m_backfill"
-	KlineSourceUnknown    = "unknown"
+	KlineSourceUnknown            = "unknown"
 )
 
 // StockResearchPoint joins one revised five-minute money point with the
@@ -227,23 +227,30 @@ type StockBoardRelationChange struct {
 // StockQuote is an upstream market quote used both for live constituent context
 // and to enrich the stock daily-close snapshot with end-of-day market fields.
 type StockQuote struct {
-	StockCode     string    `json:"stock_code"`
-	StockMarket   int64     `json:"stock_market"`
-	StockName     string    `json:"stock_name"`
-	LatestPrice   float64   `json:"latest_price"`
-	OpenPrice     float64   `json:"open_price"`
-	HighPrice     float64   `json:"high_price"`
-	LowPrice      float64   `json:"low_price"`
-	PreviousClose float64   `json:"previous_close"`
-	ChangePct     float64   `json:"change_pct"`
-	ChangeValue   float64   `json:"change_value"`
-	Volume        int64     `json:"volume"`
-	Turnover      int64     `json:"turnover"`
-	TurnoverRate  float64   `json:"turnover_rate"`
-	Amplitude     float64   `json:"amplitude"`
-	QuoteTime     string    `json:"quote_time"`
-	FetchedAt     time.Time `json:"fetched_at"`
-	Available     bool      `json:"available"`
+	StockCode     string  `json:"stock_code"`
+	StockMarket   int64   `json:"stock_market"`
+	StockName     string  `json:"stock_name"`
+	LatestPrice   float64 `json:"latest_price"`
+	OpenPrice     float64 `json:"open_price"`
+	HighPrice     float64 `json:"high_price"`
+	LowPrice      float64 `json:"low_price"`
+	PreviousClose float64 `json:"previous_close"`
+	ChangePct     float64 `json:"change_pct"`
+	ChangeValue   float64 `json:"change_value"`
+	Volume        int64   `json:"volume"`
+	Turnover      int64   `json:"turnover"`
+	TurnoverRate  float64 `json:"turnover_rate"`
+	VolumeRatio   float64 `json:"volume_ratio"`
+	// VolumeRatioAvailable distinguishes a missing field from a genuine zero.
+	VolumeRatioAvailable bool      `json:"volume_ratio_available"`
+	MainNetInflow        float64   `json:"main_net_inflow"`
+	MainNetInflowPct     float64   `json:"main_net_inflow_pct"`
+	FundFlowAvailable    bool      `json:"fund_flow_available"`
+	ListingDate          string    `json:"listing_date,omitempty"`
+	Amplitude            float64   `json:"amplitude"`
+	QuoteTime            string    `json:"quote_time"`
+	FetchedAt            time.Time `json:"fetched_at"`
+	Available            bool      `json:"available"`
 }
 
 // BoardQuote is the end-of-day quote returned by Eastmoney's board list

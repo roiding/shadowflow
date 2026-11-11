@@ -1118,7 +1118,7 @@ export interface paths {
         };
         /**
          * 今日封板股票的联动核心
-         * @description 实时读取当前仍封住涨停的股票，在这些成员之间建立历史收盘封板共现子图，并把与今日成员历史高频共现、但今日未封板的股票列为外溢待选。历史严格截止到今日之前最近一个完整归档日，今日快照不写入历史，也不参与历史分母。结果依赖点击时的盘中快照，开板会使成员变化；共现为描述统计，不代表因果、带动或未来收益。
+         * @description 实时读取当前仍封住涨停的股票，在这些成员之间建立历史收盘封板共现子图，先把与今日成员历史高频共现、或命中今日Top20历史题材主线的未封板股票列为候选，再只为最终候选批量读取盘中行情。历史严格截止到今日之前最近一个完整归档日，今日快照与候选行情不写入历史，也不参与历史分母。结果依赖点击时的盘中快照，开板会使成员变化；共现为描述统计，不代表因果、带动或未来收益。
          */
         get: {
             parameters: {
@@ -1155,6 +1155,13 @@ export interface paths {
                                 history_excludes_today: true;
                                 /** Format: date-time */
                                 snapshot_fetched_at: string;
+                                /** @description 是否已把盘中行情应用到候选列表。 */
+                                live_candidates: boolean;
+                                /**
+                                 * @description 候选行情读取状态。
+                                 * @enum {string}
+                                 */
+                                live_quote_status: "disabled" | "empty" | "unavailable" | "partial" | "ready";
                             };
                         };
                     };
@@ -1544,8 +1551,12 @@ export interface components {
             candidate_limit: number;
             /** @description 兼容字段，当前为空；今日主线改用 theme_mainline。 */
             mainline_themes: components["schemas"]["LimitUpMainlineTheme"][];
-            /** @description 由同花顺 Top20 历史累计标签计算出的今日题材主线；至少 2 只今日封板成员共享同一标签，按成员核心度和标签 IDF 加权。未分类/其他/无明确原因的题材桶不参与。 */
+            /** @description 由同花顺 Top20 历史累计标签计算出的今日题材主线；至少 2 只今日封板成员共享同一标签，按成员核心度、标签 IDF 和标签近期度加权。不解析今日实时 reason，未分类/其他/无明确原因的题材桶不参与。 */
             theme_mainline: components["schemas"]["LimitUpThemeCluster"][];
+            /** @description 本次候选列表是否取得并应用了盘中行情。false时列表仅为历史观察。 */
+            live_candidate: boolean;
+            /** @description 已尝试读取候选行情，但至少一只候选或整批行情不可用。 */
+            live_unavailable: boolean;
         };
         LimitUpThemeTag: {
             code: string;
@@ -1574,6 +1585,8 @@ export interface components {
             member_count: number;
             /** @description 按核心度和 IDF 归一化后的主线权重。 */
             weight: number;
+            /** @description 0到1的标签近期度；由该标签在历史Top20中的最近出现日期计算，仅在主线内部降低陈旧标签权重。 */
+            recency: number;
         };
         LimitUpThemeLink: {
             code: string;
@@ -1631,8 +1644,16 @@ export interface components {
             code: string;
             name: string;
             market_type: string;
-            /** @description 基础分按 100 × (60% 主线关联度 + 15% 覆盖度 + 25% 最近度) 计算后保留 70%，再加 30% 同花顺题材聚类贴合度。 */
+            /** @description 0到100的候选分。有实时行情时=100×(30%实时确认+40%今日主线+20%历史特异性+10%关联覆盖)，再乘最多15%的风险折价；无实时行情时实时项退出，其余三项重新归一化。股票自身近一年涨停次数不直接加分。 */
             score: number;
+            /** @description 0到1的今日同花顺Top20历史题材主线匹配分。最强主线权重占80%，次强占20%；只匹配一个题材时按该权重的80%计。 */
+            mainline_score: number;
+            /** @description 0到1的盘中确认分，由距涨停进度、换手、量比、主力净占比和是否触板组成；行情不可用时为0。 */
+            live_score: number;
+            /** @description 0到1的历史特异性分，来自按候选与今日核心φ相关系数、共现置信度和核心度加权的强度，并在本批候选中归一化；仅题材候选为0。 */
+            history_score: number;
+            /** @description 0到1的执行风险分，1表示未命中风险规则；最终只作为最多15%的折价，不直接作为正分。 */
+            risk_score: number;
             /** @description 主线关联度：与最强 3 个今日成员的核心度加权 φ 均值，并按共现次数收缩稀疏样本；已扣除候选股自身封板频率。 */
             strength: number;
             /** @description 关联到的今日封板成员数除以今日封板总数。 */
@@ -1652,13 +1673,35 @@ export interface components {
             strongest_overlap_days: number;
             strongest_heat: number;
             strongest_phi: number;
-            /** @description 题材聚类贴合度：匹配到的今日同花顺题材主线权重之和，上限 1；未匹配为 0。 */
+            /** @description 今日主线贴合度兼容字段，与mainline_score相同。 */
             theme_score: number;
             /** @description 兼容字段；当前为空，题材标签见 theme_tags。 */
             themes: components["schemas"]["LimitUpThemeRef"][];
             /** @description 命中的同花顺历史题材主线标签，按共现次数/最近日期排序，最多 5 个。 */
             theme_tags: components["schemas"]["LimitUpThemeTag"][];
             top_links: components["schemas"]["LimitUpCandidateLink"][];
+            /** @description 是否取得该候选的盘中行情。false时不能把历史分当作盘中确认。 */
+            live_available: boolean;
+            /** @description 盘中涨跌幅，单位为百分点，7.5代表7.5%。 */
+            change_percent?: number | null;
+            /** @description 盘中换手率，单位为百分点，3.2代表3.2%。 */
+            turnover_rate?: number | null;
+            /** @description 盘中量比；上游未返回时省略。 */
+            volume_ratio?: number | null;
+            /** @description 主力净流入金额，单位元；负值表示净流出。 */
+            main_net_inflow?: number | null;
+            /** @description 主力净占比，单位为百分点，-7.15代表-7.15%。 */
+            main_net_inflow_pct?: number | null;
+            /** @description 盘中成交额，单位元；低于2000万会触发低流动性风险提示。 */
+            turnover_amount?: number | null;
+            /** @description 距涨停空间，单位为百分点；创业板/科创板按20%、主板普通与主板ST按10%。 */
+            distance_to_limit?: number | null;
+            /** @description 该股票适用的涨停幅度，单位为百分点：主板普通与主板ST 10、创业板/科创板20、北交所30。 */
+            limit_ratio: number;
+            /** @description 盘中最高价是否触及按前收计算的涨停价。 */
+            touched_limit: boolean;
+            /** @description 盘中行情缺失、ST、上市不足60日、低换手、量比不足等风险提示；存在提示不代表自动排除。 */
+            risk_flags: string[];
         };
         BoardQuoteMeta: {
             /** Format: date */

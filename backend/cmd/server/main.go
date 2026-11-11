@@ -141,7 +141,7 @@ func main() {
 	_, eventDisabled := disabledKinds["end-of-day-events"]
 	_, postCloseDisabled := disabledKinds["end-of-day"]
 	eventsScheduled := cfg.SchedulerEnabled && cfg.LimitUpArchiveEnabled && !eventDisabled && !postCloseDisabled
-	apiServer, err := api.New(store, calendar, logger, api.Options{StaticDir: cfg.StaticDir, QuoteSource: quote.NewCache(client, logger), APIToken: cfg.APIToken, NormalRatePerMinute: cfg.NormalRatePerMinute, ExportRatePerMinute: cfg.ExportRatePerMinute, ScanRatePerMinute: cfg.ScanRatePerMinute, TrustedProxyCIDR: cfg.TrustedProxyCIDR, ProxyPool: proxyPool, LimitUpArchiveScheduled: eventsScheduled, LimitUpScope: cfg.LimitUpScope, LimitUpIntradaySource: thsClient})
+	apiServer, err := api.New(store, calendar, logger, api.Options{StaticDir: cfg.StaticDir, QuoteSource: quote.NewCache(client, logger), APIToken: cfg.APIToken, NormalRatePerMinute: cfg.NormalRatePerMinute, ExportRatePerMinute: cfg.ExportRatePerMinute, ScanRatePerMinute: cfg.ScanRatePerMinute, TrustedProxyCIDR: cfg.TrustedProxyCIDR, ProxyPool: proxyPool, LimitUpArchiveScheduled: eventsScheduled, LimitUpScope: cfg.LimitUpScope, LimitUpIntradaySource: thsClient, LimitUpQuoteSource: quote.NewLimitUpLiveQuoteSource(client)})
 	if err != nil {
 		logger.Error("create API", "error", err)
 		os.Exit(1)

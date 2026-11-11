@@ -54,6 +54,19 @@ function formatSnapshotTime(value: string | undefined): string {
   })
 }
 
+function formatSignedPercentPoint(value: number | null | undefined, fractionDigits = 2): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '--'
+  return `${value > 0 ? '+' : ''}${value.toFixed(fractionDigits)}%`
+}
+
+function formatMoney(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '--'
+  const absolute = Math.abs(value)
+  if (absolute >= 100_000_000) return `${(value / 100_000_000).toFixed(2)}亿`
+  if (absolute >= 10_000) return `${(value / 10_000).toFixed(0)}万`
+  return value.toFixed(0)
+}
+
 function coreRankClass(rank: number): string {
   return rank <= 3 ? ` top-${rank}` : ''
 }
@@ -378,7 +391,7 @@ function CandidateTable({
       <div className="today-core-candidates-head">
         <div>
           <h3 id="today-core-candidates-title"><Network size={15} />外溢待选</h3>
-          <p>按历史同题材聚类、同日封板关系和核心度加权排序；包括只通过 Top20 标签关联、没有直接共封记录的待选股，不是推荐。</p>
+          <p>先按今日 Top20 题材主线和历史特异性选股，再用盘中涨幅、量比、换手、资金与触板确认排序；近期涨停次数本身不加分，不是推荐。</p>
         </div>
         <span>{candidates.length} 只</span>
       </div>
@@ -391,76 +404,163 @@ function CandidateTable({
               <th>
                 <span className="linkage-column-label">
                   综合分
-                  <MetricHint label="外溢综合分" formula="70% × 基础分 + 30% 同花顺题材聚类">
-                    基础分按 60% 主线关联度、15% 覆盖度、25% 最近度计算，再保留 70%；主线关联度用 φ 相关系数衡量候选股是否专门跟随今日核心，已扣除候选股与今日成员各自的封板频率，并按共现次数收缩稀疏样本，取最强 3 条关系的均值。同花顺题材聚类是候选股命中的今日 Top20 历史累计题材主线权重之和，上限 1；没有直接共封记录的题材候选只拿这 30% 的题材分，因此会明确排在关系更强的股票后面。
+                  <MetricHint label="外溢综合分" formula="100 × (30% 实时 + 40% 主线 + 20% 历史 + 10% 覆盖) × 风险折价">
+                    有候选行情时，实时确认占 30%、今日 Top20 历史题材主线占 40%、历史特异性占 20%、关联覆盖占 10%。实时确认综合涨幅距涨停的进度、换手、量比、主力净占比和是否触板；历史特异性用 φ 相关系数衡量候选是否专门跟随今日核心，已扣除双方各自封板频率并收缩稀疏样本。ST、上市不足60日、低换手、量比不足等风险只做最多 15% 的折价，不作为正分。股票近一年涨停次数本身不直接加分；行情不可用时实时项退出，其余三项重新归一化并明确标记为“仅历史观察”。
                   </MetricHint>
                 </span>
               </th>
               <th>
                 <span className="linkage-column-label">
-                  同花顺题材
-                  <MetricHint label="同花顺题材聚类" formula="Σ 命中 Top20 历史主线权重，上限 1">
+                  盘中确认
+                  <MetricHint label="盘中确认" formula="涨幅进度 55% + 换手 20% + 量比 15% + 主力净占比 10%，触板另加 8%">
+                    只对最终候选批量读取东财行情，不扫描全市场，也不写入日终归档。距涨停按前收和板块涨跌幅计算：主板普通与主板 ST 10%、创业板/科创板 20%、北交所 30%。盘中最高价达到按前收四舍五入后的涨停价即标记触板。缺少行情时本列显示“仅历史观察”，不能把历史分当成盘中确认。
+                  </MetricHint>
+                </span>
+              </th>
+              <th>
+                <span className="linkage-column-label">
+                  今日主线
+                  <MetricHint label="同花顺题材聚类" formula="80% × 最强命中主线权重 + 20% × 次强命中主线权重">
                     今日主线取今日封板成员共享的同花顺 Top20 历史累计题材标签，至少 2 只成员共享才计入；按成员核心度和标签 IDF 加权。未分类、其他、原因不明或全组都没有明确原因标签的题材桶不参与，也不会用东财行业/概念替代。候选命中主线的归一化权重之和即题材聚类分，未命中为 0。
                   </MetricHint>
                 </span>
               </th>
-              <th>最强关联核心</th>
-              <th>关联覆盖</th>
+              <th>
+                <span className="linkage-column-label">
+                  历史特异性
+                  <MetricHint label="历史特异性" formula="top3 φ × 核心度 × o/(o+2) 的均值">
+                    φ 衡量候选与今日封板核心的同日封板关联是否高于双方各自封板频率带来的偶然共现。负值截零，单次共现按 o/(o+2) 收缩；只保留最强 3 条关系取均值，并在本批候选中归一化。该项只看历史关系，不等于今日实时强度。
+                  </MetricHint>
+                </span>
+              </th>
+              <th>关联核心 / 覆盖</th>
               <th>历史股性</th>
-              <th>最近共现</th>
+              <th>风险</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
-            {candidates.map((candidate, index) => (
-              <tr key={candidate.code}>
-                <td>{index + 1}</td>
-                <td>
-                  <strong>{candidate.name}</strong>
-                  <small>{candidate.code}</small>
-                </td>
-                <td><strong>{formatNumber(candidate.score, 1)}</strong></td>
-                <td>
-                  <strong>{formatNumber((candidate.theme_score ?? 0) * 100, 0)}</strong>
-                  <small>
-                    {(candidate.theme_score ?? 0) > 0 && (candidate.theme_tags ?? []).length > 0
-                      ? (candidate.theme_tags ?? []).slice(0, 3).map((theme) => theme.name).join('、')
-                      : '未匹配题材'}
-                  </small>
-                </td>
-                <td>
-                  <strong>{candidate.strongest_core_name || '--'}</strong>
-                  <small>
-                    共同 {candidate.strongest_overlap_days} 次
-                    {candidate.strongest_phi > 0 ? ` · 贴合 ${formatNumber(candidate.strongest_phi * 100, 0)}` : ''}
-                  </small>
-                </td>
-                <td>
-                  <strong>{candidate.effective_links} 只</strong>
-                  <small>{formatPercent(candidate.coverage, 0)}</small>
-                </td>
-                <td>
-                  <strong>封 {candidate.seal_days} · 触 {candidate.touch_days}</strong>
-                  <small>{candidate.last_seal_date || '--'}</small>
-                </td>
-                <td>{candidate.last_shared_date || '--'}</td>
-                <td>
-                  <button
-                    type="button"
-                    className="today-core-candidate-open"
-                    onClick={() => onOpenStock(candidate.code, candidate.name)}
-                  >
-                    联动
-                    <ArrowUpRight size={12} />
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {candidates.map((candidate, index) => {
+              const riskFlags = candidate.risk_flags ?? []
+              const riskDiscount = (1 - (candidate.risk_score ?? 1)) * 15
+              return (
+                <tr key={candidate.code}>
+                  <td>{index + 1}</td>
+                  <td>
+                    <strong>{candidate.name}</strong>
+                    <small>{candidate.code}</small>
+                  </td>
+                  <td>
+                    <strong>{formatNumber(candidate.score, 1)}</strong>
+                    <small className="today-core-subscore">
+                      主 {formatNumber((candidate.mainline_score ?? 0) * 100, 0)}
+                      {' · '}实 {formatNumber((candidate.live_score ?? 0) * 100, 0)}
+                      {' · '}史 {formatNumber((candidate.history_score ?? 0) * 100, 0)}
+                    </small>
+                  </td>
+                  <td className="today-core-candidate-live">
+                    {candidate.live_available ? (
+                      <>
+                        <strong className={(candidate.change_percent ?? 0) > 0 ? 'positive' : (candidate.change_percent ?? 0) < 0 ? 'negative' : ''}>
+                          {formatSignedPercentPoint(candidate.change_percent)}
+                        </strong>
+                        <small>
+                          距涨停 {formatPercentPoint(candidate.distance_to_limit)}
+                          {candidate.touched_limit ? ' · 已触板' : ' · 未触板'}
+                        </small>
+                        <small>
+                          换手 {formatPercentPoint(candidate.turnover_rate)}
+                          {candidate.volume_ratio !== null && candidate.volume_ratio !== undefined
+                            ? ` · 量比 ${formatNumber(candidate.volume_ratio, 2)}`
+                            : ' · 量比 --'}
+                          {candidate.turnover_amount !== null && candidate.turnover_amount !== undefined
+                            ? ` · 成交 ${formatMoney(candidate.turnover_amount)}`
+                            : ''}
+                        </small>
+                        {candidate.main_net_inflow_pct !== null && candidate.main_net_inflow_pct !== undefined ? (
+                          <small className={candidate.main_net_inflow_pct > 0 ? 'positive' : candidate.main_net_inflow_pct < 0 ? 'negative' : ''}>
+                            主力 {formatPercentPoint(candidate.main_net_inflow_pct)}
+                            {candidate.main_net_inflow !== null && candidate.main_net_inflow !== undefined
+                              ? ` · ${formatMoney(candidate.main_net_inflow)}`
+                              : ''}
+                          </small>
+                        ) : (
+                          <small>主力资金 --</small>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <span className="today-core-observe">仅历史观察</span>
+                        <small>{network.live_candidate ? '该股行情缺失' : '未读取候选行情'}</small>
+                      </>
+                    )}
+                  </td>
+                  <td>
+                    <strong>{formatNumber((candidate.mainline_score ?? 0) * 100, 0)}</strong>
+                    <small>
+                      {(candidate.mainline_score ?? 0) > 0 && (candidate.theme_tags ?? []).length > 0
+                        ? (candidate.theme_tags ?? []).slice(0, 3).map((theme) => theme.name).join('、')
+                        : '未匹配主线'}
+                    </small>
+                  </td>
+                  <td>
+                    <strong>{formatNumber((candidate.history_score ?? 0) * 100, 0)}</strong>
+                    <small>
+                      {candidate.strongest_core_name
+                        ? `核心 ${candidate.strongest_core_name} · 共同 ${candidate.strongest_overlap_days} 次`
+                        : '仅题材关联，无直接共封'}
+                    </small>
+                    <small>
+                      {candidate.strongest_phi > 0 ? `φ ${formatNumber(candidate.strongest_phi, 2)}` : 'φ --'}
+                      {candidate.last_shared_date ? ` · 最近 ${candidate.last_shared_date}` : ''}
+                    </small>
+                  </td>
+                  <td>
+                    <strong>{candidate.effective_links} 只</strong>
+                    <small>覆盖 {formatPercent(candidate.coverage, 0)}</small>
+                  </td>
+                  <td>
+                    <strong>封 {candidate.seal_days} · 触 {candidate.touch_days}</strong>
+                    <small>最近封板 {candidate.last_seal_date || '--'}</small>
+                  </td>
+                  <td className="today-core-candidate-risk">
+                    <strong>{formatNumber((candidate.risk_score ?? 1) * 100, 0)}</strong>
+                    <small>{riskDiscount > 0 ? `最多折价 ${formatNumber(riskDiscount, 1)} 分` : '无风险折价'}</small>
+                    <div className="today-core-risk-flags">
+                      {riskFlags.length > 0 ? riskFlags.slice(0, 2).map((flag) => (
+                        <span key={flag} title={flag}>{flag}</span>
+                      )) : <span className="clear">未见硬风险</span>}
+                      {riskFlags.length > 2 && <span title={riskFlags.slice(2).join('、')}>+{riskFlags.length - 2}</span>}
+                    </div>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="today-core-candidate-open"
+                      onClick={() => onOpenStock(candidate.code, candidate.name)}
+                    >
+                      联动
+                      <ArrowUpRight size={12} />
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
+      {!network.live_candidate && (
+        <div className="today-core-card-note warning">
+          当前未取得候选股实时行情：本表只是历史主线与历史特异性排序，不能视为盘中确认或“可买”。
+        </div>
+      )}
+      {network.live_candidate && network.live_unavailable && (
+        <div className="today-core-card-note warning">
+          部分候选没有取到实时行情；这些行仅作历史观察，不参与“盘中已确认”的判断。
+        </div>
+      )}
       <div className="today-core-card-note">
-        外溢待选只表示历史同题材聚类与共现关系，不包含今日实时涨幅或资金确认；没有直接共封记录的题材候选也不会被伪装成强关系。请结合盘口自行判断。
+        实时行情只覆盖最终候选，不写入归档。没有直接共封记录的题材候选会保留“仅题材关联”标记；所有分数只用于排序，不是买卖建议。
       </div>
     </section>
   )
@@ -589,7 +689,7 @@ export function TodayCorePanel({
             <p className="linkage-eyebrow">盘中实时 · 同花顺历史题材聚类</p>
             <h2 id="today-core-title"><Crown size={20} />今日涨停核心</h2>
             <p>
-              只分析点击时仍封住涨停的股票，用它们过去一年积累的同花顺 Top20 题材标签寻找今日主线，再结合历史收盘封板关系排列外溢候选。今日盘中快照不写入历史，也不进入历史分母。
+              只分析点击时仍封住涨停的股票，用它们过去一年积累的同花顺 Top20 题材标签寻找今日主线，先排历史候选，再只为最终候选读取盘中行情做第二次确认。今日盘中快照不写入历史，也不进入历史分母。
             </p>
           </div>
           <button ref={closeRef} type="button" className="linkage-quick-close" onClick={onClose} aria-label="关闭今日核心" title="关闭（Esc）">
@@ -698,24 +798,32 @@ export function TodayCorePanel({
                   <strong>{cores.length} 只</strong>
                   <small>至少 1 条 ≥{network.min_overlap} 次关系</small>
                 </div>
+                <div>
+                  <span>候选行情</span>
+                  <strong>{network.live_candidate ? (network.live_unavailable ? '部分确认' : '已盘中确认') : '仅历史观察'}</strong>
+                  <small>{network.live_candidate ? '只读取最终候选，不扫全市场' : '未取得候选实时行情'}</small>
+                </div>
               </div>
 
               {(network.theme_mainline ?? []).length > 0 && (
                 <div className="today-core-mainlines">
                   <span className="today-core-mainlines-label">
                     今日同花顺主线
-                    <MetricHint label="今日同花顺主线" formula="至少 2 只今日封板成员共享 Top20 标签，按核心度 × IDF 加权">
-                      只使用同花顺 Top20 在历史日期中积累到个股上的题材标签。至少 2 只今日封板成员共享同一标签才计入主线，按成员核心度和标签 IDF 加权，避免大题材把几乎所有股票连在一起。未分类、其他、原因不明或全组没有明确原因标签的题材桶不参与，东财行业/概念不作为替代。
+                    <MetricHint label="今日同花顺主线" formula="至少 2 只今日封板成员共享 Top20 标签，按核心度 × IDF × 近期度加权">
+                      只使用同花顺 Top20 在历史日期中积累到个股上的题材标签，不解析今日实时 reason。至少 2 只今日封板成员共享同一标签才计入主线，按成员核心度、标签 IDF 和标签近期度加权，避免大题材和陈旧标签把几乎所有股票连在一起。未分类、其他、原因不明或全组没有明确原因标签的题材桶不参与，东财行业/概念不作为替代。
                     </MetricHint>
                   </span>
                   {(network.theme_mainline ?? []).map((theme) => (
                     <span
                       key={theme.code}
                       className="today-core-mainline"
-                      title={`Top20 历史标签 · 权重 ${formatNumber(theme.weight, 2)}`}
+                      title={`Top20 历史标签 · 权重 ${formatNumber(theme.weight, 2)} · 近期度 ${formatNumber(theme.recency, 2)}`}
                     >
                       {theme.name}
-                      <small>{theme.member_count} 只封板 · 权重 {formatNumber(theme.weight, 2)}</small>
+                      <small>
+                        {theme.member_count} 只封板 · 权重 {formatNumber(theme.weight, 2)}
+                        {' · '}近期 {formatNumber(theme.recency, 2)}
+                      </small>
                     </span>
                   ))}
                 </div>
@@ -732,7 +840,7 @@ export function TodayCorePanel({
               <div className="today-core-caveat">
                 <Info size={14} />
                 <span>
-                  快照会随开板、回封而变化，刷新后成员和排名可能不同。题材标签只使用 {network.history_as_of || '最近完整日'} 及更早的同花顺 Top20 归档，今日实时封板不参与统计；没有有效 Top20 标签的股票不会被东财板块强行归类。共现不代表因果、带动或未来收益。
+                  快照会随开板、回封而变化，刷新后成员和排名可能不同。题材标签只使用 {network.history_as_of || '最近完整日'} 及更早的同花顺 Top20 归档，今日实时封板与实时 reason 不参与主线统计；今日盘中快照不写入历史，也不进入历史分母。没有有效 Top20 标签的股票不会被东财板块强行归类。盘中行情只对最终候选读取一次，缺失时明确降级为历史观察。共现不代表因果、带动或未来收益。
                 </span>
               </div>
 

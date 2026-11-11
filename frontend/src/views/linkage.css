@@ -999,7 +999,7 @@
 
 .today-core-summary {
   display: grid;
-  grid-template-columns: 1.35fr repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1.35fr repeat(4, minmax(0, 1fr));
   gap: 9px;
 }
 
@@ -1369,6 +1369,12 @@
   line-height: 1.5;
 }
 
+.today-core-card-note.warning {
+  border-left-color: #dfad5d;
+  background: #fffaf0;
+  color: #7b5b2a;
+}
+
 .today-core-candidates {
   margin-top: 14px;
   padding: 10px 12px 8px;
@@ -1463,7 +1469,52 @@
 }
 
 .today-core-candidate-table {
-  min-width: 920px;
+  min-width: 1080px;
+}
+
+.today-core-candidate-table .today-core-candidate-live {
+  min-width: 126px;
+}
+
+.today-core-candidate-table .today-core-candidate-risk {
+  min-width: 112px;
+}
+
+.today-core-candidate-table .today-core-subscore {
+  white-space: nowrap;
+}
+
+.today-core-observe {
+  display: inline-flex;
+  padding: 2px 5px;
+  border: 1px solid #dfad5d;
+  border-radius: 4px;
+  background: #fffaf0;
+  color: #8a6125;
+  font-size: 9px;
+}
+
+.today-core-risk-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.today-core-risk-flags span {
+  padding: 1px 4px;
+  border: 1px solid #ead3aa;
+  border-radius: 999px;
+  background: #fffaf0;
+  color: #8a6125;
+  font-size: 8px;
+  line-height: 1.35;
+}
+
+.today-core-risk-flags span.clear {
+  border-color: #d5e8dc;
+  background: #f5fbf7;
+  color: #4e7d61;
 }
 
 .today-core-candidate-open {

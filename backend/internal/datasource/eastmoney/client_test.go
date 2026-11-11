@@ -175,7 +175,7 @@ func TestFetchStockQuotesMapsLatestRowsAndPreservesMissingConstituents(t *testin
 		if !strings.Contains(r.URL.Query().Get("secids"), "1.600001") || !strings.Contains(r.URL.Query().Get("secids"), "0.000002") {
 			t.Fatalf("constituent markets/codes were not encoded: %s", r.URL.Query().Get("secids"))
 		}
-		_, _ = w.Write([]byte(`{"rc":0,"message":"","data":{"total":2,"diff":[{"f2":12.34,"f3":1.25,"f4":0.15,"f5":1234,"f6":5678900,"f7":3.5,"f8":2.25,"f12":"600001","f13":1,"f14":"测试股份","f15":12.8,"f16":11.9,"f17":12.05,"f18":12.19,"f124":"2026-08-14 10:31:00"},{"f2":"-","f3":"-","f4":"-","f5":"-","f6":"-","f12":"000003","f13":0,"f14":"停牌股份","f18":8.88}]}}`))
+		_, _ = w.Write([]byte(`{"rc":0,"message":"","data":{"total":2,"diff":[{"f2":12.34,"f3":1.25,"f4":0.15,"f5":1234,"f6":5678900,"f7":3.5,"f8":2.25,"f10":1.35,"f12":"600001","f13":1,"f14":"测试股份","f15":12.8,"f16":11.9,"f17":12.05,"f18":12.19,"f26":20200101,"f62":1234567,"f124":"2026-08-14 10:31:00","f184":3.25},{"f2":"-","f3":"-","f4":"-","f5":"-","f6":"-","f12":"000003","f13":0,"f14":"停牌股份","f18":8.88}]}}`))
 	}))
 	defer server.Close()
 
@@ -197,6 +197,11 @@ func TestFetchStockQuotesMapsLatestRowsAndPreservesMissingConstituents(t *testin
 	}
 	if quotes[0].OpenPrice != 12.05 || quotes[0].HighPrice != 12.8 || quotes[0].LowPrice != 11.9 || quotes[0].PreviousClose != 12.19 || quotes[0].TurnoverRate != 0.0225 || quotes[0].Amplitude != 0.035 {
 		t.Fatalf("daily OHLC quote fields were not mapped: %+v", quotes[0])
+	}
+	if quotes[0].VolumeRatio != 1.35 || !quotes[0].VolumeRatioAvailable ||
+		quotes[0].MainNetInflow != 1234567 || quotes[0].MainNetInflowPct != 3.25 ||
+		!quotes[0].FundFlowAvailable || quotes[0].ListingDate != "20200101" {
+		t.Fatalf("volume, fund-flow or listing fields were not mapped: %+v", quotes[0])
 	}
 	if quotes[1].Available || quotes[1].StockCode != "000002" || quotes[1].StockName != "未返回股份" {
 		t.Fatalf("missing constituent was not preserved: %+v", quotes[1])

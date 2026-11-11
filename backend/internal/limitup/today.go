@@ -17,12 +17,18 @@ const (
 	TodayCoreWeightNeighbors = 0.20
 	TodayCoreWeightTheme     = 0.20
 
-	// TodayCandidateWeight* rank stocks that are not sealed today by a blend
-	// of historical co-seal affinity and THS theme-cluster affinity.
-	TodayCandidateWeightStrength = 0.60
-	TodayCandidateWeightCoverage = 0.15
-	TodayCandidateWeightRecency  = 0.25
-	TodayCandidateWeightTheme    = 0.30
+	// TodayCandidateWeight* rank stocks that are not sealed today. They sum to
+	// one in live mode. There is deliberately no "recently limited up" term:
+	// that made a stock's own limit-up frequency look like today's mainline.
+	TodayCandidateWeightLive     = 0.30
+	TodayCandidateWeightMainline = 0.40
+	TodayCandidateWeightHistory  = 0.20
+	TodayCandidateWeightCoverage = 0.10
+
+	// Risk is a bounded discount, not a positive score component. A clean
+	// candidate keeps its full score; ST, low liquidity and other flags can
+	// reduce it by at most 15%.
+	TodayCandidateMaxRiskDiscount = 0.15
 )
 
 type todayPair struct {
@@ -43,6 +49,10 @@ type TodayInput struct {
 	// is the primary clustering source for today's mainline; Eastmoney board
 	// relations are intentionally not part of this path.
 	ThemeProfiles map[string]ThemeStockProfile
+	// LiveQuotes is the optional intraday quote snapshot used to confirm
+	// spillover candidates. When it is nil the endpoint still returns the
+	// historical view, but marks the response as not live-confirmed.
+	LiveQuotes map[string]LiveQuote
 }
 
 // AnalyzeToday computes a relationship graph whose nodes are the stocks sealed
@@ -381,26 +391,25 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 		themeMainline = ComputeThemeMainline(membersOut, input.ThemeProfiles)
 	}
 	candidatesOut := buildTodayCandidates(candidatePairs, members, coreByCode, len(membersOut),
-		len(historyDays), input.MinOverlap, parsedDate,
+		len(historyDays), input.MinOverlap,
 		allSealDates, allTouchDates, lastSealDate, stockMeta)
 	if len(themeMainline) > 0 {
 		candidatesOut = applyTodayThemeProfiles(candidatesOut, themeMainline, input.ThemeProfiles,
-			members, allSealDates, allTouchDates, lastSealDate)
+			members, allSealDates, allTouchDates, lastSealDate, candidatePairs, input.MinOverlap)
 	}
-	sort.SliceStable(candidatesOut, func(left, right int) bool {
-		if candidatesOut[left].Score != candidatesOut[right].Score {
-			return candidatesOut[left].Score > candidatesOut[right].Score
-		}
-		if candidatesOut[left].Strength != candidatesOut[right].Strength {
-			return candidatesOut[left].Strength > candidatesOut[right].Strength
-		}
-		if candidatesOut[left].EffectiveLinks != candidatesOut[right].EffectiveLinks {
-			return candidatesOut[left].EffectiveLinks > candidatesOut[right].EffectiveLinks
-		}
-		return candidatesOut[left].Code < candidatesOut[right].Code
-	})
+	candidatesOut = scoreTodayCandidates(candidatesOut, input.LiveQuotes)
 	if len(candidatesOut) > input.CandidateLimit {
 		candidatesOut = candidatesOut[:input.CandidateLimit]
+	}
+	liveCandidate := input.LiveQuotes != nil
+	liveUnavailable := false
+	if liveCandidate {
+		for _, candidate := range candidatesOut {
+			if !candidate.LiveAvailable {
+				liveUnavailable = true
+				break
+			}
+		}
 	}
 	sort.SliceStable(membersOut, func(left, right int) bool {
 		if membersOut[left].CoreScore != membersOut[right].CoreScore {
@@ -449,6 +458,7 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 		Members: membersOut, Cores: cores,
 		Candidates: candidatesOut, CandidateLimit: input.CandidateLimit,
 		MainlineThemes: []MainlineTheme{}, ThemeMainline: themeMainline,
+		LiveCandidate: liveCandidate, LiveUnavailable: liveUnavailable,
 	}, ctx.Err()
 }
 
@@ -468,7 +478,6 @@ func buildTodayCandidates(
 	members map[string]Event,
 	coreByCode map[string]float64,
 	sealedCount, historyDays, minOverlap int,
-	snapshotDate time.Time,
 	allSealDates, allTouchDates map[string]map[string]struct{},
 	lastSealDate map[string]string,
 	stockMeta map[string]Event,
@@ -500,9 +509,8 @@ func buildTodayCandidates(
 		affinity float64
 	}
 	type scoredCandidate struct {
-		candidate  TodayCandidate
-		strength   float64
-		lastShared string
+		candidate TodayCandidate
+		strength  float64
 	}
 	items := make([]scoredCandidate, 0, len(byCandidate))
 	maxStrength := 0.0
@@ -584,7 +592,7 @@ func buildTodayCandidates(
 		}
 		meta := stockMeta[code]
 		items = append(items, scoredCandidate{
-			strength: strength, lastShared: lastShared,
+			strength: strength,
 			candidate: TodayCandidate{
 				Code: code, Name: meta.Name, MarketType: meta.MarketType,
 				Strength: strength, EffectiveLinks: len(links),
@@ -602,22 +610,11 @@ func buildTodayCandidates(
 	}
 	for index := range items {
 		item := &items[index]
-		recency := 0.0
-		if parsed, err := time.ParseInLocation("2006-01-02", item.lastShared, Shanghai()); err == nil {
-			days := snapshotDate.Sub(parsed).Hours() / 24
-			if days < 0 {
-				days = 0
-			}
-			recency = 1 / (1 + days/30)
-		}
-		item.candidate.Score = 100 * (TodayCandidateWeightStrength*normalise(item.strength, maxStrength) +
-			TodayCandidateWeightCoverage*item.candidate.Coverage +
-			TodayCandidateWeightRecency*recency)
+		// Keep the historical evidence raw here. The final blend is applied
+		// after live quotes and the explicit Top20 mainline are available.
+		item.candidate.HistoryScore = normalise(item.strength, maxStrength)
 	}
 	sort.SliceStable(items, func(left, right int) bool {
-		if items[left].candidate.Score != items[right].candidate.Score {
-			return items[left].candidate.Score > items[right].candidate.Score
-		}
 		if items[left].strength != items[right].strength {
 			return items[left].strength > items[right].strength
 		}
@@ -631,6 +628,211 @@ func buildTodayCandidates(
 		result = append(result, item.candidate)
 	}
 	return result
+}
+
+// scoreTodayCandidates blends live confirmation, explicit Top20 mainline
+// membership, historical specificity and coverage. Risk is applied as a
+// bounded discount instead of a positive component. When live quotes were not
+// requested, the remaining weights are renormalised so a historical-only view
+// is still ordered explicitly as such.
+func scoreTodayCandidates(candidates []TodayCandidate, live map[string]LiveQuote) []TodayCandidate {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	maxHistory := 0.0
+	for _, candidate := range candidates {
+		maxHistory = math.Max(maxHistory, candidate.HistoryScore)
+	}
+	liveMode := live != nil
+	for index := range candidates {
+		candidate := &candidates[index]
+		candidate.MainlineScore = candidate.ThemeScore
+		candidate.HistoryScore = normalise(candidate.HistoryScore, maxHistory)
+		candidate.LimitRatio = limitUpRatio(candidate.Code) * 100
+		candidate.RiskFlags = []string{}
+		liveScore, liveAvailable := liveCandidateScore(candidate, live)
+		candidate.LiveAvailable = liveAvailable
+		candidate.LiveScore = liveScore
+		if liveMode && !liveAvailable {
+			candidate.RiskFlags = append(candidate.RiskFlags, "未取得盘中行情")
+		}
+		risk := candidateRiskScore(candidate)
+		candidate.RiskScore = risk.score
+		candidate.RiskFlags = append(candidate.RiskFlags, risk.flags...)
+		score := 0.0
+		if liveMode {
+			score = 100 * (TodayCandidateWeightLive*liveScore +
+				TodayCandidateWeightMainline*candidate.MainlineScore +
+				TodayCandidateWeightHistory*candidate.HistoryScore +
+				TodayCandidateWeightCoverage*candidate.Coverage)
+		} else {
+			activeWeight := TodayCandidateWeightMainline + TodayCandidateWeightHistory + TodayCandidateWeightCoverage
+			score = 100 * (TodayCandidateWeightMainline*candidate.MainlineScore +
+				TodayCandidateWeightHistory*candidate.HistoryScore +
+				TodayCandidateWeightCoverage*candidate.Coverage) / activeWeight
+		}
+		score *= 1 - TodayCandidateMaxRiskDiscount*(1-risk.score)
+		candidate.Score = clamp01(score/100) * 100
+	}
+	sort.SliceStable(candidates, func(left, right int) bool {
+		if candidates[left].Score != candidates[right].Score {
+			return candidates[left].Score > candidates[right].Score
+		}
+		if candidates[left].MainlineScore != candidates[right].MainlineScore {
+			return candidates[left].MainlineScore > candidates[right].MainlineScore
+		}
+		if candidates[left].HistoryScore != candidates[right].HistoryScore {
+			return candidates[left].HistoryScore > candidates[right].HistoryScore
+		}
+		return candidates[left].Code < candidates[right].Code
+	})
+	return candidates
+}
+
+func liveCandidateScore(candidate *TodayCandidate, quotes map[string]LiveQuote) (float64, bool) {
+	if quotes == nil {
+		return 0, false
+	}
+	quote, exists := quotes[candidate.Code]
+	if !exists || !quote.Available || quote.PreviousClose <= 0 {
+		return 0, false
+	}
+	change := quote.ChangePct
+	turnover := quote.TurnoverRate
+	limitRatio := limitUpRatio(candidate.Code)
+	distance := math.Max(0, limitRatio-change)
+	changePercent := change * 100
+	turnoverPercent := turnover * 100
+	distancePercent := distance * 100
+	candidate.ChangePercent = &changePercent
+	candidate.TurnoverRate = &turnoverPercent
+	candidate.DistanceToLimit = &distancePercent
+	candidate.quoteFetchedAt = quote.FetchedAt
+	candidate.listingDate = quote.ListingDate
+	candidate.TouchedLimit = quote.HighPrice+0.0001 >= limitPrice(quote.PreviousClose, limitRatio)
+	if quote.VolumeRatio != nil {
+		value := *quote.VolumeRatio
+		candidate.VolumeRatio = &value
+	}
+	if quote.MainNetInflow != nil {
+		value := *quote.MainNetInflow
+		candidate.MainNetInflow = &value
+	}
+	if quote.MainFlowPct != nil {
+		value := *quote.MainFlowPct
+		candidate.MainNetInflowPct = &value
+	}
+	turnoverAmount := float64(quote.Turnover)
+	candidate.TurnoverAmount = &turnoverAmount
+	progress := clamp01(change / limitRatio)
+	turnoverQuality := clamp01(turnover / 0.08)
+	weightedScore := 0.55*progress + 0.20*turnoverQuality
+	activeWeight := 0.75
+	if quote.VolumeRatio != nil {
+		weightedScore += 0.15 * clamp01(*quote.VolumeRatio/2)
+		activeWeight += 0.15
+	}
+	if quote.MainFlowPct != nil {
+		weightedScore += 0.10 * clamp01(0.5+*quote.MainFlowPct/20)
+		activeWeight += 0.10
+	}
+	score := weightedScore / activeWeight
+	if candidate.TouchedLimit {
+		score += 0.08
+	}
+	return clamp01(score), true
+}
+
+type candidateRisk struct {
+	score float64
+	flags []string
+}
+
+func candidateRiskScore(candidate *TodayCandidate) candidateRisk {
+	score := 1.0
+	flags := make([]string, 0, 6)
+	if isSTStock(candidate.Name) {
+		score -= 0.30
+		flags = append(flags, "ST")
+	}
+	if candidate.ChangePercent != nil && *candidate.ChangePercent < -2 {
+		score -= 0.25
+		flags = append(flags, "当日跌幅超过2%")
+	}
+	if candidate.TurnoverRate != nil && *candidate.TurnoverRate < 1 {
+		score -= 0.10
+		flags = append(flags, "换手不足1%")
+	}
+	if candidate.TurnoverRate != nil && *candidate.TurnoverRate >= 20 {
+		score -= 0.10
+		flags = append(flags, "换手超过20%")
+	}
+	if candidate.VolumeRatio != nil && *candidate.VolumeRatio < 0.5 {
+		score -= 0.10
+		flags = append(flags, "量比不足0.5")
+	}
+	if candidate.TurnoverAmount != nil && *candidate.TurnoverAmount < 20_000_000 {
+		score -= 0.10
+		flags = append(flags, "成交额不足2000万")
+	}
+	if candidate.LastSealDate == "" && candidate.SealDays == 0 {
+		score -= 0.15
+		flags = append(flags, "近一年无收盘封板")
+	}
+	if age, known := listingAgeDays(candidate.listingDate, candidate.quoteFetchedAt); known && age >= 0 && age < 60 {
+		score -= 0.20
+		flags = append(flags, "上市不足60日")
+	}
+	if candidate.LiveAvailable && candidate.DistanceToLimit != nil &&
+		*candidate.DistanceToLimit <= 0.1 && !candidate.TouchedLimit {
+		score -= 0.05
+		flags = append(flags, "临近涨停未触板")
+	}
+	if score < 0 {
+		score = 0
+	}
+	return candidateRisk{score: score, flags: flags}
+}
+
+func limitUpRatio(code string) float64 {
+	switch {
+	case strings.HasPrefix(code, "300"), strings.HasPrefix(code, "301"),
+		strings.HasPrefix(code, "688"), strings.HasPrefix(code, "689"):
+		return 0.20
+	case strings.HasPrefix(code, "4"), strings.HasPrefix(code, "8"), strings.HasPrefix(code, "92"):
+		return 0.30
+	default:
+		return 0.10
+	}
+}
+
+func limitPrice(previousClose, ratio float64) float64 {
+	return math.Round(previousClose*(1+ratio)*100) / 100
+}
+
+func isSTStock(name string) bool {
+	return strings.Contains(strings.ToUpper(strings.TrimSpace(name)), "ST")
+}
+
+func listingAgeDays(listingDate string, reference time.Time) (int, bool) {
+	if listingDate == "" || reference.IsZero() {
+		return 0, false
+	}
+	listed, err := time.ParseInLocation("20060102", listingDate, Shanghai())
+	if err != nil {
+		return 0, false
+	}
+	return int(reference.In(Shanghai()).Sub(listed).Hours() / 24), true
+}
+
+func clamp01(value float64) float64 {
+	if math.IsNaN(value) || value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
 }
 
 func normalise(value, maximum float64) float64 {

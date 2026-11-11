@@ -379,7 +379,7 @@ func TestAnalyzeTodayUsesHistoricalTHSThemeClusters(t *testing.T) {
 		byCode[candidate.Code] = candidate
 	}
 	themed := byCode["000010"]
-	if themed.ThemeScore != 1 || len(themed.ThemeTags) != 1 || themed.ThemeTags[0].Code != robot.Code {
+	if math.Abs(themed.ThemeScore-0.8) > 1e-9 || len(themed.ThemeTags) != 1 || themed.ThemeTags[0].Code != robot.Code {
 		t.Fatalf("mainline candidate did not receive theme alignment: %+v", themed)
 	}
 	unthemed := byCode["000020"]
@@ -390,8 +390,119 @@ func TestAnalyzeTodayUsesHistoricalTHSThemeClusters(t *testing.T) {
 		t.Fatalf("theme alignment did not lift the mainline candidate: %+v", network.Candidates)
 	}
 	themeOnly, exists := byCode["000030"]
-	if !exists || themeOnly.ThemeScore != 1 || themeOnly.EffectiveLinks != 0 ||
+	if !exists || math.Abs(themeOnly.ThemeScore-0.8) > 1e-9 || themeOnly.EffectiveLinks != 0 ||
 		themeOnly.Strength != 0 || themeOnly.Score <= 0 {
 		t.Fatalf("theme-only candidate was not added explicitly: %+v", themeOnly)
 	}
+}
+
+func TestTodayCandidateWeightsSumToOne(t *testing.T) {
+	total := TodayCandidateWeightLive + TodayCandidateWeightMainline +
+		TodayCandidateWeightHistory + TodayCandidateWeightCoverage
+	if math.Abs(total-1) > 1e-12 {
+		t.Fatalf("candidate weights must sum to one, got %v", total)
+	}
+}
+
+func TestScoreTodayCandidatesDoesNotRewardRecentLimitCount(t *testing.T) {
+	candidates := []TodayCandidate{
+		{
+			Code: "000001", Name: "近期常涨停", ThemeScore: 0, Coverage: 0.9,
+			SealDays: 20, TouchDays: 40, LastSealDate: "2026-11-10", HistoryScore: 1,
+		},
+		{
+			Code: "000002", Name: "今日主线候选", ThemeScore: 0.8, Coverage: 0.5,
+			SealDays: 2, TouchDays: 2, LastSealDate: "2026-11-05", HistoryScore: 0.7,
+		},
+	}
+	scored := scoreTodayCandidates(candidates, nil)
+	if scored[0].Code != "000002" || scored[0].Score <= scored[1].Score {
+		t.Fatalf("today's mainline must outrank a recent-limit-frequency candidate: %+v", scored)
+	}
+}
+
+func TestLiveCandidateUsesBoardSpecificLimitRatio(t *testing.T) {
+	now := time.Date(2026, 11, 11, 14, 30, 0, 0, Shanghai())
+	if limitUpRatio("600002") != 0.10 {
+		t.Fatalf("main-board ST must use the current 10%% limit, got %v", limitUpRatio("600002"))
+	}
+	main := TodayCandidate{Code: "600001", Name: "主板股", HistoryScore: 0, ThemeScore: 0}
+	gem := TodayCandidate{Code: "300001", Name: "创业板股", HistoryScore: 0, ThemeScore: 0}
+	quotes := map[string]LiveQuote{
+		"600001": {
+			Code: "600001", Available: true, PreviousClose: 10, HighPrice: 11,
+			ChangePct: 0.099, TurnoverRate: 0.05, ListingDate: "20200101", FetchedAt: now,
+		},
+		"300001": {
+			Code: "300001", Available: true, PreviousClose: 10, HighPrice: 11.9,
+			ChangePct: 0.15, TurnoverRate: 0.05, ListingDate: "20200101", FetchedAt: now,
+		},
+	}
+	scored := scoreTodayCandidates([]TodayCandidate{main, gem}, quotes)
+	if scored[0].Code != "600001" || scored[0].LimitRatio != 10 || scored[1].LimitRatio != 20 ||
+		!scored[0].TouchedLimit || scored[1].TouchedLimit ||
+		scored[0].DistanceToLimit == nil || *scored[0].DistanceToLimit <= 0 ||
+		scored[1].DistanceToLimit == nil || math.Abs(*scored[1].DistanceToLimit-5) > 1e-9 {
+		t.Fatalf("board-specific limit distance or touch flag is wrong: %+v", scored)
+	}
+}
+
+func TestLiveCandidateRiskFlagsIncludeSTNewListingAndLowLiquidity(t *testing.T) {
+	now := time.Date(2026, 11, 11, 14, 30, 0, 0, Shanghai())
+	candidate := TodayCandidate{
+		Code: "600002", Name: "*ST样本", ThemeScore: 0, HistoryScore: 0,
+	}
+	scored := scoreTodayCandidates([]TodayCandidate{candidate}, map[string]LiveQuote{
+		"600002": {
+			Code: "600002", Available: true, PreviousClose: 10, HighPrice: 10.1,
+			ChangePct: 0.01, TurnoverRate: 0.005, VolumeRatio: floatPointer(0.3),
+			ListingDate: "20261020", FetchedAt: now,
+		},
+	})
+	if len(scored) != 1 || scored[0].RiskScore >= 1 {
+		t.Fatalf("risk score was not reduced: %+v", scored)
+	}
+	for _, expected := range []string{"ST", "上市不足60日", "换手不足1%", "量比不足0.5", "成交额不足2000万", "近一年无收盘封板"} {
+		found := false
+		for _, flag := range scored[0].RiskFlags {
+			if flag == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing risk flag %q: %+v", expected, scored[0].RiskFlags)
+		}
+	}
+}
+
+func TestAnalyzeTodayThemeMainlineIgnoresRealtimeReason(t *testing.T) {
+	snapshot := IntradaySnapshot{
+		TradeDate: "2026-11-11", Source: SourceTHS, Scope: ScopeDefault,
+		FetchedAt:   time.Date(2026, 11, 11, 10, 30, 0, 0, Shanghai()),
+		TradeStatus: "open", SealedCount: 2,
+		Events: []Event{
+			{TradeDate: "2026-11-11", Code: "000001", Name: "甲", MarketID: 33, MarketType: "HS", Pool: PoolSealed, Reason: "机器人"},
+			{TradeDate: "2026-11-11", Code: "000002", Name: "乙", MarketID: 33, MarketType: "HS", Pool: PoolSealed, Reason: "机器人"},
+		},
+	}
+	bank := ThemeTag{Code: "885001", Name: "银行", Occurrences: 3, LastDate: "2026-11-10"}
+	network, err := AnalyzeToday(context.Background(), TodayInput{
+		Snapshot: snapshot, History: Dataset{Days: []Day{}, Events: []Event{}},
+		LookbackDays: 365, MinOverlap: 1, TopCores: 2,
+		ThemeProfiles: map[string]ThemeStockProfile{
+			"000001": {Code: "000001", Name: "甲", LabelDays: 3, Tags: []ThemeTag{bank}},
+			"000002": {Code: "000002", Name: "乙", LabelDays: 3, Tags: []ThemeTag{bank}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(network.ThemeMainline) != 1 || network.ThemeMainline[0].Code != bank.Code {
+		t.Fatalf("realtime reason must not become today's mainline: %+v", network.ThemeMainline)
+	}
+}
+
+func floatPointer(value float64) *float64 {
+	return &value
 }

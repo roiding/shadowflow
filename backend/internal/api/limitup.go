@@ -197,18 +197,51 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 			}
 		}
 	}
-	result, err := limitup.AnalyzeToday(request.Context(), limitup.TodayInput{
+	input := limitup.TodayInput{
 		Snapshot: snapshot, History: history, HistoryFrom: historyFrom,
 		LookbackDays: days, MinOverlap: minOverlap, TopCores: top, CandidateLimit: candidates,
 		ThemeProfiles: themeProfiles,
-	})
+	}
+	result, err := limitup.AnalyzeToday(request.Context(), input)
 	if err != nil {
 		server.limitUpError(response, err)
 		return
 	}
+	liveQuoteStatus := "disabled"
+	if server.limitUpQuotes != nil {
+		// Two-stage read: first derive the bounded historical candidate list,
+		// then fetch quotes for those candidates only. The first pass never
+		// scans the market or asks EastMoney for today's sealed members.
+		codes := make([]string, 0, len(result.Candidates))
+		for _, candidate := range result.Candidates {
+			codes = append(codes, candidate.Code)
+		}
+		if len(codes) == 0 {
+			liveQuoteStatus = "empty"
+		} else if quotes, quoteErr := server.limitUpQuotes.ReadLiveQuotes(request.Context(), codes); quoteErr != nil {
+			server.logger.Warn("read today-core candidate quotes", "error", quoteErr)
+			result.LiveUnavailable = true
+			liveQuoteStatus = "unavailable"
+		} else if len(quotes) == 0 {
+			result.LiveUnavailable = true
+			liveQuoteStatus = "unavailable"
+		} else {
+			input.LiveQuotes = quotes
+			result, err = limitup.AnalyzeToday(request.Context(), input)
+			if err != nil {
+				server.limitUpError(response, err)
+				return
+			}
+			liveQuoteStatus = "ready"
+			if result.LiveUnavailable {
+				liveQuoteStatus = "partial"
+			}
+		}
+	}
 	writeJSON(response, http.StatusOK, envelope{Data: result, Meta: map[string]any{
 		"snapshot_only": true, "history_excludes_today": true,
-		"snapshot_fetched_at": snapshot.FetchedAt,
+		"snapshot_fetched_at": snapshot.FetchedAt, "live_candidates": result.LiveCandidate,
+		"live_quote_status": liveQuoteStatus,
 	}})
 }
 

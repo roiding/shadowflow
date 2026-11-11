@@ -1,6 +1,10 @@
 package limitup
 
-import "testing"
+import (
+	"math"
+	"testing"
+	"time"
+)
 
 func TestBuildThemeAnalysisDeduplicatesSharedThemeDays(t *testing.T) {
 	profiles := map[string]ThemeStockProfile{
@@ -72,7 +76,27 @@ func TestThemeMatchScoreIgnoresUnclassifiedTags(t *testing.T) {
 		{Code: "000000", Name: "其他概念", Occurrences: 5},
 		{Code: "885517", Name: "机器人概念", Occurrences: 2},
 	}, []ThemeCluster{{Code: "885517", Name: "机器人概念", Weight: 0.8}})
-	if score != 0.8 || len(tags) != 1 || tags[0].Code != "885517" {
+	if math.Abs(score-0.64) > 1e-9 || len(tags) != 1 || tags[0].Code != "885517" {
 		t.Fatalf("unexpected theme match: score=%v tags=%+v", score, tags)
 	}
+}
+
+func TestThemeMainlinePrefersRecentlyUsedLabel(t *testing.T) {
+	recent := ThemeTag{Code: "885517", Name: "机器人概念", Occurrences: 3, LastDate: "2026-11-10"}
+	stale := ThemeTag{Code: "885431", Name: "新能源汽车", Occurrences: 3, LastDate: "2026-01-10"}
+	profiles := map[string]ThemeStockProfile{
+		"000001": {Code: "000001", Name: "A", LabelDays: 3, Tags: []ThemeTag{recent, stale}},
+		"000002": {Code: "000002", Name: "B", LabelDays: 3, Tags: []ThemeTag{recent, stale}},
+	}
+	mainline := ComputeThemeMainline([]TodayMember{
+		{Code: "000001", CoreScore: 50, LastLimitAt: timePointer(time.Date(2026, 11, 11, 9, 30, 0, 0, Shanghai()))},
+		{Code: "000002", CoreScore: 50, LastLimitAt: timePointer(time.Date(2026, 11, 11, 9, 30, 0, 0, Shanghai()))},
+	}, profiles)
+	if len(mainline) != 2 || mainline[0].Code != recent.Code || mainline[0].Recency <= mainline[1].Recency {
+		t.Fatalf("recently used label did not outrank stale label: %+v", mainline)
+	}
+}
+
+func timePointer(value time.Time) *time.Time {
+	return &value
 }

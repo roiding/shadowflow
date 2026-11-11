@@ -32,6 +32,7 @@ type Server struct {
 	store                   repository.Store
 	quotes                  QuoteSnapshotSource
 	limitUpIntraday         limitup.IntradayReader
+	limitUpQuotes           limitup.LiveQuoteReader
 	limitUpHistoryDays      limitup.LatestDayReader
 	calendar                *tradingcalendar.Calendar
 	logger                  *slog.Logger
@@ -61,6 +62,7 @@ type Options struct {
 	LimitUpScope            string
 	LimitUpIntradaySource   limitup.IntradayReader
 	LimitUpHistoryReader    limitup.LatestDayReader
+	LimitUpQuoteSource      limitup.LiveQuoteReader
 }
 
 type QuoteSnapshotSource interface {
@@ -91,6 +93,7 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 		server.limitUpScope = options[0].LimitUpScope
 		server.limitUpIntraday = options[0].LimitUpIntradaySource
 		server.limitUpHistoryDays = options[0].LimitUpHistoryReader
+		server.limitUpQuotes = options[0].LimitUpQuoteSource
 	}
 	if server.limitUpHistoryDays == nil {
 		server.limitUpHistoryDays, _ = server.store.(limitup.LatestDayReader)

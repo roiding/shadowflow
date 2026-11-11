@@ -4,6 +4,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 )
 
 var unclassifiedThemeNames = []string{
@@ -162,6 +163,7 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 		name    string
 		members int
 		weight  float64
+		recency float64
 	}
 	documentFrequency := themeDocumentFrequency(profiles)
 	byTheme := make(map[string]*aggregate)
@@ -183,16 +185,27 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 			}
 			item.members++
 			item.weight += (1 + member.CoreScore/100) * themeIDF(tag.Code, documentFrequency, len(profiles))
+			item.recency = math.Max(item.recency, themeRecency(tag, member.LastLimitAt))
 		}
 	}
 	list := make([]aggregate, 0, len(byTheme))
 	for _, item := range byTheme {
+		// A label carried by only one sealed stock is not a shared theme,
+		// even when that stock is the strongest stock in the pool.
 		if item.members >= 2 {
 			list = append(list, *item)
 		}
 	}
 	if len(list) == 0 {
 		return []ThemeCluster{}
+	}
+	maxWeight := 0.0
+	for index := range list {
+		list[index].weight *= 0.7 + 0.3*clamp01(list[index].recency)
+		maxWeight = math.Max(maxWeight, list[index].weight)
+	}
+	if maxWeight <= 0 {
+		maxWeight = 1
 	}
 	sort.Slice(list, func(left, right int) bool {
 		if list[left].weight != list[right].weight {
@@ -203,10 +216,6 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 		}
 		return list[left].code < list[right].code
 	})
-	maxWeight := list[0].weight
-	if maxWeight <= 0 {
-		maxWeight = 1
-	}
 	if len(list) > 12 {
 		list = list[:12]
 	}
@@ -214,10 +223,38 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 	for _, item := range list {
 		result = append(result, ThemeCluster{
 			Code: item.code, Name: item.name, MemberCount: item.members,
-			Weight: item.weight / maxWeight,
+			Weight: item.weight / maxWeight, Recency: clamp01(item.recency),
 		})
 	}
 	return result
+}
+
+// themeRecency distinguishes a label that the market is using now from one
+// that merely exists in the stock's 365-day profile. It uses the label's last
+// appearance and deliberately stays in [0,1]; the mainline weight is still
+// driven by current member breadth and idf.
+func themeRecency(tag ThemeTag, lastSealAt *time.Time) float64 {
+	if tag.LastDate == "" {
+		return 0
+	}
+	last, err := time.ParseInLocation("2006-01-02", tag.LastDate, Shanghai())
+	if err != nil {
+		return 0
+	}
+	reference := time.Time{}
+	if lastSealAt != nil {
+		reference = *lastSealAt
+	}
+	if reference.IsZero() {
+		reference = time.Now().In(Shanghai())
+	}
+	days := reference.Sub(last).Hours() / 24
+	if days < 0 {
+		days = 0
+	}
+	// A label used in the current week keeps most of its weight; a label that
+	// has not appeared for two months retains only the minimum.
+	return 1 / (1 + days/21)
 }
 
 type memberThemeAffinity struct {
@@ -304,9 +341,12 @@ func themeMatchScore(tags []ThemeTag, mainline []ThemeCluster) (float64, []Theme
 	for _, cluster := range mainline {
 		weights[cluster.Code] = cluster.Weight
 	}
+	type weightedTag struct {
+		tag    ThemeTag
+		weight float64
+	}
 	seen := make(map[string]struct{}, len(tags))
-	matched := make([]ThemeTag, 0, len(tags))
-	total := 0.0
+	weighted := make([]weightedTag, 0, len(tags))
 	for _, tag := range tags {
 		weight, exists := weights[tag.Code]
 		if !exists {
@@ -316,13 +356,37 @@ func themeMatchScore(tags []ThemeTag, mainline []ThemeCluster) (float64, []Theme
 			continue
 		}
 		seen[tag.Code] = struct{}{}
-		matched = append(matched, tag)
-		total += weight
+		weighted = append(weighted, weightedTag{tag: tag, weight: weight})
 	}
-	if total > 1 {
-		total = 1
+	if len(weighted) == 0 {
+		return 0, []ThemeTag{}
 	}
-	return total, topThemeTags(matched, 5)
+	sort.SliceStable(weighted, func(left, right int) bool {
+		if weighted[left].weight != weighted[right].weight {
+			return weighted[left].weight > weighted[right].weight
+		}
+		if weighted[left].tag.Occurrences != weighted[right].tag.Occurrences {
+			return weighted[left].tag.Occurrences > weighted[right].tag.Occurrences
+		}
+		return weighted[left].tag.Code < weighted[right].tag.Code
+	})
+	// A stock matching a single theme should not automatically receive a
+	// perfect score. Reward the strongest match, with a small contribution
+	// from the second match; broad tags then cannot saturate the mainline.
+	score := weighted[0].weight
+	if len(weighted) > 1 {
+		score = 0.8*weighted[0].weight + 0.2*weighted[1].weight
+	} else {
+		score *= 0.8
+	}
+	if score > 1 {
+		score = 1
+	}
+	matched := make([]ThemeTag, 0, min(5, len(weighted)))
+	for _, item := range weighted[:min(5, len(weighted))] {
+		matched = append(matched, item.tag)
+	}
+	return score, matched
 }
 
 // applyTodayThemeProfiles blends the historical THS cluster score into the
@@ -336,6 +400,8 @@ func applyTodayThemeProfiles(
 	members map[string]Event,
 	allSealDates, allTouchDates map[string]map[string]struct{},
 	lastSealDate map[string]string,
+	candidatePairs map[string]*todayPair,
+	minOverlap int,
 ) []TodayCandidate {
 	byCode := make(map[string]int, len(candidates))
 	for index := range candidates {
@@ -350,8 +416,6 @@ func applyTodayThemeProfiles(
 		}
 		candidates[index].ThemeScore = themeScore
 		candidates[index].ThemeTags = matched
-		candidates[index].Score = candidates[index].Score*(1-TodayCandidateWeightTheme) +
-			100*TodayCandidateWeightTheme*themeScore
 	}
 	for code, profile := range profiles {
 		if _, sealed := members[code]; sealed {
@@ -364,14 +428,28 @@ func applyTodayThemeProfiles(
 		if themeScore <= 0 || len(matched) == 0 {
 			continue
 		}
+		sealDays := len(allSealDates[code])
+		touchDays := len(allTouchDates[code])
+		var links []candidateRawLink
+		for memberCode := range members {
+			key := code + ":" + memberCode
+			if pair := candidatePairs[key]; pair != nil && pair.overlap >= minOverlap {
+				links = append(links, candidateRawLink{
+					memberCode: memberCode, overlap: pair.overlap, heat: pair.heat,
+					dates: append([]string(nil), pair.dates...),
+				})
+			}
+		}
 		candidates = append(candidates, TodayCandidate{
 			Code: code, Name: profile.Name, MarketType: profile.MarketType,
-			Score:        100 * TodayCandidateWeightTheme * themeScore,
-			SealDays:     len(allSealDates[code]),
-			TouchDays:    len(allTouchDates[code]),
+			SealDays:     sealDays,
+			TouchDays:    touchDays,
 			LastSealDate: lastSealDate[code],
 			ThemeScore:   themeScore, ThemeTags: matched,
 			Themes: []ThemeRef{}, TopLinks: []CandidateLink{},
+			EffectiveLinks: len(links),
+			Coverage:       float64(len(links)) / float64(max(1, len(members))),
+			RiskFlags:      []string{},
 		})
 	}
 	return candidates
