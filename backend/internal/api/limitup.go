@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -23,6 +24,8 @@ type boardThemeFallbackReader interface {
 type candidateHistoryReader interface {
 	ReadCandidateHistoryMetrics(context.Context, string, []string, int, int) (map[string]limitup.CandidateHistoryMetrics, error)
 }
+
+const todayDarkMoneyPoolSize = 50
 
 func limitUpQuery(request *http.Request) (limitup.Query, error) {
 	values := request.URL.Query()
@@ -258,9 +261,11 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 		memberCodes = append(memberCodes, event.Code)
 	}
 	loadBoardFallbacks(memberCodes)
+	requestedCandidateLimit := candidates
+	candidatePoolLimit := todayCandidatePoolLimit(requestedCandidateLimit)
 	input := limitup.TodayInput{
 		Snapshot: snapshot, History: history, HistoryFrom: historyFrom,
-		LookbackDays: days, MinOverlap: minOverlap, TopCores: top, CandidateLimit: candidates,
+		LookbackDays: days, MinOverlap: minOverlap, TopCores: top, CandidateLimit: candidatePoolLimit,
 		ThemeProfiles: themeProfiles,
 	}
 	result, err := limitup.AnalyzeToday(request.Context(), input)
@@ -283,59 +288,88 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 		// then fetch quotes for those candidates only. The first pass never
 		// scans the market or asks EastMoney for today's sealed members.
 		codes := todayCandidateQuoteCodes(result)
+		darkMoneyCodes := todayCandidateDarkMoneyCodes(result)
 		if len(codes) == 0 {
 			liveQuoteStatus = "empty"
 			liveDarkMoneyStatus = "empty"
-		} else if quotes, quoteErr := server.limitUpQuotes.ReadLiveQuotes(request.Context(), codes); quoteErr != nil {
-			server.logger.Warn("read today-core candidate quotes", "error", quoteErr)
-			result.LiveUnavailable = true
-			liveQuoteStatus = "unavailable"
-			liveDarkMoneyStatus = "unavailable"
-		} else if len(quotes) == 0 {
-			result.LiveUnavailable = true
-			liveQuoteStatus = "unavailable"
-			liveDarkMoneyStatus = "unavailable"
 		} else {
-			if historyReader, ok := server.store.(candidateHistoryReader); ok && historyAsOf != "" {
-				minuteIndex, validMinute := limitup.LatestResearchMinuteIndex(snapshot.FetchedAt.In(server.location))
-				if validMinute {
-					historyMetrics, historyErr := historyReader.ReadCandidateHistoryMetrics(
+			var wait sync.WaitGroup
+			var quotes map[string]limitup.LiveQuote
+			var quoteErr error
+			var historyMetrics map[string]limitup.CandidateHistoryMetrics
+			var historyErr error
+			var darkMoney map[string]limitup.LiveDarkMoney
+			var darkErr error
+			minuteIndex, validMinute := limitup.LatestResearchMinuteIndex(snapshot.FetchedAt.In(server.location))
+
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				quotes, quoteErr = server.limitUpQuotes.ReadLiveQuotes(request.Context(), codes)
+			}()
+			if historyReader, ok := server.store.(candidateHistoryReader); ok && historyAsOf != "" && validMinute {
+				wait.Add(1)
+				go func() {
+					defer wait.Done()
+					historyMetrics, historyErr = historyReader.ReadCandidateHistoryMetrics(
 						request.Context(), historyAsOf, codes, limitup.TodayLiveHistoryWindowDays, minuteIndex,
 					)
-					if historyErr != nil {
-						server.logger.Warn("read candidate self-history metrics", "error", historyErr)
-					} else {
-						input.CandidateHistory = historyMetrics
-					}
-				}
+				}()
 			}
-			if server.limitUpDarkMoney != nil {
-				darkMoney, darkErr := server.limitUpDarkMoney.ReadLiveDarkMoney(
-					request.Context(), snapshot.TradeDate, codes, snapshot.FetchedAt.In(server.location),
-				)
-				if darkErr != nil {
-					server.logger.Warn("read today-core live dark money", "error", darkErr)
-					liveDarkMoneyStatus = "unavailable"
+			if server.limitUpDarkMoney != nil && len(darkMoneyCodes) > 0 {
+				wait.Add(1)
+				go func() {
+					defer wait.Done()
+					darkMoney, darkErr = server.limitUpDarkMoney.ReadLiveDarkMoney(
+						request.Context(), snapshot.TradeDate, darkMoneyCodes, snapshot.FetchedAt.In(server.location),
+					)
+				}()
+			} else if server.limitUpDarkMoney != nil {
+				liveDarkMoneyStatus = "empty"
+			}
+			wait.Wait()
+
+			if quoteErr != nil {
+				server.logger.Warn("read today-core candidate quotes", "error", quoteErr)
+				result.LiveUnavailable = true
+				liveQuoteStatus = "unavailable"
+				liveDarkMoneyStatus = "unavailable"
+			} else if len(quotes) == 0 {
+				result.LiveUnavailable = true
+				liveQuoteStatus = "unavailable"
+				liveDarkMoneyStatus = "unavailable"
+			} else {
+				if historyErr != nil {
+					server.logger.Warn("read candidate self-history metrics", "error", historyErr)
+				} else if historyMetrics != nil {
+					input.CandidateHistory = historyMetrics
 				}
-				if len(darkMoney) > 0 {
-					input.LiveDarkMoney = darkMoney
-					liveDarkMoneyStatus = "ready"
+				if server.limitUpDarkMoney != nil {
 					if darkErr != nil {
-						liveDarkMoneyStatus = "partial"
+						server.logger.Warn("read today-core live dark money", "error", darkErr)
+						liveDarkMoneyStatus = "unavailable"
 					}
-				} else if darkErr == nil {
-					liveDarkMoneyStatus = "empty"
+					if len(darkMoney) > 0 {
+						input.LiveDarkMoney = darkMoney
+						liveDarkMoneyStatus = "ready"
+						if darkErr != nil {
+							liveDarkMoneyStatus = "partial"
+						}
+					} else if darkErr == nil {
+						liveDarkMoneyStatus = "empty"
+					}
 				}
-			}
-			input.LiveQuotes = quotes
-			result, err = limitup.AnalyzeToday(request.Context(), input)
-			if err != nil {
-				server.limitUpError(response, err)
-				return
-			}
-			liveQuoteStatus = "ready"
-			if result.LiveUnavailable {
-				liveQuoteStatus = "partial"
+				input.LiveQuotes = quotes
+				input.CandidateLimit = requestedCandidateLimit
+				result, err = limitup.AnalyzeToday(request.Context(), input)
+				if err != nil {
+					server.limitUpError(response, err)
+					return
+				}
+				liveQuoteStatus = "ready"
+				if result.LiveUnavailable {
+					liveQuoteStatus = "partial"
+				}
 			}
 		}
 	}
@@ -370,6 +404,30 @@ func todayCandidateQuoteCodes(result limitup.TodayNetwork) []string {
 	}
 	sort.Strings(codes)
 	return codes
+}
+
+// Dark-money ticks are one request per stock and EastMoney's guard is rate
+// limited. The first pass keeps a bounded ranking pool so every candidate that
+// can be displayed is scored with the same dark-money input; mainline-only
+// candidates never trigger a per-stock request.
+func todayCandidateDarkMoneyCodes(result limitup.TodayNetwork) []string {
+	seen := make(map[string]struct{}, len(result.Candidates))
+	codes := make([]string, 0, len(result.Candidates))
+	for _, candidate := range result.Candidates {
+		if candidate.Code == "" {
+			continue
+		}
+		if _, duplicate := seen[candidate.Code]; duplicate {
+			continue
+		}
+		seen[candidate.Code] = struct{}{}
+		codes = append(codes, candidate.Code)
+	}
+	return codes
+}
+
+func todayCandidatePoolLimit(requested int) int {
+	return max(requested, todayDarkMoneyPoolSize)
 }
 
 func (server *Server) limitUpError(response http.ResponseWriter, err error) {

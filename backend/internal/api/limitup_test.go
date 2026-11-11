@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -164,6 +165,39 @@ func TestTodayCandidateQuoteCodesIncludeEveryMainlineGroup(t *testing.T) {
 	for index := range expected {
 		if codes[index] != expected[index] {
 			t.Fatalf("unexpected quote codes: %+v", codes)
+		}
+	}
+}
+
+func TestTodayCandidateDarkMoneyCodesUseOnlyUnifiedCandidatePool(t *testing.T) {
+	candidates := make([]limitup.TodayCandidate, 0, 35)
+	for index := 0; index < 35; index++ {
+		candidates = append(candidates, limitup.TodayCandidate{Code: fmt.Sprintf("%06d", index+1)})
+	}
+	result := limitup.TodayNetwork{
+		Candidates: candidates,
+		MainlineCandidates: []limitup.TodayMainlineGroup{
+			{Candidates: []limitup.TodayCandidate{{Code: "999999"}}},
+		},
+	}
+	codes := todayCandidateDarkMoneyCodes(result)
+	if len(codes) != len(candidates) {
+		t.Fatalf("dark-money codes should cover every displayed candidate, got %+v", codes)
+	}
+	if codes[0] != "000001" || codes[len(codes)-1] != "000035" {
+		t.Fatalf("dark-money codes should preserve unified candidate order: %+v", codes)
+	}
+	for _, code := range codes {
+		if code == "999999" {
+			t.Fatal("mainline-only candidates must not be enriched with per-stock dark-money ticks")
+		}
+	}
+}
+
+func TestTodayCandidatePoolCoversEverySelectableCandidateLimit(t *testing.T) {
+	for _, requested := range []int{10, 20, 30, 50} {
+		if got := todayCandidatePoolLimit(requested); got != todayDarkMoneyPoolSize {
+			t.Fatalf("candidate pool for %d = %d, want %d", requested, got, todayDarkMoneyPoolSize)
 		}
 	}
 }
