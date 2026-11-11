@@ -48,9 +48,7 @@ func (source *LimitUpLiveDarkMoneySource) ReadLiveDarkMoney(
 	if len(records) == 0 {
 		return map[string]limitup.LiveDarkMoney{}, nil
 	}
-	requestContext, cancel := context.WithTimeout(ctx, limitUpQuoteTimeout)
-	defer cancel()
-	points, err := source.source.FetchLatestMoney5m(requestContext, tradeDate, records, at)
+	points, err := source.source.FetchLatestMoney5m(ctx, tradeDate, records, at)
 	result := make(map[string]limitup.LiveDarkMoney, len(points))
 	for _, point := range points {
 		result[point.Code] = limitup.LiveDarkMoney{

@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -25,7 +24,9 @@ type candidateHistoryReader interface {
 	ReadCandidateHistoryMetrics(context.Context, string, []string, int, int) (map[string]limitup.CandidateHistoryMetrics, error)
 }
 
-const todayDarkMoneyPoolSize = 50
+// Keep each external read small enough that one slow stock does not consume
+// the whole request budget; the upper-bound loop expands only when needed.
+const todayCandidateBatchSize = 16
 
 func limitUpQuery(request *http.Request) (limitup.Query, error) {
 	values := request.URL.Query()
@@ -261,12 +262,11 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 		memberCodes = append(memberCodes, event.Code)
 	}
 	loadBoardFallbacks(memberCodes)
-	requestedCandidateLimit := candidates
-	candidatePoolLimit := todayCandidatePoolLimit(requestedCandidateLimit)
 	input := limitup.TodayInput{
 		Snapshot: snapshot, History: history, HistoryFrom: historyFrom,
-		LookbackDays: days, MinOverlap: minOverlap, TopCores: top, CandidateLimit: candidatePoolLimit,
-		ThemeProfiles: themeProfiles,
+		LookbackDays: days, MinOverlap: minOverlap, TopCores: top, CandidateLimit: candidates,
+		IncludeAllCandidates: true,
+		ThemeProfiles:        themeProfiles,
 	}
 	result, err := limitup.AnalyzeToday(request.Context(), input)
 	if err != nil {
@@ -284,95 +284,28 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 	liveQuoteStatus := "disabled"
 	liveDarkMoneyStatus := "disabled"
 	if server.limitUpQuotes != nil {
-		// Two-stage read: first derive the bounded historical candidate list,
-		// then fetch quotes for those candidates only. The first pass never
-		// scans the market or asks EastMoney for today's sealed members.
-		codes := todayCandidateQuoteCodes(result)
-		darkMoneyCodes := todayCandidateDarkMoneyCodes(result)
-		if len(codes) == 0 {
+		if len(result.Candidates) == 0 {
 			liveQuoteStatus = "empty"
 			liveDarkMoneyStatus = "empty"
 		} else {
-			var wait sync.WaitGroup
-			var quotes map[string]limitup.LiveQuote
-			var quoteErr error
-			var historyMetrics map[string]limitup.CandidateHistoryMetrics
-			var historyErr error
-			var darkMoney map[string]limitup.LiveDarkMoney
-			var darkErr error
-			minuteIndex, validMinute := limitup.LatestResearchMinuteIndex(snapshot.FetchedAt.In(server.location))
-
-			wait.Add(1)
-			go func() {
-				defer wait.Done()
-				quotes, quoteErr = server.limitUpQuotes.ReadLiveQuotes(request.Context(), codes)
-			}()
-			if historyReader, ok := server.store.(candidateHistoryReader); ok && historyAsOf != "" && validMinute {
-				wait.Add(1)
-				go func() {
-					defer wait.Done()
-					historyMetrics, historyErr = historyReader.ReadCandidateHistoryMetrics(
-						request.Context(), historyAsOf, codes, limitup.TodayLiveHistoryWindowDays, minuteIndex,
-					)
-				}()
+			if server.limitUpDarkMoney == nil {
+				writeError(response, http.StatusServiceUnavailable, "candidate_data_unavailable", "暗盘数据源不可用，无法保证候选排序")
+				return
 			}
-			if server.limitUpDarkMoney != nil && len(darkMoneyCodes) > 0 {
-				wait.Add(1)
-				go func() {
-					defer wait.Done()
-					darkMoney, darkErr = server.limitUpDarkMoney.ReadLiveDarkMoney(
-						request.Context(), snapshot.TradeDate, darkMoneyCodes, snapshot.FetchedAt.In(server.location),
-					)
-				}()
-			} else if server.limitUpDarkMoney != nil {
-				liveDarkMoneyStatus = "empty"
+			result, err = server.rankTodayCandidates(request.Context(), input, result, historyAsOf, candidates)
+			if err != nil {
+				server.logger.Warn("rank today-core candidates", "error", err)
+				writeError(response, http.StatusServiceUnavailable, "candidate_data_unavailable", "盘中候选数据不完整，无法保证排序；请稍后重试")
+				return
 			}
-			wait.Wait()
-
-			if quoteErr != nil {
-				server.logger.Warn("read today-core candidate quotes", "error", quoteErr)
-				result.LiveUnavailable = true
-				liveQuoteStatus = "unavailable"
-				liveDarkMoneyStatus = "unavailable"
-			} else if len(quotes) == 0 {
-				result.LiveUnavailable = true
-				liveQuoteStatus = "unavailable"
-				liveDarkMoneyStatus = "unavailable"
-			} else {
-				if historyErr != nil {
-					server.logger.Warn("read candidate self-history metrics", "error", historyErr)
-				} else if historyMetrics != nil {
-					input.CandidateHistory = historyMetrics
-				}
-				if server.limitUpDarkMoney != nil {
-					if darkErr != nil {
-						server.logger.Warn("read today-core live dark money", "error", darkErr)
-						liveDarkMoneyStatus = "unavailable"
-					}
-					if len(darkMoney) > 0 {
-						input.LiveDarkMoney = darkMoney
-						liveDarkMoneyStatus = "ready"
-						if darkErr != nil {
-							liveDarkMoneyStatus = "partial"
-						}
-					} else if darkErr == nil {
-						liveDarkMoneyStatus = "empty"
-					}
-				}
-				input.LiveQuotes = quotes
-				input.CandidateLimit = requestedCandidateLimit
-				result, err = limitup.AnalyzeToday(request.Context(), input)
-				if err != nil {
-					server.limitUpError(response, err)
-					return
-				}
-				liveQuoteStatus = "ready"
-				if result.LiveUnavailable {
-					liveQuoteStatus = "partial"
-				}
-			}
+			liveQuoteStatus = "ready"
+			liveDarkMoneyStatus = "ready"
 		}
 	}
+	if !result.LiveCandidate && len(result.Candidates) > candidates {
+		result.Candidates = result.Candidates[:candidates]
+	}
+	result.CandidateLimit = candidates
 	writeJSON(response, http.StatusOK, envelope{Data: result, Meta: map[string]any{
 		"snapshot_only": true, "history_excludes_today": true,
 		"snapshot_fetched_at": snapshot.FetchedAt, "live_candidates": result.LiveCandidate,
@@ -404,30 +337,6 @@ func todayCandidateQuoteCodes(result limitup.TodayNetwork) []string {
 	}
 	sort.Strings(codes)
 	return codes
-}
-
-// Dark-money ticks are one request per stock and EastMoney's guard is rate
-// limited. The first pass keeps a bounded ranking pool so every candidate that
-// can be displayed is scored with the same dark-money input; mainline-only
-// candidates never trigger a per-stock request.
-func todayCandidateDarkMoneyCodes(result limitup.TodayNetwork) []string {
-	seen := make(map[string]struct{}, len(result.Candidates))
-	codes := make([]string, 0, len(result.Candidates))
-	for _, candidate := range result.Candidates {
-		if candidate.Code == "" {
-			continue
-		}
-		if _, duplicate := seen[candidate.Code]; duplicate {
-			continue
-		}
-		seen[candidate.Code] = struct{}{}
-		codes = append(codes, candidate.Code)
-	}
-	return codes
-}
-
-func todayCandidatePoolLimit(requested int) int {
-	return max(requested, todayDarkMoneyPoolSize)
 }
 
 func (server *Server) limitUpError(response http.ResponseWriter, err error) {

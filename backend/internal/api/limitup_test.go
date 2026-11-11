@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -144,6 +143,19 @@ type recordingLimitUpQuoteSource struct {
 	quotes map[string]limitup.LiveQuote
 }
 
+type recordingLimitUpDarkMoneySource struct {
+	codes []string
+}
+
+func (source *recordingLimitUpDarkMoneySource) ReadLiveDarkMoney(_ context.Context, _ string, codes []string, at time.Time) (map[string]limitup.LiveDarkMoney, error) {
+	source.codes = append(source.codes, codes...)
+	result := make(map[string]limitup.LiveDarkMoney, len(codes))
+	for _, code := range codes {
+		result[code] = limitup.LiveDarkMoney{Code: code, Available: true, DarkMoney: 1_000, SnapshotAt: at}
+	}
+	return result, nil
+}
+
 func (source *recordingLimitUpQuoteSource) ReadLiveQuotes(_ context.Context, codes []string) (map[string]limitup.LiveQuote, error) {
 	source.codes = append([]string(nil), codes...)
 	return source.quotes, nil
@@ -165,39 +177,6 @@ func TestTodayCandidateQuoteCodesIncludeEveryMainlineGroup(t *testing.T) {
 	for index := range expected {
 		if codes[index] != expected[index] {
 			t.Fatalf("unexpected quote codes: %+v", codes)
-		}
-	}
-}
-
-func TestTodayCandidateDarkMoneyCodesUseOnlyUnifiedCandidatePool(t *testing.T) {
-	candidates := make([]limitup.TodayCandidate, 0, 35)
-	for index := 0; index < 35; index++ {
-		candidates = append(candidates, limitup.TodayCandidate{Code: fmt.Sprintf("%06d", index+1)})
-	}
-	result := limitup.TodayNetwork{
-		Candidates: candidates,
-		MainlineCandidates: []limitup.TodayMainlineGroup{
-			{Candidates: []limitup.TodayCandidate{{Code: "999999"}}},
-		},
-	}
-	codes := todayCandidateDarkMoneyCodes(result)
-	if len(codes) != len(candidates) {
-		t.Fatalf("dark-money codes should cover every displayed candidate, got %+v", codes)
-	}
-	if codes[0] != "000001" || codes[len(codes)-1] != "000035" {
-		t.Fatalf("dark-money codes should preserve unified candidate order: %+v", codes)
-	}
-	for _, code := range codes {
-		if code == "999999" {
-			t.Fatal("mainline-only candidates must not be enriched with per-stock dark-money ticks")
-		}
-	}
-}
-
-func TestTodayCandidatePoolCoversEverySelectableCandidateLimit(t *testing.T) {
-	for _, requested := range []int{10, 20, 30, 50} {
-		if got := todayCandidatePoolLimit(requested); got != todayDarkMoneyPoolSize {
-			t.Fatalf("candidate pool for %d = %d, want %d", requested, got, todayDarkMoneyPoolSize)
 		}
 	}
 }
@@ -275,13 +254,14 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 	quoteSource := &recordingLimitUpQuoteSource{quotes: map[string]limitup.LiveQuote{
 		"000003": {
 			Code: "000003", Available: true, PreviousClose: 10, LatestPrice: 10.6, HighPrice: 10.7,
-			ChangePct: 0.06, TurnoverRate: 0.032, VolumeRatio: floatTestPointer(1.4),
+			ChangePct: 0.06, TurnoverRate: 0.032, VolumeRatio: floatTestPointer(1.4), Turnover: 100_000_000,
 			QuoteTime: "10:42:00", FetchedAt: snapshotAt,
 		},
 	}}
 	server, err := New(store, server.calendar, server.logger, Options{
-		ScanRatePerMinute:  10000,
-		LimitUpQuoteSource: quoteSource,
+		ScanRatePerMinute:      10000,
+		LimitUpQuoteSource:     quoteSource,
+		LimitUpDarkMoneySource: &recordingLimitUpDarkMoneySource{},
 		LimitUpIntradaySource: staticIntradaySource{snapshot: limitup.IntradaySnapshot{
 			TradeDate: "2026-11-09", Source: limitup.SourceTHS, Scope: limitup.ScopeDefault, FetchedAt: snapshotAt,
 			TradeStatus: "open", TradeStatusName: "交易中", SealedCount: 3,

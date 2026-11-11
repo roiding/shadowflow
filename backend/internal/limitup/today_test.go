@@ -284,6 +284,25 @@ func TestAnalyzeTodayRanksNonSealedCoSealCandidates(t *testing.T) {
 	if err != nil || len(limited.Candidates) != 1 || limited.Candidates[0].Code != "000010" {
 		t.Fatalf("candidate limit was not applied: %+v %v", limited.Candidates, err)
 	}
+	fullInput := TodayInput{
+		Snapshot: snapshot, History: history, HistoryFrom: "2025-11-10",
+		LookbackDays: 365, MinOverlap: 1, TopCores: 2, CandidateLimit: 1,
+		IncludeAllCandidates: true,
+	}
+	all, err := AnalyzeToday(context.Background(), fullInput)
+	if err != nil || len(all.Candidates) != 2 {
+		t.Fatalf("internal static pass must retain all candidates: %+v %v", all.Candidates, err)
+	}
+	fullInput.CandidateFilter = map[string]struct{}{"000020": {}}
+	filtered, err := AnalyzeToday(context.Background(), fullInput)
+	if err != nil || len(filtered.Candidates) != 1 || filtered.Candidates[0].Code != "000020" {
+		t.Fatalf("filtered pass lost candidate: %+v %v", filtered.Candidates, err)
+	}
+	for _, candidate := range all.Candidates {
+		if candidate.Code == "000020" && math.Abs(candidate.HistoryScore-filtered.Candidates[0].HistoryScore) > 1e-9 {
+			t.Fatalf("filter must preserve full-universe historical normalisation: all=%+v filtered=%+v", candidate, filtered.Candidates[0])
+		}
+	}
 }
 
 func TestAnalyzeTodayThemeClusterCanFormCoreWithoutRawCoSeal(t *testing.T) {

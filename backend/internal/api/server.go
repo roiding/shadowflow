@@ -156,6 +156,10 @@ func New(store repository.Store, calendar *tradingcalendar.Calendar, logger *slo
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
+			if r.URL.Path == "/api/v1/limit-up/today-network" {
+				requestTimeout(120*time.Second)(next).ServeHTTP(w, r)
+				return
+			}
 			timeout := 20 * time.Second
 			if r.URL.Path == "/api/v1/focus/scan" || r.URL.Path == "/api/v1/focus/three-day" {
 				timeout = 30 * time.Second

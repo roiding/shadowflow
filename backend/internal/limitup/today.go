@@ -78,6 +78,11 @@ type TodayInput struct {
 	// the same intraday minute. It is intentionally per-stock: turnover and
 	// fund-flow levels are not comparable across stocks.
 	CandidateHistory map[string]CandidateHistoryMetrics
+	// CandidateFilter restricts the scored candidate pool after deriving
+	// full-universe historical normalisation.
+	CandidateFilter map[string]struct{}
+	// IncludeAllCandidates exposes the complete static ranking internally.
+	IncludeAllCandidates bool
 }
 
 // AnalyzeToday computes a relationship graph whose nodes are the stocks sealed
@@ -454,10 +459,23 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 		candidatesOut = applyTodayThemeProfiles(candidatesOut, themeMainline, input.ThemeProfiles,
 			members, allSealDates, allTouchDates, lastSealDate, candidatePairs, input.MinOverlap)
 	}
-	candidatesOut = scoreTodayCandidates(candidatesOut, input.LiveQuotes, input.CandidateHistory, input.LiveDarkMoney)
+	maxCandidateHistory := 0.0
+	for _, candidate := range candidatesOut {
+		maxCandidateHistory = math.Max(maxCandidateHistory, candidate.HistoryScore)
+	}
+	if input.CandidateFilter != nil {
+		filtered := make([]TodayCandidate, 0, len(input.CandidateFilter))
+		for _, candidate := range candidatesOut {
+			if _, included := input.CandidateFilter[candidate.Code]; included {
+				filtered = append(filtered, candidate)
+			}
+		}
+		candidatesOut = filtered
+	}
+	candidatesOut = scoreTodayCandidates(candidatesOut, input.LiveQuotes, input.CandidateHistory, input.LiveDarkMoney, maxCandidateHistory)
 	mainlineCandidates := buildMainlineCandidateGroups(candidatesOut, themeMainline, input.CandidateLimit, input.LiveQuotes != nil)
 	mainlineIntersections := buildMainlineIntersections(themeMainline)
-	if len(candidatesOut) > input.CandidateLimit {
+	if !input.IncludeAllCandidates && len(candidatesOut) > input.CandidateLimit {
 		candidatesOut = candidatesOut[:input.CandidateLimit]
 	}
 	liveCandidate := input.LiveQuotes != nil
@@ -714,13 +732,18 @@ func scoreTodayCandidates(
 	live map[string]LiveQuote,
 	history map[string]CandidateHistoryMetrics,
 	darkMoney map[string]LiveDarkMoney,
+	maxHistoryOverride ...float64,
 ) []TodayCandidate {
 	if len(candidates) == 0 {
 		return candidates
 	}
 	maxHistory := 0.0
-	for _, candidate := range candidates {
-		maxHistory = math.Max(maxHistory, candidate.HistoryScore)
+	if len(maxHistoryOverride) > 0 {
+		maxHistory = maxHistoryOverride[0]
+	} else {
+		for _, candidate := range candidates {
+			maxHistory = math.Max(maxHistory, candidate.HistoryScore)
+		}
 	}
 	liveMode := live != nil
 	for index := range candidates {
@@ -806,6 +829,13 @@ func blendedCandidateScore(
 	}
 	score *= 1 - TodayCandidateMaxRiskDiscount*(1-riskScore)
 	return clamp01(score/100) * 100
+}
+
+// BlendedCandidateScoreUpperBound assumes perfect live confirmation and no
+// risk discount. It can only overestimate the eventual live ranking score.
+func BlendedCandidateScoreUpperBound(candidate TodayCandidate) float64 {
+	return blendedCandidateScore(1, candidate.MainlineScore, candidate.HistoryScore,
+		candidate.Coverage, 1, true)
 }
 
 func buildMainlineCandidateGroups(
