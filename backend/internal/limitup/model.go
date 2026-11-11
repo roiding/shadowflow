@@ -312,12 +312,14 @@ type ThemeStockProfile struct {
 }
 
 type ThemeCluster struct {
-	Code        string   `json:"code"`
-	Name        string   `json:"name"`
-	MemberCount int      `json:"member_count"`
-	Weight      float64  `json:"weight"`
-	Recency     float64  `json:"recency"`
-	MemberCodes []string `json:"member_codes"`
+	Code           string     `json:"code"`
+	Name           string     `json:"name"`
+	MemberCount    int        `json:"member_count"`
+	Weight         float64    `json:"weight"`
+	Recency        float64    `json:"recency"`
+	TimeDecay      float64    `json:"time_decay"`
+	LastNewLimitAt *time.Time `json:"last_new_limit_at"`
+	MemberCodes    []string   `json:"member_codes"`
 }
 
 // TodayMainlineGroup is one real-time mainline with its own independently

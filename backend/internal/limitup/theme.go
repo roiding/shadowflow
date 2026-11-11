@@ -154,16 +154,17 @@ func BuildThemeAnalysis(centerCode string, profiles map[string]ThemeStockProfile
 // members. Unclassified buckets are excluded, and themes carried by many
 // stocks receive a smaller IDF weight so the result does not collapse into a
 // few ubiquitous labels.
-func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockProfile) []ThemeCluster {
+func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockProfile, asOf time.Time) []ThemeCluster {
 	if len(members) == 0 || len(profiles) == 0 {
 		return []ThemeCluster{}
 	}
 	type aggregate struct {
-		code        string
-		name        string
-		memberCodes map[string]struct{}
-		weight      float64
-		recency     float64
+		code           string
+		name           string
+		memberCodes    map[string]struct{}
+		weight         float64
+		recency        float64
+		lastNewLimitAt *time.Time
 	}
 	documentFrequency := themeDocumentFrequency(profiles)
 	byTheme := make(map[string]*aggregate)
@@ -189,6 +190,14 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 			item.memberCodes[member.Code] = struct{}{}
 			item.weight += (1 + member.CoreScore/100) * themeIDF(tag.Code, documentFrequency, len(profiles))
 			item.recency = math.Max(item.recency, themeRecency(tag, member.LastLimitAt))
+			newLimitAt := member.FirstLimitAt
+			if newLimitAt == nil {
+				newLimitAt = member.LastLimitAt
+			}
+			if newLimitAt != nil && (item.lastNewLimitAt == nil || newLimitAt.After(*item.lastNewLimitAt)) {
+				value := *newLimitAt
+				item.lastNewLimitAt = &value
+			}
 		}
 	}
 	list := make([]aggregate, 0, len(byTheme))
@@ -205,6 +214,7 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 	maxWeight := 0.0
 	for index := range list {
 		list[index].weight *= 0.7 + 0.3*clamp01(list[index].recency)
+		list[index].weight *= themeTimeDecay(list[index].lastNewLimitAt, asOf, len(list[index].memberCodes))
 		maxWeight = math.Max(maxWeight, list[index].weight)
 	}
 	if maxWeight <= 0 {
@@ -232,10 +242,29 @@ func ComputeThemeMainline(members []TodayMember, profiles map[string]ThemeStockP
 		result = append(result, ThemeCluster{
 			Code: item.code, Name: item.name, MemberCount: len(memberCodes),
 			Weight: item.weight / maxWeight, Recency: clamp01(item.recency),
-			MemberCodes: memberCodes,
+			TimeDecay:      themeTimeDecay(item.lastNewLimitAt, asOf, len(memberCodes)),
+			LastNewLimitAt: item.lastNewLimitAt, MemberCodes: memberCodes,
 		})
 	}
 	return result
+}
+
+func themeTimeDecay(lastNewLimitAt *time.Time, asOf time.Time, memberCount int) float64 {
+	if lastNewLimitAt == nil || asOf.IsZero() {
+		return 1
+	}
+	ageMinutes := asOf.Sub(*lastNewLimitAt).Minutes()
+	if ageMinutes <= 0 {
+		return 1
+	}
+	// A stale direction loses weight, but a broad direction keeps more of its
+	// weight because its existing breadth is itself evidence that the theme
+	// remains active. The 90-minute decay constant is intentionally shorter
+	// than a trading session so morning and afternoon rotations can be
+	// distinguished.
+	baseDecay := math.Exp(-ageMinutes / 90)
+	breadth := float64(max(0, memberCount)) / float64(max(1, memberCount)+5)
+	return clamp01(baseDecay + (1-baseDecay)*breadth)
 }
 
 // themeRecency distinguishes a label that the market is using now from one

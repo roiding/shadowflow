@@ -1552,7 +1552,7 @@ export interface components {
             candidate_limit: number;
             /** @description 兼容字段，当前为空；今日主线改用 theme_mainline。 */
             mainline_themes: components["schemas"]["LimitUpMainlineTheme"][];
-            /** @description 由同花顺 Top20 历史累计标签实时计算出的多条题材主线；至少 2 只当前封板成员共享同一标签，按成员核心度、标签 IDF 和标签近期度加权。不解析今日实时 reason，未分类/其他/无明确原因的题材桶不参与。 */
+            /** @description 由同花顺 Top20 历史累计标签实时计算出的多条题材主线；至少 2 只当前封板成员共享同一标签，按成员核心度、标签 IDF、标签近期度和日内时效加权。日内时效按该主线最近一次首次封板距快照的时间衰减，封板成员越多衰减越轻。不解析今日实时 reason，未分类/其他/无明确原因的题材桶不参与。 */
             theme_mainline: components["schemas"]["LimitUpThemeCluster"][];
             /** @description 每条实时主线各自独立排名的候选组。主线之间不合并为单一主线，同一候选可出现在多个组中。 */
             mainline_candidates: components["schemas"]["LimitUpTodayMainlineGroup"][];
@@ -1588,10 +1588,17 @@ export interface components {
             name: string;
             /** @description 共享该题材的今日封板成员数。 */
             member_count: number;
-            /** @description 按核心度和 IDF 归一化后的主线权重。 */
+            /** @description 按核心度、IDF、标签近期度和日内时效衰减后的归一化主线权重。 */
             weight: number;
             /** @description 0到1的标签近期度；由该标签在历史Top20中的最近出现日期计算，仅在主线内部降低陈旧标签权重。 */
             recency: number;
+            /** @description 0到1的日内时效；由该主线当前成员最近一次首次封板时间距快照的分钟数计算，封板成员越多衰减越轻。 */
+            time_decay: number;
+            /**
+             * Format: date-time
+             * @description 该主线当前成员最近一次首次封板时间；无时间数据为null。
+             */
+            last_new_limit_at: string | null;
             /** @description 共享该题材的当前封板成员代码，用于计算主线交叉。 */
             member_codes: string[];
         };

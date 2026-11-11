@@ -62,7 +62,7 @@ func TestComputeThemeMainlineExcludesUnclassifiedBuckets(t *testing.T) {
 	mainline := ComputeThemeMainline([]TodayMember{
 		{Code: "000001", CoreScore: 50},
 		{Code: "000002", CoreScore: 40},
-	}, profiles)
+	}, profiles, time.Date(2026, 11, 11, 14, 0, 0, 0, Shanghai()))
 	if len(mainline) != 1 || mainline[0].Code != "885517" || mainline[0].MemberCount != 2 {
 		t.Fatalf("unclassified bucket leaked into mainline: %+v", mainline)
 	}
@@ -120,9 +120,71 @@ func TestThemeMainlinePrefersRecentlyUsedLabel(t *testing.T) {
 	mainline := ComputeThemeMainline([]TodayMember{
 		{Code: "000001", CoreScore: 50, LastLimitAt: timePointer(time.Date(2026, 11, 11, 9, 30, 0, 0, Shanghai()))},
 		{Code: "000002", CoreScore: 50, LastLimitAt: timePointer(time.Date(2026, 11, 11, 9, 30, 0, 0, Shanghai()))},
-	}, profiles)
+	}, profiles, time.Date(2026, 11, 11, 14, 0, 0, 0, Shanghai()))
 	if len(mainline) != 2 || mainline[0].Code != recent.Code || mainline[0].Recency <= mainline[1].Recency {
 		t.Fatalf("recently used label did not outrank stale label: %+v", mainline)
+	}
+}
+
+func TestThemeMainlineAppliesIntradayTimeDecay(t *testing.T) {
+	oldLimit := time.Date(2026, 11, 11, 9, 30, 0, 0, Shanghai())
+	newLimit := time.Date(2026, 11, 11, 13, 30, 0, 0, Shanghai())
+	robot := ThemeTag{Code: "885517", Name: "机器人概念", Occurrences: 4, RecentOccurrences: 2}
+	energy := ThemeTag{Code: "885431", Name: "新能源汽车", Occurrences: 4, RecentOccurrences: 2}
+	profiles := map[string]ThemeStockProfile{
+		"000001": {Code: "000001", Name: "旧方向甲", Tags: []ThemeTag{robot}},
+		"000002": {Code: "000002", Name: "旧方向乙", Tags: []ThemeTag{robot}},
+		"000003": {Code: "000003", Name: "新方向甲", Tags: []ThemeTag{energy}},
+		"000004": {Code: "000004", Name: "新方向乙", Tags: []ThemeTag{energy}},
+	}
+	members := []TodayMember{
+		{Code: "000001", CoreScore: 50, FirstLimitAt: &oldLimit},
+		{Code: "000002", CoreScore: 50, FirstLimitAt: &oldLimit},
+		{Code: "000003", CoreScore: 50, FirstLimitAt: &newLimit},
+		{Code: "000004", CoreScore: 50, FirstLimitAt: &newLimit},
+	}
+	mainline := ComputeThemeMainline(members, profiles, time.Date(2026, 11, 11, 14, 0, 0, 0, Shanghai()))
+	byCode := make(map[string]ThemeCluster, len(mainline))
+	for _, theme := range mainline {
+		byCode[theme.Code] = theme
+	}
+	oldTheme, oldExists := byCode[robot.Code]
+	newTheme, newExists := byCode[energy.Code]
+	if !oldExists || !newExists || oldTheme.TimeDecay >= newTheme.TimeDecay ||
+		oldTheme.Weight >= newTheme.Weight {
+		t.Fatalf("intraday time decay did not demote the stale direction: old=%+v new=%+v", oldTheme, newTheme)
+	}
+	if oldTheme.LastNewLimitAt == nil || newTheme.LastNewLimitAt == nil ||
+		!oldTheme.LastNewLimitAt.Equal(oldLimit) || !newTheme.LastNewLimitAt.Equal(newLimit) {
+		t.Fatalf("last new limit time was not preserved: old=%+v new=%+v", oldTheme, newTheme)
+	}
+}
+
+func TestThemeTimeDecayIsDampedByMemberBreadth(t *testing.T) {
+	oldLimit := time.Date(2026, 11, 11, 9, 30, 0, 0, Shanghai())
+	smallTag := ThemeTag{Code: "885001", Name: "小方向", Occurrences: 2, RecentOccurrences: 1}
+	bigTag := ThemeTag{Code: "885002", Name: "大方向", Occurrences: 2, RecentOccurrences: 1}
+	profiles := map[string]ThemeStockProfile{}
+	members := []TodayMember{}
+	for index := 0; index < 2; index++ {
+		code := "00000" + string(rune('1'+index))
+		profiles[code] = ThemeStockProfile{Code: code, Name: code, Tags: []ThemeTag{smallTag}}
+		members = append(members, TodayMember{Code: code, CoreScore: 50, FirstLimitAt: &oldLimit})
+	}
+	for index := 0; index < 8; index++ {
+		code := "00001" + string(rune('0'+index))
+		profiles[code] = ThemeStockProfile{Code: code, Name: code, Tags: []ThemeTag{bigTag}}
+		members = append(members, TodayMember{Code: code, CoreScore: 50, FirstLimitAt: &oldLimit})
+	}
+	mainline := ComputeThemeMainline(members, profiles, time.Date(2026, 11, 11, 14, 0, 0, 0, Shanghai()))
+	byCode := make(map[string]ThemeCluster, len(mainline))
+	for _, theme := range mainline {
+		byCode[theme.Code] = theme
+	}
+	small, smallExists := byCode[smallTag.Code]
+	big, bigExists := byCode[bigTag.Code]
+	if !smallExists || !bigExists || big.MemberCount <= small.MemberCount || big.TimeDecay <= small.TimeDecay {
+		t.Fatalf("member breadth did not damp time decay: small=%+v big=%+v", small, big)
 	}
 }
 

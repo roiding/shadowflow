@@ -388,7 +388,7 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 	}
 	themeMainline := []ThemeCluster{}
 	if len(input.ThemeProfiles) > 0 {
-		themeMainline = ComputeThemeMainline(membersOut, input.ThemeProfiles)
+		themeMainline = ComputeThemeMainline(membersOut, input.ThemeProfiles, input.Snapshot.FetchedAt)
 	}
 	candidatesOut := buildTodayCandidates(candidatePairs, members, coreByCode, len(membersOut),
 		len(historyDays), input.MinOverlap,

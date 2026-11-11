@@ -675,6 +675,8 @@ function MainlineCandidateSections({
                   <strong>{group.theme.name}</strong>
                   <small>
                     {group.theme.member_count} 只封板 · 权重 {formatNumber(group.theme.weight, 2)}
+                    {' · '}时效 {formatNumber(group.theme.time_decay, 2)}
+                    {' · '}新增 {formatTimeText(group.theme.last_new_limit_at)}
                     {' · '}{group.candidates.length} 只备选
                   </small>
                 </span>
@@ -951,20 +953,21 @@ export function TodayCorePanel({
                 <div className="today-core-mainlines">
                   <span className="today-core-mainlines-label">
                     实时主线
-                    <MetricHint label="实时多主线" formula="至少 2 只当前封板成员共享 Top20 历史标签；按核心度 × IDF × 近期度加权">
-                      只使用同花顺 Top20 在历史日期中积累到个股上的题材标签，不解析今日实时 reason。每条主线独立保留，不再用最强80%+次强20%合并成一条；至少 2 只当前封板成员共享同一标签才计入。主线可以交叉，候选也可以交叉。未分类、其他、原因不明或全组没有明确原因标签的题材桶不参与，东财行业/概念不作为替代。
+                    <MetricHint label="实时多主线" formula="至少 2 只当前封板成员共享 Top20 历史标签；原始权重 × 近期度 × 日内时效">
+                      只使用同花顺 Top20 在历史日期中积累到个股上的题材标签，不解析今日实时 reason。每条主线独立保留，不再用最强80%+次强20%合并成一条；至少 2 只当前封板成员共享同一标签才计入。日内时效 = `e^(-Δt/90) + (1-e^(-Δt/90)) × n/(n+5)`，Δt 是该主线当前成员最近一次首次封板距快照的分钟数，n 是当前封板成员数；成员越多，空窗衰减越轻。主线可以交叉，候选也可以交叉。未分类、其他、原因不明或全组没有明确原因标签的题材桶不参与，东财行业/概念不作为替代。
                     </MetricHint>
                   </span>
                   {(network.theme_mainline ?? []).map((theme) => (
                     <span
                       key={theme.code}
                       className="today-core-mainline"
-                      title={`Top20 历史标签 · 权重 ${formatNumber(theme.weight, 2)} · 近期度 ${formatNumber(theme.recency, 2)}`}
+                      title={`Top20 历史标签 · 权重 ${formatNumber(theme.weight, 2)} · 近期度 ${formatNumber(theme.recency, 2)} · 日内时效 ${formatNumber(theme.time_decay, 2)} · 最近新增封板 ${formatTimeText(theme.last_new_limit_at)}`}
                     >
                       {theme.name}
                       <small>
                         {theme.member_count} 只封板 · 权重 {formatNumber(theme.weight, 2)}
-                        {' · '}近期 {formatNumber(theme.recency, 2)}
+                        {' · '}时效 {formatNumber(theme.time_decay, 2)}
+                        {' · '}新增 {formatTimeText(theme.last_new_limit_at)}
                       </small>
                     </span>
                   ))}
