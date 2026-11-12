@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	todayDarkMoneyTimeout = 15 * time.Second
-	todayScoreEpsilon     = 1e-9
+	todayDarkMoneyTimeout       = 15 * time.Second
+	todayScoreEpsilon           = 1e-9
+	todayCandidatePrefetchBatch = 4
 )
 
 type todayBound struct {
@@ -34,6 +35,19 @@ type todayRankingStats struct {
 type todayFinalCandidate struct {
 	candidate limitup.TodayCandidate
 	potential float64
+}
+
+type todayBatchSpec struct {
+	start int
+	end   int
+	codes []string
+}
+
+type todayBatchResult struct {
+	quotes     map[string]limitup.LiveQuote
+	history    map[string]limitup.CandidateHistoryMetrics
+	quoteErr   error
+	historyErr error
 }
 
 func todayCandidateBounds(candidates []limitup.TodayCandidate) []todayBound {
@@ -116,70 +130,101 @@ func (server *Server) rankTodayCandidates(
 		globalDarkBoost = limitup.TodayCandidateDarkMoneyGlobalUpperBound()
 	}
 
-	coarse := static
-	proven := false
-	for start := 0; start < len(bounds); {
-		end := todayCandidateBatchEnd(bounds, start, requested)
-		codes := make([]string, 0, end-start)
-		for _, bound := range bounds[start:end] {
-			codes = append(codes, bound.code)
-			selected[bound.code] = struct{}{}
-		}
-		var batchQuotes map[string]limitup.LiveQuote
-		var batchHistory map[string]limitup.CandidateHistoryMetrics
-		var quoteErr, historyErr error
+	readBatch := func(codes []string) todayBatchResult {
+		var result todayBatchResult
 		var wait sync.WaitGroup
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			batchQuotes, quoteErr = server.limitUpQuotes.ReadLiveQuotes(ctx, codes)
+			result.quotes, result.quoteErr = server.limitUpQuotes.ReadLiveQuotes(ctx, codes)
 		}()
 		if readHistory {
 			wait.Add(1)
 			go func() {
 				defer wait.Done()
-				batchHistory, historyErr = historyReader.ReadCandidateHistoryMetrics(
+				result.history, result.historyErr = historyReader.ReadCandidateHistoryMetrics(
 					ctx, historyAsOf, codes, limitup.TodayLiveHistoryWindowDays, minuteIndex,
 				)
 			}()
 		}
 		wait.Wait()
+		return result
+	}
+
+	coarse := static
+	proven := false
+	quoteReadCount := 0
+	for start := 0; start < len(bounds); {
+		specs := make([]todayBatchSpec, 0, todayCandidatePrefetchBatch)
+		cursor := start
+		for len(specs) < todayCandidatePrefetchBatch && cursor < len(bounds) {
+			end := todayCandidateBatchEnd(bounds, cursor, requested)
+			if end <= cursor {
+				end = min(cursor+todayCandidateBatchSize, len(bounds))
+			}
+			codes := make([]string, 0, end-cursor)
+			for _, bound := range bounds[cursor:end] {
+				codes = append(codes, bound.code)
+			}
+			specs = append(specs, todayBatchSpec{start: cursor, end: end, codes: codes})
+			cursor = end
+		}
+		results := make([]todayBatchResult, len(specs))
+		var batchWait sync.WaitGroup
+		for index, spec := range specs {
+			batchWait.Add(1)
+			go func(index int, codes []string) {
+				defer batchWait.Done()
+				results[index] = readBatch(codes)
+			}(index, spec.codes)
+		}
+		batchWait.Wait()
+		for _, spec := range specs {
+			quoteReadCount += len(spec.codes)
+		}
+		stats.CoarseBatches += len(specs)
+		stats.QuoteReadCount = quoteReadCount
 		if ctx.Err() != nil {
 			return limitup.TodayNetwork{}, stats, ctx.Err()
 		}
-		if quoteErr != nil {
-			return limitup.TodayNetwork{}, stats, fmt.Errorf("read live candidate quotes: %w", quoteErr)
-		}
-		if historyErr != nil {
-			return limitup.TodayNetwork{}, stats, fmt.Errorf("read live candidate history: %w", historyErr)
-		}
-		for _, code := range codes {
-			quotes[code] = batchQuotes[code]
-			if readHistory {
-				item, exists := batchHistory[code]
-				if !exists {
-					return limitup.TodayNetwork{}, stats, fmt.Errorf("missing candidate history %s", code)
+		for index, spec := range specs {
+			batchResult := results[index]
+			if batchResult.quoteErr != nil {
+				return limitup.TodayNetwork{}, stats, fmt.Errorf("read live candidate quotes: %w", batchResult.quoteErr)
+			}
+			if batchResult.historyErr != nil {
+				return limitup.TodayNetwork{}, stats, fmt.Errorf("read live candidate history: %w", batchResult.historyErr)
+			}
+			for _, code := range spec.codes {
+				selected[code] = struct{}{}
+				quotes[code] = batchResult.quotes[code]
+				if readHistory {
+					item, exists := batchResult.history[code]
+					if !exists {
+						return limitup.TodayNetwork{}, stats, fmt.Errorf("missing candidate history %s", code)
+					}
+					history[code] = item
 				}
-				history[code] = item
+			}
+			input.CandidateFilter = selected
+			input.LiveQuotes = quotes
+			input.LiveDarkMoney = nil
+			input.CandidateHistory = history
+			input.IncludeAllCandidates = true
+			analyzed, err := limitup.AnalyzeToday(ctx, input)
+			if err != nil {
+				return limitup.TodayNetwork{}, stats, err
+			}
+			coarse = analyzed
+			if todayRankingProvenNoDark(analyzed.Candidates, requested, bounds[spec.end:], globalDarkBoost) {
+				proven = true
+				break
 			}
 		}
-		input.CandidateFilter = selected
-		input.LiveQuotes = quotes
-		input.LiveDarkMoney = nil
-		input.CandidateHistory = history
-		input.IncludeAllCandidates = true
-		result, err := limitup.AnalyzeToday(ctx, input)
-		if err != nil {
-			return limitup.TodayNetwork{}, stats, err
-		}
-		stats.CoarseBatches++
-		stats.QuoteReadCount = len(quotes)
-		coarse = result
-		if todayRankingProvenNoDark(result.Candidates, requested, bounds[end:], globalDarkBoost) {
-			proven = true
+		if proven {
 			break
 		}
-		start = end
+		start = cursor
 	}
 	if len(coarse.Candidates) != len(selected) {
 		return limitup.TodayNetwork{}, stats, fmt.Errorf(

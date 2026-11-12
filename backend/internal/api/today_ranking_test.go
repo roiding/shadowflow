@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 	"testing"
 	"time"
 
@@ -93,11 +94,14 @@ func TestTodayDarkMoneyUpperBoundIsTighterThanGlobal(t *testing.T) {
 }
 
 type batchRecordingQuoteSource struct {
+	mu      sync.Mutex
 	batches [][]string
 	quotes  map[string]limitup.LiveQuote
 }
 
 func (source *batchRecordingQuoteSource) ReadLiveQuotes(_ context.Context, codes []string) (map[string]limitup.LiveQuote, error) {
+	source.mu.Lock()
+	defer source.mu.Unlock()
 	source.batches = append(source.batches, append([]string(nil), codes...))
 	result := make(map[string]limitup.LiveQuote, len(codes))
 	for _, code := range codes {
