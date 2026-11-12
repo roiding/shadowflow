@@ -34,7 +34,7 @@ import './views/linkage.css'
 
 const CORE_TOP_OPTIONS = [3, 5, 8, 10] as const
 const CORE_LOOKBACK_OPTIONS = [30, 90, 180, 365] as const
-const CORE_MIN_OVERLAP_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const
+const CORE_MIN_OVERLAP_OPTIONS = [2, 3, 4, 5, 6, 7, 8, 9, 10] as const
 const CORE_CANDIDATE_OPTIONS = [10, 20, 30, 50] as const
 const CORE_LINK_PAGE_SIZE = 8
 
@@ -677,7 +677,7 @@ export function TodayCorePanel({
     CORE_LOOKBACK_OPTIONS.includes(defaultDays as (typeof CORE_LOOKBACK_OPTIONS)[number]) ? defaultDays : 365,
   )
   const [marketScope, setMarketScope] = useState<LimitUpTodayNetwork['scope']>(defaultScope)
-  const [minOverlap, setMinOverlap] = useState(1)
+  const [minOverlap, setMinOverlap] = useState(2)
   const [top, setTop] = useState<number>(5)
   const [candidateLimit, setCandidateLimit] = useState<number>(10)
   const [selectedCode, setSelectedCode] = useState('')

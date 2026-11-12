@@ -53,16 +53,17 @@ func TestLimitUpAPIsReadIndependentEvents(testingT *testing.T) {
 		testingT.Fatalf("unexpected result without OHLC/relations archives: %d %+v", response.Code, result)
 	}
 	for target, status := range map[string]int{
-		"/api/v1/limit-up/stocks/000003?as_of=2026-08-03":           http.StatusNotFound,
-		"/api/v1/limit-up/stocks/000001?as_of=2026-08-02":           http.StatusNotFound,
-		"/api/v1/limit-up/stocks/ABC001":                            http.StatusBadRequest,
-		"/api/v1/limit-up/overview?days=367":                        http.StatusBadRequest,
-		"/api/v1/limit-up/overview?days=0":                          http.StatusBadRequest,
-		"/api/v1/limit-up/overview?days=30&days=90":                 http.StatusBadRequest,
-		"/api/v1/limit-up/overview?scope=HS":                        http.StatusBadRequest,
-		"/api/v1/limit-up/stocks/000001?event=minute":               http.StatusBadRequest,
-		"/api/v1/limit-up/stocks/000001?order=invalid":              http.StatusBadRequest,
-		"/api/v1/limit-up/stocks/000001?as_of=2026-08-03&limit=101": http.StatusBadRequest,
+		"/api/v1/limit-up/stocks/000003?as_of=2026-08-03":             http.StatusNotFound,
+		"/api/v1/limit-up/stocks/000001?as_of=2026-08-02":             http.StatusNotFound,
+		"/api/v1/limit-up/stocks/ABC001":                              http.StatusBadRequest,
+		"/api/v1/limit-up/overview?days=367":                          http.StatusBadRequest,
+		"/api/v1/limit-up/overview?days=0":                            http.StatusBadRequest,
+		"/api/v1/limit-up/overview?days=30&days=90":                   http.StatusBadRequest,
+		"/api/v1/limit-up/overview?scope=HS":                          http.StatusBadRequest,
+		"/api/v1/limit-up/stocks/000001?event=minute":                 http.StatusBadRequest,
+		"/api/v1/limit-up/stocks/000001?order=invalid":                http.StatusBadRequest,
+		"/api/v1/limit-up/stocks/000001?as_of=2026-08-03&limit=101":   http.StatusBadRequest,
+		"/api/v1/limit-up/today-network?days=365&min_overlap=1&top=2": http.StatusBadRequest,
 	} {
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
@@ -198,10 +199,11 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 		},
 		{
 			TradeDate: "2026-11-05", Source: limitup.SourceTHS, Scope: limitup.ScopeDefault,
-			FetchedAt: time.Date(2026, 11, 5, 16, 0, 0, 0, limitup.Shanghai()), SealedCount: 2, TouchedCount: 2,
+			FetchedAt: time.Date(2026, 11, 5, 16, 0, 0, 0, limitup.Shanghai()), SealedCount: 3, TouchedCount: 3,
 			Events: []limitup.Event{
 				{TradeDate: "2026-11-05", Code: "000001", Name: "甲", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
 				{TradeDate: "2026-11-05", Code: "000002", Name: "乙", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
+				{TradeDate: "2026-11-05", Code: "000003", Name: "丙", MarketID: 33, MarketType: "HS", Pool: limitup.PoolSealed},
 			},
 			RawPages: []json.RawMessage{json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`)},
 		},
@@ -279,7 +281,7 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 		testingT.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/limit-up/today-network?days=365&min_overlap=1&top=2", nil))
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/limit-up/today-network?days=365&min_overlap=2&top=2", nil))
 	var result struct {
 		Data limitup.TodayNetwork `json:"data"`
 		Meta struct {

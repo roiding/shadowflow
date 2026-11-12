@@ -1127,7 +1127,7 @@ export interface paths {
                     days?: components["parameters"]["LimitUpDays"];
                     /** @description 市场范围独立存储，不混合不同筛选口径；不保证北交所覆盖。 */
                     scope?: components["parameters"]["LimitUpScope"];
-                    /** @description 历史收盘封板的最少共同天数。 */
+                    /** @description 历史收盘封板的最少共同天数；单次共现不作为有效关系，最低为 2。 */
                     min_overlap?: number;
                     /** @description 返回的核心股数量；无有效关系或并列时按核心度、关系数、封板天数及代码稳定排序。 */
                     top?: number;

@@ -492,8 +492,8 @@ paths:
         - $ref: "#/components/parameters/LimitUpScope"
         - name: min_overlap
           in: query
-          schema: { type: integer, minimum: 1, maximum: 20, default: 1 }
-          description: 历史收盘封板的最少共同天数。
+          schema: { type: integer, minimum: 2, maximum: 20, default: 2 }
+          description: 历史收盘封板的最少共同天数；单次共现不作为有效关系，最低为 2。
         - name: top
           in: query
           schema: { type: integer, minimum: 1, maximum: 20, default: 5 }

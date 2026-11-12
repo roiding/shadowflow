@@ -105,7 +105,7 @@ func AnalyzeToday(ctx context.Context, input TodayInput) (TodayNetwork, error) {
 		return TodayNetwork{}, fmt.Errorf("%w: intraday side-pool counts do not match their members", ErrInvalid)
 	}
 	if input.MinOverlap < 1 {
-		input.MinOverlap = 1
+		input.MinOverlap = 2
 	}
 	if input.TopCores < 1 {
 		input.TopCores = 5

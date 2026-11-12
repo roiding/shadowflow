@@ -143,19 +143,23 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 			return
 		}
 	}
-	days, minOverlap, top, candidates := 365, 1, 5, 20
+	days, minOverlap, top, candidates := 365, 2, 5, 20
 	for key, target := range map[string]*int{"days": &days, "min_overlap": &minOverlap, "top": &top, "candidates": &candidates} {
 		if value := values.Get(key); value != "" {
 			parsed, err := strconv.Atoi(value)
-			if err != nil || parsed < 1 {
-				writeError(response, http.StatusBadRequest, "invalid_limit_up_request", key+" must be a positive integer")
+			minimum := 1
+			if key == "min_overlap" {
+				minimum = 2
+			}
+			if err != nil || parsed < minimum {
+				writeError(response, http.StatusBadRequest, "invalid_limit_up_request", key+" is below its minimum")
 				return
 			}
 			*target = parsed
 		}
 	}
 	if days > 366 || minOverlap > 20 || top > 20 || candidates > 50 {
-		writeError(response, http.StatusBadRequest, "invalid_limit_up_request", "days must be 1..366, min_overlap 1..20, top 1..20, candidates 1..50")
+		writeError(response, http.StatusBadRequest, "invalid_limit_up_request", "days must be 1..366, min_overlap 2..20, top 1..20, candidates 1..50")
 		return
 	}
 	scope := values.Get("scope")
