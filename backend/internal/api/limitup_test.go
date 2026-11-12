@@ -144,10 +144,12 @@ type recordingLimitUpQuoteSource struct {
 }
 
 type recordingLimitUpDarkMoneySource struct {
+	calls int
 	codes []string
 }
 
 func (source *recordingLimitUpDarkMoneySource) ReadLiveDarkMoney(_ context.Context, _ string, codes []string, at time.Time) (map[string]limitup.LiveDarkMoney, error) {
+	source.calls++
 	source.codes = append(source.codes, codes...)
 	result := make(map[string]limitup.LiveDarkMoney, len(codes))
 	for _, code := range codes {
@@ -281,9 +283,16 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 	var result struct {
 		Data limitup.TodayNetwork `json:"data"`
 		Meta struct {
-			SnapshotOnly         bool   `json:"snapshot_only"`
-			HistoryExcludesToday bool   `json:"history_excludes_today"`
-			SnapshotFetchedAt    string `json:"snapshot_fetched_at"`
+			SnapshotOnly            bool   `json:"snapshot_only"`
+			HistoryExcludesToday    bool   `json:"history_excludes_today"`
+			SnapshotFetchedAt       string `json:"snapshot_fetched_at"`
+			LiveDarkMoneyStatus     string `json:"live_dark_money_status"`
+			CandidateStaticCount    int    `json:"candidate_static_count"`
+			CandidateQuoteReadCount int    `json:"candidate_quote_read_count"`
+			CandidateCoarseBatches  int    `json:"candidate_coarse_batches"`
+			DarkMoneyPoolCount      int    `json:"dark_money_pool_count"`
+			DarkMoneyRequestedCount int    `json:"dark_money_requested_count"`
+			DarkMoneyAvailableCount int    `json:"dark_money_available_count"`
 		} `json:"meta"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
@@ -291,7 +300,10 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 	}
 	if response.Code != http.StatusOK || result.Data.SealedCount != 3 || result.Data.HistoryAsOf != "2026-11-06" ||
 		result.Data.Coverage.ObservedDays != 3 || !result.Meta.SnapshotOnly || !result.Meta.HistoryExcludesToday ||
-		result.Meta.SnapshotFetchedAt == "" {
+		result.Meta.SnapshotFetchedAt == "" || result.Meta.LiveDarkMoneyStatus != "ready" ||
+		result.Meta.CandidateStaticCount != 1 || result.Meta.CandidateQuoteReadCount != 1 ||
+		result.Meta.CandidateCoarseBatches != 1 || result.Meta.DarkMoneyPoolCount != 1 ||
+		result.Meta.DarkMoneyRequestedCount != 1 || result.Meta.DarkMoneyAvailableCount != 1 {
 		testingT.Fatalf("unexpected today network result: %d %s", response.Code, response.Body.String())
 	}
 	for _, member := range result.Data.Members {
@@ -313,8 +325,9 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 	if len(quoteSource.codes) != 1 || quoteSource.codes[0] != "000003" {
 		testingT.Fatalf("live quotes must be requested for the final candidate only: %+v", quoteSource.codes)
 	}
-	if len(darkMoneySource.codes) != 0 {
-		testingT.Fatalf("today-core must not call the per-stock dark-money source: %+v", darkMoneySource.codes)
+	if darkMoneySource.calls != 1 || len(darkMoneySource.codes) != 1 || darkMoneySource.codes[0] != "000003" {
+		testingT.Fatalf("today-core must call dark money once for the final candidate: calls=%d codes=%+v",
+			darkMoneySource.calls, darkMoneySource.codes)
 	}
 	if len(result.Data.ThemeMainline) != 1 || result.Data.ThemeMainline[0].Code != "885517" ||
 		result.Data.ThemeMainline[0].MemberCount != 2 {

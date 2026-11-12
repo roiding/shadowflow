@@ -838,6 +838,46 @@ func BlendedCandidateScoreUpperBound(candidate TodayCandidate) float64 {
 		candidate.Coverage, 1, true)
 }
 
+// TodayCandidateDarkMoneyGlobalUpperBound is the largest score increase the
+// dark-money component can add to any candidate. The live confirmation is
+// renormalised over its available components, so the marginal contribution is
+// not simply 30% x 15%: start and room are always active, making the minimum
+// active weight 0.50 before dark money is added.
+func TodayCandidateDarkMoneyGlobalUpperBound() float64 {
+	active := TodayLiveWeightStart + TodayLiveWeightRoom + TodayLiveWeightDark
+	return 100 * TodayCandidateWeightLive * TodayLiveWeightDark / active
+}
+
+// TodayCandidateDarkMoneyUpperBound returns the largest score increase dark
+// money can add to one already-scored candidate. It uses the candidate's own
+// live score and available components, so it is tighter than the global bound
+// while remaining a strict upper bound.
+func TodayCandidateDarkMoneyUpperBound(candidate TodayCandidate) float64 {
+	if !candidate.LiveAvailable || candidate.ChangePercent == nil ||
+		candidate.TurnoverRate == nil || candidate.DistanceToLimit == nil ||
+		candidate.TurnoverAmount == nil || *candidate.TurnoverAmount <= 0 {
+		return 0
+	}
+	active := TodayLiveWeightStart + TodayLiveWeightRoom
+	if candidate.TurnoverPercentile != nil {
+		active += TodayLiveWeightTurnover
+	}
+	if candidate.VolumeRatio != nil {
+		active += TodayLiveWeightVolume
+	}
+	if candidate.MainFlowPercentile != nil {
+		active += TodayLiveWeightFlow
+	}
+	base := clamp01(candidate.LiveScore)
+	if candidate.TouchedLimit {
+		// liveCandidateScore applies the failed-board penalty after
+		// normalisation, so the raw score can be up to 0.20 higher.
+		base = math.Min(1, base+0.20)
+	}
+	increase := TodayLiveWeightDark * (1 - base) / (active + TodayLiveWeightDark)
+	return 100 * TodayCandidateWeightLive * increase
+}
+
 func buildMainlineCandidateGroups(
 	candidates []TodayCandidate,
 	mainline []ThemeCluster,

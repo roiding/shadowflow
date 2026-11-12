@@ -25,9 +25,9 @@ type candidateHistoryReader interface {
 }
 
 // Quotes are fetched through a batched upstream endpoint. A larger batch
-// avoids one HTTP round trip per handful of candidates; dark-money ticks are
-// deliberately not part of this path because they require one request per
-// stock and make the intraday endpoint unreliable during the session.
+// avoids one HTTP round trip per handful of candidates. Dark-money ticks are
+// deliberately not part of this loop: they require one request per stock and
+// are read once, only for the small pool that can still enter the top N.
 const todayCandidateBatchSize = 100
 
 func limitUpQuery(request *http.Request) (limitup.Query, error) {
@@ -285,12 +285,13 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 	}
 	liveQuoteStatus := "disabled"
 	liveDarkMoneyStatus := "disabled"
+	rankingStats := todayRankingStats{}
 	if server.limitUpQuotes != nil {
 		if len(result.Candidates) == 0 {
 			liveQuoteStatus = "empty"
 			liveDarkMoneyStatus = "empty"
 		} else {
-			result, err = server.rankTodayCandidates(request.Context(), input, result, historyAsOf, candidates)
+			result, rankingStats, err = server.rankTodayCandidates(request.Context(), input, result, historyAsOf, candidates)
 			if err != nil {
 				server.logger.Warn("rank today-core candidates", "error", err)
 				writeError(response, http.StatusServiceUnavailable, "candidate_data_unavailable", "盘中候选数据不完整，无法保证排序；请稍后重试")
@@ -300,7 +301,7 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 			if result.LiveUnavailable {
 				liveQuoteStatus = "partial"
 			}
-			liveDarkMoneyStatus = "disabled"
+			liveDarkMoneyStatus = rankingStats.DarkStatus
 		}
 	}
 	if !result.LiveCandidate && len(result.Candidates) > candidates {
@@ -311,7 +312,13 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 		"snapshot_only": true, "history_excludes_today": true,
 		"snapshot_fetched_at": snapshot.FetchedAt, "live_candidates": result.LiveCandidate,
 		"live_quote_status": liveQuoteStatus, "live_dark_money_status": liveDarkMoneyStatus,
-		"candidate_history_days": limitup.TodayLiveHistoryWindowDays,
+		"candidate_history_days":     limitup.TodayLiveHistoryWindowDays,
+		"candidate_static_count":     rankingStats.StaticCount,
+		"candidate_quote_read_count": rankingStats.QuoteReadCount,
+		"candidate_coarse_batches":   rankingStats.CoarseBatches,
+		"dark_money_pool_count":      rankingStats.DarkPoolCount,
+		"dark_money_requested_count": rankingStats.DarkRequestedCount,
+		"dark_money_available_count": rankingStats.DarkAvailableCount,
 	}})
 }
 
