@@ -316,6 +316,7 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 		"candidate_static_count":     rankingStats.StaticCount,
 		"candidate_quote_read_count": rankingStats.QuoteReadCount,
 		"candidate_coarse_batches":   rankingStats.CoarseBatches,
+		"candidate_analyze_calls":    rankingStats.AnalyzeCalls,
 		"dark_money_pool_count":      rankingStats.DarkPoolCount,
 		"dark_money_requested_count": rankingStats.DarkRequestedCount,
 		"dark_money_available_count": rankingStats.DarkAvailableCount,

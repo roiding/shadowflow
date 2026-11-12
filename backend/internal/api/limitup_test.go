@@ -290,6 +290,7 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 			CandidateStaticCount    int    `json:"candidate_static_count"`
 			CandidateQuoteReadCount int    `json:"candidate_quote_read_count"`
 			CandidateCoarseBatches  int    `json:"candidate_coarse_batches"`
+			CandidateAnalyzeCalls   int    `json:"candidate_analyze_calls"`
 			DarkMoneyPoolCount      int    `json:"dark_money_pool_count"`
 			DarkMoneyRequestedCount int    `json:"dark_money_requested_count"`
 			DarkMoneyAvailableCount int    `json:"dark_money_available_count"`
@@ -302,7 +303,8 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 		result.Data.Coverage.ObservedDays != 3 || !result.Meta.SnapshotOnly || !result.Meta.HistoryExcludesToday ||
 		result.Meta.SnapshotFetchedAt == "" || result.Meta.LiveDarkMoneyStatus != "ready" ||
 		result.Meta.CandidateStaticCount != 1 || result.Meta.CandidateQuoteReadCount != 1 ||
-		result.Meta.CandidateCoarseBatches != 1 || result.Meta.DarkMoneyPoolCount != 1 ||
+		result.Meta.CandidateCoarseBatches != 1 || result.Meta.CandidateAnalyzeCalls != 1 ||
+		result.Meta.DarkMoneyPoolCount != 1 ||
 		result.Meta.DarkMoneyRequestedCount != 1 || result.Meta.DarkMoneyAvailableCount != 1 {
 		testingT.Fatalf("unexpected today network result: %d %s", response.Code, response.Body.String())
 	}

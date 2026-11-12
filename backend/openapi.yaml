@@ -514,7 +514,7 @@ paths:
                   data: { $ref: "#/components/schemas/LimitUpTodayNetwork" }
                   meta:
                     type: object
-                    required: [snapshot_only, history_excludes_today, snapshot_fetched_at, live_candidates, live_quote_status, live_dark_money_status, candidate_history_days, candidate_static_count, candidate_quote_read_count, candidate_coarse_batches, dark_money_pool_count, dark_money_requested_count, dark_money_available_count]
+                    required: [snapshot_only, history_excludes_today, snapshot_fetched_at, live_candidates, live_quote_status, live_dark_money_status, candidate_history_days, candidate_static_count, candidate_quote_read_count, candidate_coarse_batches, candidate_analyze_calls, dark_money_pool_count, dark_money_requested_count, dark_money_available_count]
                     properties:
                       snapshot_only: { type: boolean, const: true }
                       history_excludes_today: { type: boolean, const: true }
@@ -526,6 +526,7 @@ paths:
                       candidate_static_count: { type: integer, description: 进入理论排序的静态候选数。 }
                       candidate_quote_read_count: { type: integer, description: 粗筛实际读取盘中行情的候选数。 }
                       candidate_coarse_batches: { type: integer, description: 粗筛读取行情和自身历史的批次数。 }
+                      candidate_analyze_calls: { type: integer, description: 粗筛实际调用全量分析和打分的次数。 }
                       dark_money_pool_count: { type: integer, description: 粗筛后仍可能进入前 N、需要保留在最终池中的候选数。 }
                       dark_money_requested_count: { type: integer, description: 最终实际请求暗盘资金的候选数。 }
                       dark_money_available_count: { type: integer, description: 暗盘资金实际返回可用的候选数。 }

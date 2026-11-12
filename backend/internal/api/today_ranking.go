@@ -26,6 +26,7 @@ type todayRankingStats struct {
 	StaticCount        int
 	QuoteReadCount     int
 	CoarseBatches      int
+	AnalyzeCalls       int
 	DarkPoolCount      int
 	DarkRequestedCount int
 	DarkAvailableCount int
@@ -206,21 +207,19 @@ func (server *Server) rankTodayCandidates(
 					history[code] = item
 				}
 			}
-			input.CandidateFilter = selected
-			input.LiveQuotes = quotes
-			input.LiveDarkMoney = nil
-			input.CandidateHistory = history
-			input.IncludeAllCandidates = true
-			analyzed, err := limitup.AnalyzeToday(ctx, input)
-			if err != nil {
-				return limitup.TodayNetwork{}, stats, err
-			}
-			coarse = analyzed
-			if todayRankingProvenNoDark(analyzed.Candidates, requested, bounds[spec.end:], globalDarkBoost) {
-				proven = true
-				break
-			}
 		}
+		input.CandidateFilter = selected
+		input.LiveQuotes = quotes
+		input.LiveDarkMoney = nil
+		input.CandidateHistory = history
+		input.IncludeAllCandidates = true
+		analyzed, err := limitup.AnalyzeToday(ctx, input)
+		if err != nil {
+			return limitup.TodayNetwork{}, stats, err
+		}
+		stats.AnalyzeCalls++
+		coarse = analyzed
+		proven = todayRankingProvenNoDark(analyzed.Candidates, requested, bounds[cursor:], globalDarkBoost)
 		if proven {
 			break
 		}
