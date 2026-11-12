@@ -134,6 +134,7 @@ func loadThemeAnalysis(
 }
 
 func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request *http.Request) {
+	totalStarted := time.Now()
 	values := request.URL.Query()
 	allowed := map[string]bool{"days": true, "scope": true, "min_overlap": true, "top": true, "candidates": true}
 	for key, entries := range values {
@@ -187,6 +188,11 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 		server.limitUpError(response, err)
 		return
 	}
+	snapshotDuration := time.Since(totalStarted)
+	stageStarted := time.Now()
+	historyDuration := time.Duration(0)
+	themeDuration := time.Duration(0)
+	boardDuration := time.Duration(0)
 	historyAsOf, err := server.limitUpHistoryDays.LatestLimitUpDay(request.Context(), snapshot.TradeDate, scope)
 	if err != nil {
 		server.internalError(response, err)
@@ -213,6 +219,8 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 			server.limitUpError(response, err)
 			return
 		}
+		historyDuration = time.Since(stageStarted)
+		stageStarted = time.Now()
 		if themeReader, ok := server.store.(limitup.ThemeReader); ok {
 			profiles, themeErr := themeReader.ReadThemeProfiles(request.Context(), historyFrom, historyAsOf, scope, nil)
 			if themeErr != nil {
@@ -223,6 +231,8 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 				themeProfiles[profile.Code] = profile
 			}
 		}
+		themeDuration = time.Since(stageStarted)
+		stageStarted = time.Now()
 	}
 	if reader, ok := server.store.(boardThemeFallbackReader); ok {
 		boardReader = reader
@@ -264,7 +274,16 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 		memberCodes = append(memberCodes, event.Code)
 	}
 	candidateCodes := todayCandidateUniverse(snapshot, history)
-	loadBoardFallbacks(append(memberCodes, candidateCodes...))
+	fallbackCodes := make([]string, 0)
+	for _, code := range append(memberCodes, candidateCodes...) {
+		profile, exists := themeProfiles[code]
+		if !exists || len(profile.Tags) == 0 {
+			fallbackCodes = append(fallbackCodes, code)
+		}
+	}
+	loadBoardFallbacks(fallbackCodes)
+	boardDuration = time.Since(stageStarted)
+	stageStarted = time.Now()
 	input := limitup.TodayInput{
 		Snapshot: snapshot, History: history, HistoryFrom: historyFrom,
 		LookbackDays: days, MinOverlap: minOverlap, TopCores: top, CandidateLimit: candidates,
@@ -276,6 +295,8 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 		server.limitUpError(response, err)
 		return
 	}
+	analyzeDuration := time.Since(stageStarted)
+	stageStarted = time.Now()
 	liveQuoteStatus := "disabled"
 	liveDarkMoneyStatus := "disabled"
 	rankingStats := todayRankingStats{}
@@ -301,6 +322,15 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 		result.Candidates = result.Candidates[:candidates]
 	}
 	result.CandidateLimit = candidates
+	rankingDuration := time.Since(stageStarted)
+	server.logger.Info("today-network timings",
+		"snapshot_ms", snapshotDuration.Milliseconds(),
+		"history_ms", historyDuration.Milliseconds(),
+		"theme_ms", themeDuration.Milliseconds(),
+		"board_ms", boardDuration.Milliseconds(),
+		"analyze_ms", analyzeDuration.Milliseconds(),
+		"ranking_ms", rankingDuration.Milliseconds(),
+		"total_ms", time.Since(totalStarted).Milliseconds())
 	writeJSON(response, http.StatusOK, envelope{Data: result, Meta: map[string]any{
 		"snapshot_only": true, "history_excludes_today": true,
 		"snapshot_fetched_at": snapshot.FetchedAt, "live_candidates": result.LiveCandidate,

@@ -84,3 +84,25 @@ func TestRescoreTodayCandidatesMatchesFullAnalysis(t *testing.T) {
 			rescored.Candidates[0], direct.Candidates[0])
 	}
 }
+
+func TestRescoreTodayCandidatesKeepsFullUniverseHistoryNormalisation(t *testing.T) {
+	base := TodayNetwork{Candidates: []TodayCandidate{
+		{Code: "000001", MainlineScore: 0.9, HistoryScore: 1, Coverage: 0.8},
+		{Code: "000002", MainlineScore: 0.5, HistoryScore: 0.5, Coverage: 0.4},
+		{Code: "000003", MainlineScore: 0.2, HistoryScore: 0.25, Coverage: 0.1},
+	}}
+	filter := map[string]struct{}{"000002": {}, "000003": {}}
+	rescored := RescoreTodayCandidates(base, nil, nil, nil, filter, 2, true)
+	expected := map[string]float64{
+		"000002": 0.5,
+		"000003": 0.25,
+	}
+	if len(rescored.Candidates) != len(expected) {
+		t.Fatalf("unexpected rescored candidates: %+v", rescored.Candidates)
+	}
+	for _, candidate := range rescored.Candidates {
+		if math.Abs(candidate.HistoryScore-expected[candidate.Code]) > 1e-9 {
+			t.Fatalf("history score was renormalised on a filtered subset: %+v", candidate)
+		}
+	}
+}
