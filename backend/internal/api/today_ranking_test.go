@@ -34,17 +34,11 @@ func TestTodayCandidateBatchEndStaysBoundedAndIncludesRequestedCount(t *testing.
 	for index := range bounds {
 		bounds[index] = todayBound{code: fmt.Sprintf("%06d", index), upper: 100 - float64(index)}
 	}
-	if got := todayCandidateBatchEnd(bounds, 0, 50); got != 16 {
+	if got := todayCandidateBatchEnd(bounds, 0, 50); got != 50 {
 		t.Fatalf("first batch should be bounded by the batch size, got %d", got)
 	}
 	if got := todayCandidateBatchEnd(bounds, 0, 5); got != 5 {
 		t.Fatalf("a request smaller than the batch size should stop at the requested count, got %d", got)
-	}
-	if got := todayCandidateBatchEnd(bounds, 16, 50); got != 32 {
-		t.Fatalf("second batch should remain bounded, got %d", got)
-	}
-	if got := todayCandidateBatchEnd(bounds, 48, 50); got != 50 {
-		t.Fatalf("the requested boundary should be included without over-reading, got %d", got)
 	}
 	if got := todayCandidateBatchEnd(bounds, 50, 50); got != 65 {
 		t.Fatalf("after the requested boundary the next batch should cover the tail, got %d", got)

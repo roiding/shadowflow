@@ -24,9 +24,11 @@ type candidateHistoryReader interface {
 	ReadCandidateHistoryMetrics(context.Context, string, []string, int, int) (map[string]limitup.CandidateHistoryMetrics, error)
 }
 
-// Keep each external read small enough that one slow stock does not consume
-// the whole request budget; the upper-bound loop expands only when needed.
-const todayCandidateBatchSize = 16
+// Quotes are fetched through a batched upstream endpoint. A larger batch
+// avoids one HTTP round trip per handful of candidates; dark-money ticks are
+// deliberately not part of this path because they require one request per
+// stock and make the intraday endpoint unreliable during the session.
+const todayCandidateBatchSize = 100
 
 func limitUpQuery(request *http.Request) (limitup.Query, error) {
 	values := request.URL.Query()
@@ -288,10 +290,6 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 			liveQuoteStatus = "empty"
 			liveDarkMoneyStatus = "empty"
 		} else {
-			if server.limitUpDarkMoney == nil {
-				writeError(response, http.StatusServiceUnavailable, "candidate_data_unavailable", "暗盘数据源不可用，无法保证候选排序")
-				return
-			}
 			result, err = server.rankTodayCandidates(request.Context(), input, result, historyAsOf, candidates)
 			if err != nil {
 				server.logger.Warn("rank today-core candidates", "error", err)
@@ -299,7 +297,10 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 				return
 			}
 			liveQuoteStatus = "ready"
-			liveDarkMoneyStatus = "ready"
+			if result.LiveUnavailable {
+				liveQuoteStatus = "partial"
+			}
+			liveDarkMoneyStatus = "disabled"
 		}
 	}
 	if !result.LiveCandidate && len(result.Candidates) > candidates {

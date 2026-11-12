@@ -258,10 +258,11 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 			QuoteTime: "10:42:00", FetchedAt: snapshotAt,
 		},
 	}}
+	darkMoneySource := &recordingLimitUpDarkMoneySource{}
 	server, err := New(store, server.calendar, server.logger, Options{
 		ScanRatePerMinute:      10000,
 		LimitUpQuoteSource:     quoteSource,
-		LimitUpDarkMoneySource: &recordingLimitUpDarkMoneySource{},
+		LimitUpDarkMoneySource: darkMoneySource,
 		LimitUpIntradaySource: staticIntradaySource{snapshot: limitup.IntradaySnapshot{
 			TradeDate: "2026-11-09", Source: limitup.SourceTHS, Scope: limitup.ScopeDefault, FetchedAt: snapshotAt,
 			TradeStatus: "open", TradeStatusName: "交易中", SealedCount: 3,
@@ -311,6 +312,9 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 	}
 	if len(quoteSource.codes) != 1 || quoteSource.codes[0] != "000003" {
 		testingT.Fatalf("live quotes must be requested for the final candidate only: %+v", quoteSource.codes)
+	}
+	if len(darkMoneySource.codes) != 0 {
+		testingT.Fatalf("today-core must not call the per-stock dark-money source: %+v", darkMoneySource.codes)
 	}
 	if len(result.Data.ThemeMainline) != 1 || result.Data.ThemeMainline[0].Code != "885517" ||
 		result.Data.ThemeMainline[0].MemberCount != 2 {

@@ -6,7 +6,6 @@ import (
 	"math"
 	"sort"
 	"sync"
-	"time"
 
 	"github.com/roiding/shadowflow/internal/limitup"
 )
@@ -15,8 +14,6 @@ type todayBound struct {
 	code  string
 	upper float64
 }
-
-const todayDarkMoneyBatchTimeout = 15 * time.Second
 
 func todayCandidateBounds(candidates []limitup.TodayCandidate) []todayBound {
 	bounds := make([]todayBound, 0, len(candidates))
@@ -63,7 +60,6 @@ func (server *Server) rankTodayCandidates(
 ) (limitup.TodayNetwork, error) {
 	bounds := todayCandidateBounds(static.Candidates)
 	quotes := make(map[string]limitup.LiveQuote)
-	darkMoney := make(map[string]limitup.LiveDarkMoney)
 	history := make(map[string]limitup.CandidateHistoryMetrics)
 	selected := make(map[string]struct{})
 	minuteIndex, validMinute := limitup.LatestResearchMinuteIndex(input.Snapshot.FetchedAt.In(server.location))
@@ -77,22 +73,13 @@ func (server *Server) rankTodayCandidates(
 			selected[bound.code] = struct{}{}
 		}
 		var batchQuotes map[string]limitup.LiveQuote
-		var batchDark map[string]limitup.LiveDarkMoney
 		var batchHistory map[string]limitup.CandidateHistoryMetrics
-		var quoteErr, darkErr, historyErr error
+		var quoteErr, historyErr error
 		var wait sync.WaitGroup
-		wait.Add(2)
+		wait.Add(1)
 		go func() {
 			defer wait.Done()
 			batchQuotes, quoteErr = server.limitUpQuotes.ReadLiveQuotes(ctx, codes)
-		}()
-		go func() {
-			defer wait.Done()
-			darkCtx, cancel := context.WithTimeout(ctx, todayDarkMoneyBatchTimeout)
-			defer cancel()
-			batchDark, darkErr = server.limitUpDarkMoney.ReadLiveDarkMoney(
-				darkCtx, input.Snapshot.TradeDate, codes, input.Snapshot.FetchedAt.In(server.location),
-			)
 		}()
 		if readHistory {
 			wait.Add(1)
@@ -110,18 +97,11 @@ func (server *Server) rankTodayCandidates(
 		if quoteErr != nil {
 			return limitup.TodayNetwork{}, fmt.Errorf("read live candidate quotes: %w", quoteErr)
 		}
-		if darkErr != nil {
-			return limitup.TodayNetwork{}, fmt.Errorf("read live candidate dark money: %w", darkErr)
-		}
 		if historyErr != nil {
 			return limitup.TodayNetwork{}, fmt.Errorf("read live candidate history: %w", historyErr)
 		}
 		for _, code := range codes {
-			if !batchQuotes[code].Available || batchQuotes[code].Turnover <= 0 || !batchDark[code].Available {
-				return limitup.TodayNetwork{}, fmt.Errorf("incomplete live candidate %s", code)
-			}
 			quotes[code] = batchQuotes[code]
-			darkMoney[code] = batchDark[code]
 			if readHistory {
 				item, exists := batchHistory[code]
 				if !exists {
@@ -132,7 +112,7 @@ func (server *Server) rankTodayCandidates(
 		}
 		input.CandidateFilter = selected
 		input.LiveQuotes = quotes
-		input.LiveDarkMoney = darkMoney
+		input.LiveDarkMoney = nil
 		input.CandidateHistory = history
 		input.IncludeAllCandidates = false
 		result, err := limitup.AnalyzeToday(ctx, input)

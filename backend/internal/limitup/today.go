@@ -1139,9 +1139,7 @@ func candidateRiskScore(candidate *TodayCandidate) candidateRisk {
 			candidate.MainFlowHistoryDays < TodayLiveHistoryMinimumSamples {
 			flags = append(flags, "资金历史样本不足")
 		}
-		if !candidate.darkMoneyAvailable {
-			flags = append(flags, "未取得暗盘资金")
-		} else if candidate.DarkFlowHistoryDays < TodayLiveHistoryMinimumSamples {
+		if candidate.darkMoneyAvailable && candidate.DarkFlowHistoryDays < TodayLiveHistoryMinimumSamples {
 			flags = append(flags, "暗盘资金历史样本不足")
 		}
 	}

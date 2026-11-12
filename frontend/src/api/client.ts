@@ -8,6 +8,7 @@ import type { ApiEnvelope, ArchiveRevision, BoardQuoteMeta, BoardStockQuote, Col
 
 const REQUEST_TIMEOUT_MS = 25_000
 const SCAN_TIMEOUT_MS = 35_000
+const TODAY_CORE_TIMEOUT_MS = 60_000
 
 export class ApiRequestError extends Error {
   readonly code: string
@@ -79,7 +80,7 @@ export const api = {
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined && value !== '') params.set(key, String(value))
     }
-    return request<LimitUpTodayNetwork>(`/api/v1/limit-up/today-network?${params}`, { signal })
+    return request<LimitUpTodayNetwork>(`/api/v1/limit-up/today-network?${params}`, { signal }, TODAY_CORE_TIMEOUT_MS)
   },
   limitUpQuality: (date: string, scope?: string, signal?: AbortSignal) => request<LimitUpArchiveQuality>(`/api/v1/limit-up/quality?${limitUpQualityParams(date, scope)}`, { signal }),
   latest: (type: Exclude<RankType, 'stock'>, signal?: AbortSignal) => request<RankRecord[], components['schemas']['LatestRankMeta']>(`/api/v1/ranks/latest?type=${type}`, { signal }),
