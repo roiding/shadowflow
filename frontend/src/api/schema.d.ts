@@ -1175,7 +1175,7 @@ export interface paths {
                                 candidate_quote_read_count: number;
                                 /** @description 粗筛读取行情和自身历史的批次数。 */
                                 candidate_coarse_batches: number;
-                                /** @description 粗筛实际调用全量分析和打分的次数。 */
+                                /** @description 候选重新打分次数，含粗筛窗口和最终暗盘重算；历史关系图只构建一次。 */
                                 candidate_analyze_calls: number;
                                 /** @description 粗筛后仍可能进入前 N、需要保留在最终池中的候选数。 */
                                 dark_money_pool_count: number;

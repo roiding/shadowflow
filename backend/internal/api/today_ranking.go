@@ -208,18 +208,12 @@ func (server *Server) rankTodayCandidates(
 				}
 			}
 		}
-		input.CandidateFilter = selected
-		input.LiveQuotes = quotes
-		input.LiveDarkMoney = nil
-		input.CandidateHistory = history
-		input.IncludeAllCandidates = true
-		analyzed, err := limitup.AnalyzeToday(ctx, input)
-		if err != nil {
-			return limitup.TodayNetwork{}, stats, err
-		}
+		coarse = limitup.RescoreTodayCandidates(static, quotes, history, nil, selected, requested, true)
 		stats.AnalyzeCalls++
-		coarse = analyzed
-		proven = todayRankingProvenNoDark(analyzed.Candidates, requested, bounds[cursor:], globalDarkBoost)
+		if ctx.Err() != nil {
+			return limitup.TodayNetwork{}, stats, ctx.Err()
+		}
+		proven = todayRankingProvenNoDark(coarse.Candidates, requested, bounds[cursor:], globalDarkBoost)
 		if proven {
 			break
 		}
@@ -315,14 +309,10 @@ func (server *Server) rankTodayCandidates(
 		}
 	}
 
-	input.CandidateFilter = finalPool
-	input.LiveQuotes = quotes
-	input.LiveDarkMoney = darkMoney
-	input.CandidateHistory = history
-	input.IncludeAllCandidates = false
-	result, err := limitup.AnalyzeToday(ctx, input)
-	if err != nil {
-		return limitup.TodayNetwork{}, stats, err
+	result := limitup.RescoreTodayCandidates(static, quotes, history, darkMoney, finalPool, requested, false)
+	stats.AnalyzeCalls++
+	if ctx.Err() != nil {
+		return limitup.TodayNetwork{}, stats, ctx.Err()
 	}
 	if requested > 0 && len(result.Candidates) > requested {
 		result.Candidates = result.Candidates[:requested]

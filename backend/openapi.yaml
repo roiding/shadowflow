@@ -526,7 +526,7 @@ paths:
                       candidate_static_count: { type: integer, description: 进入理论排序的静态候选数。 }
                       candidate_quote_read_count: { type: integer, description: 粗筛实际读取盘中行情的候选数。 }
                       candidate_coarse_batches: { type: integer, description: 粗筛读取行情和自身历史的批次数。 }
-                      candidate_analyze_calls: { type: integer, description: 粗筛实际调用全量分析和打分的次数。 }
+                      candidate_analyze_calls: { type: integer, description: 候选重新打分次数，含粗筛窗口和最终暗盘重算；历史关系图只构建一次。 }
                       dark_money_pool_count: { type: integer, description: 粗筛后仍可能进入前 N、需要保留在最终池中的候选数。 }
                       dark_money_requested_count: { type: integer, description: 最终实际请求暗盘资金的候选数。 }
                       dark_money_available_count: { type: integer, description: 暗盘资金实际返回可用的候选数。 }

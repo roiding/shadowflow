@@ -303,7 +303,7 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 		result.Data.Coverage.ObservedDays != 3 || !result.Meta.SnapshotOnly || !result.Meta.HistoryExcludesToday ||
 		result.Meta.SnapshotFetchedAt == "" || result.Meta.LiveDarkMoneyStatus != "ready" ||
 		result.Meta.CandidateStaticCount != 1 || result.Meta.CandidateQuoteReadCount != 1 ||
-		result.Meta.CandidateCoarseBatches != 1 || result.Meta.CandidateAnalyzeCalls != 1 ||
+		result.Meta.CandidateCoarseBatches != 1 || result.Meta.CandidateAnalyzeCalls != 2 ||
 		result.Meta.DarkMoneyPoolCount != 1 ||
 		result.Meta.DarkMoneyRequestedCount != 1 || result.Meta.DarkMoneyAvailableCount != 1 {
 		testingT.Fatalf("unexpected today network result: %d %s", response.Code, response.Body.String())

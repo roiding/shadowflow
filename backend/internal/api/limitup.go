@@ -263,7 +263,8 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 	for _, event := range snapshot.Events {
 		memberCodes = append(memberCodes, event.Code)
 	}
-	loadBoardFallbacks(memberCodes)
+	candidateCodes := todayCandidateUniverse(snapshot, history)
+	loadBoardFallbacks(append(memberCodes, candidateCodes...))
 	input := limitup.TodayInput{
 		Snapshot: snapshot, History: history, HistoryFrom: historyFrom,
 		LookbackDays: days, MinOverlap: minOverlap, TopCores: top, CandidateLimit: candidates,
@@ -274,14 +275,6 @@ func (server *Server) limitUpTodayNetwork(response http.ResponseWriter, request 
 	if err != nil {
 		server.limitUpError(response, err)
 		return
-	}
-	if loadBoardFallbacks(todayCandidateQuoteCodes(result)) {
-		input.ThemeProfiles = themeProfiles
-		result, err = limitup.AnalyzeToday(request.Context(), input)
-		if err != nil {
-			server.limitUpError(response, err)
-			return
-		}
 	}
 	liveQuoteStatus := "disabled"
 	liveDarkMoneyStatus := "disabled"
@@ -346,6 +339,51 @@ func todayCandidateQuoteCodes(result limitup.TodayNetwork) []string {
 	}
 	sort.Strings(codes)
 	return codes
+}
+
+// todayCandidateUniverse returns a cheap superset of the stocks that can enter
+// AnalyzeToday's candidate graph. Loading Eastmoney fallback labels for this
+// set before the single graph build avoids a second full graph pass.
+func todayCandidateUniverse(
+	snapshot limitup.IntradaySnapshot,
+	history limitup.Dataset,
+) []string {
+	members := make(map[string]struct{}, len(snapshot.Events))
+	for _, event := range snapshot.Events {
+		members[event.Code] = struct{}{}
+	}
+	codes := make(map[string]struct{})
+	byDate := make(map[string][]string)
+	for _, event := range history.Events {
+		if event.Pool != limitup.PoolSealed {
+			continue
+		}
+		byDate[event.TradeDate] = append(byDate[event.TradeDate], event.Code)
+	}
+	for _, dayCodes := range byDate {
+		hasMember := false
+		for _, code := range dayCodes {
+			if _, isMember := members[code]; isMember {
+				hasMember = true
+				break
+			}
+		}
+		if !hasMember {
+			continue
+		}
+		for _, code := range dayCodes {
+			if _, isMember := members[code]; isMember {
+				continue
+			}
+			codes[code] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(codes))
+	for code := range codes {
+		result = append(result, code)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func (server *Server) limitUpError(response http.ResponseWriter, err error) {
