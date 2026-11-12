@@ -27,6 +27,8 @@ type fixtureResponses struct {
 	ladder     []byte
 	market     []byte
 	comparison []byte
+	tabList    []byte
+	allTabData []byte
 }
 
 func loadFixture(testingT *testing.T, name string) []byte {
@@ -45,6 +47,8 @@ func loadFixtures(testingT *testing.T, prefix string) fixtureResponses {
 		ladder:     loadFixture(testingT, "ladder_"+prefix+".json"),
 		market:     loadFixture(testingT, "market_"+prefix+".json"),
 		comparison: loadFixture(testingT, "comparison_"+prefix+".json"),
+		tabList:    loadFixture(testingT, "tab_list_"+prefix+".json"),
+		allTabData: loadFixture(testingT, "all_tab_data_"+prefix+".json"),
 	}
 }
 
@@ -62,6 +66,10 @@ func newFixtureServer(testingT *testing.T, fixtures fixtureResponses) *httptest.
 			body = fixtures.market
 		case comparisonPath:
 			body = fixtures.comparison
+		case tabListPath:
+			body = fixtures.tabList
+		case allTabDataPath:
+			body = fixtures.allTabData
 		default:
 			http.NotFound(response, request)
 			return
@@ -81,7 +89,7 @@ func mockNow() time.Time {
 }
 
 func newTestClient(server *httptest.Server) *Client {
-	return NewClient(server.URL, server.Client()).WithMinInterval(0).WithClock(fixedClock(mockNow()))
+	return NewClient(server.URL, server.Client()).WithOzoneBaseURL(server.URL).WithMinInterval(0).WithClock(fixedClock(mockNow()))
 }
 
 func TestNewClientUsesRootDefaultAndRejectsRedirects(t *testing.T) {
@@ -100,7 +108,7 @@ func TestNewClientUsesRootDefaultAndRejectsRedirects(t *testing.T) {
 		http.Redirect(response, request, redirectTarget.URL+request.URL.Path, http.StatusFound)
 	}))
 	defer redirectSource.Close()
-	redirectClient := NewClient(redirectSource.URL, nil).WithMinInterval(0).WithClock(fixedClock(mockNow()))
+	redirectClient := NewClient(redirectSource.URL, nil).WithOzoneBaseURL(redirectSource.URL).WithMinInterval(0).WithClock(fixedClock(mockNow()))
 	_, _, fetchError := redirectClient.fetchJSON(context.Background(), blockTopPath, nil)
 	if fetchError == nil || !strings.Contains(fetchError.Error(), "redirect rejected") {
 		t.Fatalf("expected redirect rejection, got %v", fetchError)
@@ -129,14 +137,23 @@ func TestFetchDaySyntheticSuccess(t *testing.T) {
 	if len(snapshot.Ladder) != 2 || snapshot.Ladder[0].Height != 5 {
 		t.Fatalf("unexpected ladder: %#v", snapshot.Ladder)
 	}
+	if len(snapshot.Tabs) != 2 || snapshot.Tabs[0].Name != "名称炒作" || snapshot.Tabs[0].Rank != 1 {
+		t.Fatalf("unexpected limit-up chart tabs: %#v", snapshot.Tabs)
+	}
+	if snapshot.Tabs[0].Stocks[0].AbnormalReason != "名称联动" || snapshot.Tabs[1].Stocks[0].Reason != "缩量涨停" {
+		t.Fatalf("tab stock reasons were not preserved: %#v", snapshot.Tabs)
+	}
+	if !snapshot.TabDateVerified {
+		t.Fatal("all_tab_data date should be verified")
+	}
 	if snapshot.Ladder[0].Stocks[0].ContinueNum != 4 || snapshot.Ladder[0].Stocks[1].ContinueNum != 5 {
 		t.Fatalf("ladder continue_num must be retained per stock: %#v", snapshot.Ladder[0].Stocks)
 	}
 	if !strings.Contains(string(snapshot.Market), `"limit_up"`) || !strings.Contains(string(snapshot.Comparison), `"today_date"`) {
 		t.Fatal("market and comparison raw data not preserved")
 	}
-	if len(snapshot.RawPages) != 4 {
-		t.Fatalf("expected four raw pages, got %d", len(snapshot.RawPages))
+	if len(snapshot.RawPages) != 6 {
+		t.Fatalf("expected six raw pages, got %d", len(snapshot.RawPages))
 	}
 	if len(snapshot.Limitations) == 0 || !containsChineseLimitation(snapshot.Limitations, "Top20") ||
 		!containsChineseLimitation(snapshot.Limitations, "未回显") || !containsChineseLimitation(snapshot.Limitations, "source_default") {
@@ -203,6 +220,10 @@ func TestFetchDayChecksRequestParameters(t *testing.T) {
 			_, _ = response.Write(fixtures.market)
 		case comparisonPath:
 			_, _ = response.Write(fixtures.comparison)
+		case tabListPath:
+			_, _ = response.Write(fixtures.tabList)
+		case allTabDataPath:
+			_, _ = response.Write(fixtures.allTabData)
 		default:
 			http.NotFound(response, request)
 		}
@@ -212,8 +233,8 @@ func TestFetchDayChecksRequestParameters(t *testing.T) {
 	if fetchError != nil {
 		t.Fatalf("FetchDay failed: %v", fetchError)
 	}
-	if len(seen) != 4 {
-		t.Fatalf("expected all four endpoints, saw %#v", seen)
+	if len(seen) != 6 {
+		t.Fatalf("expected all six endpoints, saw %#v", seen)
 	}
 }
 
@@ -429,9 +450,11 @@ func TestFetchDayAcceptsFridayAsMondayComparisonBase(t *testing.T) {
 		ladder:     []byte(`{"status_code":0,"data":[]}`),
 		market:     loadFixture(t, "market_synthetic.json"),
 		comparison: []byte(`{"status_code":0,"data":{"today_date":"2026-11-09","yesterday_date":"2026-11-06","board_list":[],"one_board":[]}}`),
+		tabList:    []byte(`{"status_code":0,"data":{"tab_array":[{"title":"涨停简图"},{"title":"名称炒作"}]}}`),
+		allTabData: []byte(`{"status_code":0,"data":{"tab_list":[{"date":"20261109","tab_name":"名称炒作","tab_data":[{"concept":"名称炒作","reason":"放量涨停","stock_code":"000001","market":"17","stock_name":"合成银行","abnormal_reason":"名称联动","detail_reason":"合成说明"}]}]}}`),
 	}
 	server := newFixtureServer(t, fixtures)
-	client := NewClient(server.URL, server.Client()).WithMinInterval(0).WithClock(fixedClock(time.Date(2026, 11, 9, 16, 0, 0, 0, focus.Shanghai())))
+	client := NewClient(server.URL, server.Client()).WithOzoneBaseURL(server.URL).WithMinInterval(0).WithClock(fixedClock(time.Date(2026, 11, 9, 16, 0, 0, 0, focus.Shanghai())))
 	if _, fetchError := client.FetchDay(context.Background(), "2026-11-09", focus.ScopeDefault); fetchError != nil {
 		t.Fatalf("Friday should be accepted as the previous trading day for Monday: %v", fetchError)
 	}
@@ -526,7 +549,7 @@ func TestFetchDayValidatesDateScopeAndClose(t *testing.T) {
 			scope:  focus.ScopeDefault,
 		},
 		"today before close": {
-			client: NewClient(server.URL, server.Client()).WithMinInterval(0).WithClock(fixedClock(time.Date(2026, 11, 6, 15, 29, 0, 0, focus.Shanghai()))),
+			client: NewClient(server.URL, server.Client()).WithOzoneBaseURL(server.URL).WithMinInterval(0).WithClock(fixedClock(time.Date(2026, 11, 6, 15, 29, 0, 0, focus.Shanghai()))),
 			date:   testDate,
 			scope:  focus.ScopeDefault,
 		},
@@ -564,13 +587,13 @@ func TestFetchDayCancellation(t *testing.T) {
 func TestFetchDayMinIntervalWaitsBetweenRequests(t *testing.T) {
 	fixtures := loadFixtures(t, "synthetic")
 	server := newFixtureServer(t, fixtures)
-	client := NewClient(server.URL, server.Client()).WithMinInterval(35 * time.Millisecond).WithClock(fixedClock(mockNow()))
+	client := NewClient(server.URL, server.Client()).WithOzoneBaseURL(server.URL).WithMinInterval(35 * time.Millisecond).WithClock(fixedClock(mockNow()))
 	start := time.Now()
 	if _, fetchError := client.FetchDay(context.Background(), testDate, focus.ScopeDefault); fetchError != nil {
 		t.Fatalf("FetchDay failed: %v", fetchError)
 	}
-	if elapsed := time.Since(start); elapsed < 100*time.Millisecond {
-		t.Fatalf("expected three interval waits, elapsed %s", elapsed)
+	if elapsed := time.Since(start); elapsed < 150*time.Millisecond {
+		t.Fatalf("expected five interval waits, elapsed %s", elapsed)
 	}
 }
 
@@ -592,6 +615,10 @@ func TestClientDoesNotSendCookieOrHexinHeader(t *testing.T) {
 			body = fixtures.market
 		case comparisonPath:
 			body = fixtures.comparison
+		case tabListPath:
+			body = fixtures.tabList
+		case allTabDataPath:
+			body = fixtures.allTabData
 		}
 		_, _ = response.Write(body)
 	}))
@@ -621,6 +648,10 @@ func TestFetchDayPartialFailureReturnsNoSnapshot(t *testing.T) {
 			_, _ = response.Write(fixtures.market)
 		case comparisonPath:
 			response.WriteHeader(http.StatusBadGateway)
+		case tabListPath:
+			_, _ = response.Write(fixtures.tabList)
+		case allTabDataPath:
+			_, _ = response.Write(fixtures.allTabData)
 		default:
 			http.NotFound(response, request)
 		}

@@ -113,6 +113,22 @@ func TestValidateSnapshotRejectsCountAndDuplicateMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateSnapshotRequiresVerifiedTabDate(t *testing.T) {
+	snapshot := validSnapshot()
+	snapshot.Tabs = []Tab{{
+		Name: "名称炒作", Rank: 1,
+		Stocks: []TabStock{{Code: "000001", Name: "合成银行", MarketID: 33, Reason: "放量涨停"}},
+	}}
+	snapshot.RawPages = append(snapshot.RawPages, json.RawMessage(`{}`), json.RawMessage(`{}`))
+	if err := ValidateSnapshot(snapshot); err == nil || !strings.Contains(err.Error(), "verified source date") {
+		t.Fatalf("unverified tab date was accepted: %v", err)
+	}
+	snapshot.TabDateVerified = true
+	if err := ValidateSnapshot(snapshot); err != nil {
+		t.Fatalf("verified limit-up chart tabs rejected: %v", err)
+	}
+}
+
 func TestValidateSnapshotRejectsDateAndSizeViolations(t *testing.T) {
 	cases := map[string]func(*Snapshot){
 		"invalid date":             func(snapshot *Snapshot) { snapshot.TradeDate = "2026/11/06" },

@@ -14,6 +14,7 @@ const {
   isThsFocusTradeDate,
   selectedThsFocusBlocks,
   selectedThsFocusLadder,
+  selectedThsFocusTabs,
   sortedThsFocusLadder,
   thsFocusCoverageNotice,
   thsFocusDateVerificationText,
@@ -75,6 +76,24 @@ const snapshot = {
       stocks: [stock('600000', '浦发银行', 1)],
     },
   ],
+  tabs: [
+    {
+      name: '名称炒作',
+      rank: 1,
+      stocks: [
+        { code: '002088', name: '鲁阳节能', market_id: 33, reason: '放量涨停', abnormal_reason: '名称联动', detail_reason: '名称炒作说明' },
+        { code: '600000', name: '浦发银行', market_id: 17, reason: '逆势涨停', abnormal_reason: '名称联动', detail_reason: '名称炒作说明' },
+      ],
+    },
+    {
+      name: '机器人',
+      rank: 2,
+      stocks: [
+        { code: '002088', name: '鲁阳节能', market_id: 33, reason: '缩量涨停', abnormal_reason: '机器人催化', detail_reason: '机器人说明' },
+      ],
+    },
+  ],
+  tab_date_verified: true,
   ladder: [
     { height: 2, stocks: [stock('002086', '东方海洋', 2)] },
     { height: 5, stocks: [stock('002578', '闽发铝业', 5), stock('601599', '浙文影业', 4)] },
@@ -151,6 +170,10 @@ test('response dates and scopes must match the requested isolation', () => {
   }, '2026-11-06', 'HS,GEM2STAR'), false)
   assert.equal(thsFocusResponseMatches({
     ...completePayload,
+    snapshot: { ...snapshot, tabs: 'not-an-array' },
+  }, '2026-11-06', 'HS,GEM2STAR'), false)
+  assert.equal(thsFocusResponseMatches({
+    ...completePayload,
     snapshot: { ...snapshot, scope: 'HS,GEM2STAR,ST,NEW' },
   }, '2026-11-06', 'HS,GEM2STAR'), false)
   assert.equal(thsFocusResponseMatches({
@@ -176,6 +199,17 @@ test('selected stock keeps every source block hit and its source order', () => {
   assert.equal(selectedThsFocusBlocks(snapshot, '600000')[0].block.change, null)
   assert.equal(selectedThsFocusBlocks(snapshot, '999999').length, 0)
   assert.equal(selectedThsFocusBlocks(snapshot, '2088').length, 0)
+})
+
+test('selected stock keeps every limit-up chart tab hit and its source order', () => {
+  const hits = selectedThsFocusTabs(snapshot, '002088')
+  assert.deepEqual(hits.map((hit) => hit.tab.name), ['名称炒作', '机器人'])
+  assert.deepEqual(hits.map((hit) => hit.source_order), [1, 2])
+  assert.equal(hits[0].stock.abnormal_reason, '名称联动')
+  assert.equal(hits[1].stock.reason, '缩量涨停')
+  assert.equal(selectedThsFocusTabs(snapshot, '600000').length, 1)
+  assert.equal(selectedThsFocusTabs(snapshot, '999999').length, 0)
+  assert.equal(selectedThsFocusTabs({ ...snapshot, tabs: null }, '002088').length, 0)
 })
 
 test('ladder keeps source height and continue_num without deriving from high_days', () => {
@@ -240,8 +274,8 @@ test('formatting and copy preserve source scope and non-causal caveats', () => {
   assert.equal(formatThsFocusPercent(null), '--')
   assert.equal(formatThsFocusPercent(undefined), '--')
   assert.match(thsFocusDateVerificationText(false), /未完整回显日期/)
-  assert.match(thsFocusCoverageNotice(), /Top 题材最多 20 项/)
-  assert.match(thsFocusCoverageNotice(), /完整成份/)
+  assert.match(thsFocusCoverageNotice(), /tab_list\/all_tab_data/)
+  assert.match(thsFocusCoverageNotice(), /全市场行业\/概念全集/)
   assert.match(thsFocusCoverageNotice(), /不构成因果关系/)
   const limitation = thsFocusSourceLimitation('HS,GEM2STAR,ST,NEW')
   assert.match(limitation, /默认市场口径/)

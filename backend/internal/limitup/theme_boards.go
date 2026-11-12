@@ -97,7 +97,7 @@ func BoardThemeKey(boardType, boardCode string) string {
 }
 
 // AddBoardThemeFallbacks fills the theme-profile gap for stocks that have no
-// usable historical THS Top20 label. It uses only already stored Eastmoney
+// usable historical THS limit-up chart label. It uses only already stored Eastmoney
 // board relations, never today's free-form limit-up reason.
 func AddBoardThemeFallbacks(
 	profiles map[string]ThemeStockProfile,

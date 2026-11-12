@@ -324,7 +324,7 @@ export function LinkageView({
             <p className="linkage-eyebrow">股票联动</p>
             <h1 className="linkage-title">联动性与股性画像</h1>
             <p className="linkage-subline">
-              先按同花顺 Top20 历史累计题材标签做股票聚类，再保留日终涨停池、炸板池与跌停池的全市场同日共振口径供核对。页面只读本地已归档数据，统计代表历史聚类或同日共现，非收益或因果预测。
+              先按同花顺涨停简图的历史累计分类标签做股票聚类，再保留日终涨停池、炸板池与跌停池的全市场同日共振口径供核对。页面只读本地已归档数据，统计代表历史聚类或同日共现，非收益或因果预测。
             </p>
             <div className="linkage-disclaimer">
               <Info size={14} />
@@ -736,7 +736,7 @@ export function LinkageView({
                         同花顺题材聚类：{themeData.profile.name || analysisData.profile.name} ({themeData.profile.code})
                       </h2>
                       <span>
-                        只使用 {asOfDate} 及更早的历史 Top20 题材标签；未分类、其他、原因不明或全组没有明确原因标签的题材桶不参与。
+                        只使用 {asOfDate} 及更早的涨停简图历史分类标签；未分类、其他、原因不明或全组没有明确原因标签的分类不参与。
                       </span>
                       <span className="linkage-scope-note">
                         同一股票可以同时拥有多个历史题材标签；同题材天数按“同一天进入至少一个相同题材”去重。该视图不依赖东财行业/概念。
@@ -754,8 +754,8 @@ export function LinkageView({
                       <strong>历史累计题材标签</strong>
                       <span>
                         出现次数越多、最近越常出现，标签越靠前
-                        <MetricHint label="同花顺题材标签" formula="窗口内进入同一 Top20 题材的交易日数">
-                          同花顺每日盘后整理 Top20 题材；某只股票只要在某天进入某个题材，就积累该题材标签。标签不是完整成份，也不代表当天盘前已知；不同日期的题材可以同时保留，用来解释同一只股票在不同阶段的涨停原因。
+                        <MetricHint label="同花顺题材标签" formula="窗口内进入同一涨停简图分类的交易日数">
+                          同花顺每日盘后整理涨停简图分类；某只股票只要在某天进入某个分类，就积累该分类标签。标签不是完整成份，也不代表当天盘前已知；不同日期的分类可以同时保留，用来解释同一只股票在不同阶段的涨停原因。
                         </MetricHint>
                       </span>
                     </div>
@@ -766,7 +766,7 @@ export function LinkageView({
                           <small>{tag.occurrences}次</small>
                         </span>
                       )) : (
-                        <span className="muted">当前窗口没有有效 Top20 题材标签。</span>
+                        <span className="muted">当前窗口没有有效的涨停简图分类标签。</span>
                       )}
                     </div>
                   </div>
@@ -783,8 +783,8 @@ export function LinkageView({
                           <th>
                             <span className="linkage-column-label">
                               同题材共现
-                              <MetricHint label="同题材共现" formula="同一天进入至少一个相同 Top20 题材的天数" align="start">
-                                两只股票在同一天都进入同一个同花顺 Top20 题材的天数；同一天共享多个题材只算一天，避免多标签重复加分。
+                              <MetricHint label="同题材共现" formula="同一天进入至少一个相同涨停简图分类的天数" align="start">
+                                两只股票在同一天都进入同一个同花顺涨停简图分类的天数；同一天共享多个分类只算一天，避免多标签重复加分。
                               </MetricHint>
                             </span>
                           </th>
@@ -1440,7 +1440,7 @@ export function LinkageView({
                 <summary>
                   <span>
                     <strong id="linkage-auxiliary-heading">题材与连板补充</strong>
-                    <small>同花顺源 Top 题材、连板梯队与市场摘要，辅助核对，不是全量成份</small>
+                    <small>同花顺涨停简图分类、连板梯队与市场摘要，辅助核对，不是全量成份</small>
                   </span>
                   <span className="linkage-auxiliary-action">展开</span>
                 </summary>

@@ -307,7 +307,8 @@ type ThemeRef struct {
 	Weight float64 `json:"weight"`
 }
 
-// ThemeTag is one historical THS Top20 theme label accumulated by a stock.
+// ThemeTag is one historical THS limit-up chart category label accumulated
+// by a stock.
 // A stock can carry many labels; the label is not a complete industry or
 // concept membership and is only available after the source's daily close.
 type ThemeTag struct {
@@ -331,7 +332,7 @@ type ThemeStockProfile struct {
 
 // BoardMembership is the small projection of an Eastmoney stock-board
 // relation needed to fall back to board-based clustering when a stock has no
-// usable historical THS Top20 label.
+// usable historical THS limit-up chart label.
 type BoardMembership struct {
 	StockCode   string
 	StockName   string

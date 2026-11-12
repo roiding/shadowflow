@@ -16,10 +16,11 @@ const (
 	ScopeExpanded        = "HS,GEM2STAR,ST,NEW"
 	MaxBlocks            = 20
 	MaxLevels            = 64
+	MaxTabs              = 64
 	MaxSnapshotStocks    = 5000
-	MaxRawPages          = 4
+	MaxRawPages          = 6
 	MaxRawPageBytes      = 8 << 20
-	MaxRawSnapshotBytes  = 32 << 20
+	MaxRawSnapshotBytes  = 48 << 20
 	MaxNameBytes         = 256
 	MaxReasonBytes       = 1024
 	MaxReasonDetailBytes = 32 << 10
@@ -51,6 +52,8 @@ type Snapshot struct {
 	FetchedAt          time.Time         `json:"fetched_at"`
 	Blocks             []Block           `json:"blocks"`
 	Ladder             []Level           `json:"ladder"`
+	Tabs               []Tab             `json:"tabs"`
+	TabDateVerified    bool              `json:"tab_date_verified"`
 	Market             json.RawMessage   `json:"market"`
 	Comparison         json.RawMessage   `json:"comparison"`
 	SourceDateVerified bool              `json:"source_date_verified"`
@@ -75,6 +78,27 @@ type Stock struct {
 	ReasonDetail  string   `json:"reason_detail"`
 	HighDays      string   `json:"high_days"`
 	ChangePercent *float64 `json:"change_percent"`
+}
+
+// Tab is one category from the THS limit-up chart (涨停简图). Unlike the
+// block_top endpoint, this is the source's own daily thematic classification
+// and can include narrow labels such as "名称炒作" or "“东方系”".
+type Tab struct {
+	Name   string     `json:"name"`
+	Rank   int        `json:"rank"`
+	Stocks []TabStock `json:"stocks"`
+}
+
+// TabStock preserves the source's short and detailed reasons. The short
+// abnormal_reason is often the thematic catalyst, while reason contains
+// technical limit-up tags such as "放量涨停".
+type TabStock struct {
+	Code           string `json:"code"`
+	Name           string `json:"name"`
+	MarketID       int    `json:"market_id"`
+	Reason         string `json:"reason"`
+	AbnormalReason string `json:"abnormal_reason"`
+	DetailReason   string `json:"detail_reason"`
 }
 
 type Level struct {
@@ -115,6 +139,35 @@ func IsUsableThemeBlock(block Block) bool {
 	}
 	for _, stock := range block.Stocks {
 		if strings.TrimSpace(stock.Reason) != "" || strings.TrimSpace(stock.ReasonDetail) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// IsUsableThemeTab applies the same residual-bucket rule to the limit-up
+// chart categories. A named category with at least one source explanation is
+// usable; "其他概念" and similar buckets are never used to create a theme
+// relationship.
+func IsUsableThemeTab(tab Tab) bool {
+	name := strings.TrimSpace(tab.Name)
+	if name == "" || len(tab.Stocks) == 0 {
+		return false
+	}
+	for _, term := range unclassifiedThemeNames {
+		if name == term {
+			return false
+		}
+	}
+	for _, prefix := range unclassifiedThemePrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return false
+		}
+	}
+	for _, stock := range tab.Stocks {
+		if strings.TrimSpace(stock.Reason) != "" ||
+			strings.TrimSpace(stock.AbnormalReason) != "" ||
+			strings.TrimSpace(stock.DetailReason) != "" {
 			return true
 		}
 	}

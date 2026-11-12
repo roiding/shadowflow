@@ -19,8 +19,8 @@ var unclassifiedThemePrefixes = []string{
 
 // BuildThemeAnalysis turns the accumulated THS theme labels into a
 // stock-to-stock clustering view. It deliberately does not use Eastmoney
-// industry/concept membership: the labels come from the historical Top20
-// theme blocks and are therefore independent of the slower board taxonomy.
+// industry/concept membership: the labels come from the historical limit-up
+// chart categories and are therefore independent of the slower board taxonomy.
 func BuildThemeAnalysis(centerCode string, profiles map[string]ThemeStockProfile, rows []ThemeCooccurrence, rawLinks []Link) ThemeAnalysis {
 	center, ok := profiles[centerCode]
 	if !ok {

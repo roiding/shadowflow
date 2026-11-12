@@ -19,6 +19,7 @@ import (
 
 const (
 	DefaultBaseURL     = "https://data.10jqka.com.cn"
+	DefaultOzoneURL    = "https://ozone.10jqka.com.cn"
 	DefaultUserAgent   = "shadowflow-ths-focus/1.0"
 	defaultHTTPTimeout = 30 * time.Second
 	defaultMinInterval = time.Second
@@ -27,10 +28,12 @@ const (
 	ladderPath         = "/dataapi/limit_up/continuous_limit_up"
 	marketPath         = "/mobileapi/hotspot_focus/market_state/v1/overview"
 	comparisonPath     = "/mobileapi/hotspot_focus/limit_up_compare/v1/two_days_compare"
+	tabListPath        = "/open/api/draw_lots/v1/rank/tab_list"
+	allTabDataPath     = "/open/api/draw_lots/v1/rank/all_tab_data"
 )
 
 const (
-	topCoverageLimitation      = "block_top仅提供Top20板块列表，不代表市场全部板块或板块完整成份。"
+	topCoverageLimitation      = "block_top仅提供普通Top20板块列表，不是涨停简图分类，也不代表市场全部板块或板块完整成份。"
 	marketScopeLimitation      = "market_state与two_days_compare固定采用默认市场source_default口径，不受scope隔离，ST与NEW覆盖不受控，不能视为与三池同口径。"
 	sourceDateLimitation       = "block_top与continuous_limit_up未回显日期，market_state亦未回显日期，因此source_date_verified固定为false。"
 	timestampDateLimitation    = "block_top可用涨停时间戳校验日期，但ladder与market无逐股日期证据，故不会将source_date_verified提升为true。"
@@ -40,10 +43,14 @@ const (
 	emptyLevelLimitation       = "continuous_limit_up包含无股票的连板高度，源字段未提供额外解释。"
 	emptyComparisonLimitation  = "two_days_compare返回了显式空比较数组。"
 	expandedScopeLimitation    = "扩大的ST与NEW筛选仅作用于block_top和continuous_limit_up；market与comparison仍为默认市场口径。"
+	tabCoverageLimitation      = "tab_list/all_tab_data为同花顺涨停简图的当日分类，只覆盖源已归类的涨停股；它不是全市场行业/概念全集。"
+	tabScopeLimitation         = "tab_list/all_tab_data按交易日返回源分类，不随ST/NEW的scope筛选变化；分类成员不能与三池scope完全等同。"
+	tabEmptyLimitation         = "all_tab_data返回了显式空分类，不能据此推断市场没有题材或没有涨停股。"
 )
 
 type Client struct {
 	baseURL     string
+	ozoneURL    string
 	httpClient  *http.Client
 	minInterval time.Duration
 	clock       func() time.Time
@@ -73,10 +80,23 @@ func NewClient(baseURL string, httpClient *http.Client) *Client {
 	}
 	return &Client{
 		baseURL:     targetBaseURL,
+		ozoneURL:    DefaultOzoneURL,
 		httpClient:  rejectingClient,
 		minInterval: defaultMinInterval,
 		clock:       time.Now,
 	}
+}
+
+// WithOzoneBaseURL overrides the host that serves the limit-up chart
+// tab_list/all_tab_data endpoints. Tests use the same httptest server for all
+// endpoints; production uses the default ozone host.
+func (client *Client) WithOzoneBaseURL(baseURL string) *Client {
+	targetBaseURL := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if targetBaseURL == "" {
+		targetBaseURL = DefaultOzoneURL
+	}
+	client.ozoneURL = targetBaseURL
+	return client
 }
 
 func (client *Client) WithMinInterval(interval time.Duration) *Client {
@@ -167,18 +187,45 @@ func (client *Client) FetchDay(ctx context.Context, date string, scope string) (
 		return focus.Snapshot{}, comparisonParseError
 	}
 
+	if intervalError := client.wait(ctx); intervalError != nil {
+		return focus.Snapshot{}, intervalError
+	}
+	tabListData, tabListRaw, tabListError := client.fetchJSONAt(ctx, client.ozoneURL, tabListPath, marketQuery)
+	if tabListError != nil {
+		return focus.Snapshot{}, tabListError
+	}
+	tabOrder, tabOrderError := parseTabOrder(tabListData)
+	if tabOrderError != nil {
+		return focus.Snapshot{}, tabOrderError
+	}
+
+	if intervalError := client.wait(ctx); intervalError != nil {
+		return focus.Snapshot{}, intervalError
+	}
+	allTabData, allTabRaw, allTabError := client.fetchJSONAt(ctx, client.ozoneURL, allTabDataPath, marketQuery)
+	if allTabError != nil {
+		return focus.Snapshot{}, allTabError
+	}
+	tabs, tabDateVerified, tabLimitations, tabParseError := parseTabs(allTabData, tabOrder, date)
+	if tabParseError != nil {
+		return focus.Snapshot{}, tabParseError
+	}
+
 	limitations := []string{
 		topCoverageLimitation,
 		marketScopeLimitation,
 		sourceDateLimitation,
 		timestampDateLimitation,
+		tabCoverageLimitation,
 	}
 	if scope == focus.ScopeExpanded {
 		limitations = append(limitations, expandedScopeLimitation)
 	}
+	limitations = append(limitations, tabScopeLimitation)
 	limitations = append(limitations, blockLimitations...)
 	limitations = append(limitations, ladderLimitations...)
 	limitations = append(limitations, comparisonLimitations...)
+	limitations = append(limitations, tabLimitations...)
 
 	snapshot := focus.Snapshot{
 		TradeDate:          date,
@@ -188,11 +235,13 @@ func (client *Client) FetchDay(ctx context.Context, date string, scope string) (
 		FetchedAt:          client.clock().In(zone),
 		Blocks:             blocks,
 		Ladder:             ladder,
+		Tabs:               tabs,
+		TabDateVerified:    tabDateVerified,
 		Market:             marketData,
 		Comparison:         comparisonData,
 		SourceDateVerified: false,
 		Limitations:        limitations,
-		RawPages:           []json.RawMessage{blockRaw, ladderRaw, marketRaw, comparisonRaw},
+		RawPages:           []json.RawMessage{blockRaw, ladderRaw, marketRaw, comparisonRaw, tabListRaw, allTabRaw},
 	}
 	if validateError := focus.ValidateSnapshot(snapshot); validateError != nil {
 		return focus.Snapshot{}, validateError
@@ -201,7 +250,14 @@ func (client *Client) FetchDay(ctx context.Context, date string, scope string) (
 }
 
 func (client *Client) fetchJSON(ctx context.Context, path string, query url.Values) (json.RawMessage, json.RawMessage, error) {
-	requestURL := client.baseURL + path + "?" + query.Encode()
+	return client.fetchJSONAt(ctx, client.baseURL, path, query)
+}
+
+func (client *Client) fetchJSONAt(ctx context.Context, baseURL, path string, query url.Values) (json.RawMessage, json.RawMessage, error) {
+	requestURL := baseURL + path
+	if encodedQuery := query.Encode(); encodedQuery != "" {
+		requestURL += "?" + encodedQuery
+	}
 	httpRequest, requestError := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if requestError != nil {
 		return nil, nil, requestError
@@ -423,6 +479,185 @@ func parseBlockStock(rawStock json.RawMessage, tradeDate string) (focus.Stock, e
 		ReasonDetail:  reasonDetail,
 		HighDays:      strings.TrimSpace(highLabel),
 		ChangePercent: changePercent,
+	}, nil
+}
+
+func parseTabOrder(rawData json.RawMessage) ([]string, error) {
+	rawObject, objectError := decodeRawObject(rawData, "tab_list data")
+	if objectError != nil {
+		return nil, objectError
+	}
+	rawTabs, arrayError := decodeRawArray(rawObject["tab_array"], "tab_list tab_array")
+	if arrayError != nil {
+		return nil, arrayError
+	}
+	order := make([]string, 0, len(rawTabs))
+	seen := make(map[string]bool, len(rawTabs))
+	for _, rawTab := range rawTabs {
+		var item struct {
+			Title json.RawMessage `json:"title"`
+		}
+		if unmarshalError := json.Unmarshal(rawTab, &item); unmarshalError != nil {
+			return nil, fmt.Errorf("invalid tab_list item: %w", unmarshalError)
+		}
+		title, titleError := requiredString(item.Title, "tab title")
+		if titleError != nil {
+			return nil, titleError
+		}
+		if seen[title] {
+			return nil, fmt.Errorf("duplicate tab title %s", title)
+		}
+		seen[title] = true
+		order = append(order, title)
+	}
+	return order, nil
+}
+
+func parseTabs(rawData json.RawMessage, order []string, tradeDate string) ([]focus.Tab, bool, []string, error) {
+	rawObject, objectError := decodeRawObject(rawData, "all_tab_data data")
+	if objectError != nil {
+		return nil, false, nil, objectError
+	}
+	rawTabs, arrayError := decodeRawArray(rawObject["tab_list"], "all_tab_data tab_list")
+	if arrayError != nil {
+		return nil, false, nil, arrayError
+	}
+	parsedDate, dateParseError := time.ParseInLocation("20060102", strings.ReplaceAll(tradeDate, "-", ""), focus.Shanghai())
+	if dateParseError != nil || parsedDate.Format(focus.TradeDateFormat) != tradeDate {
+		return nil, false, nil, fmt.Errorf("invalid requested trade date %s", tradeDate)
+	}
+
+	tabsByName := make(map[string]focus.Tab, len(rawTabs))
+	tabOrderFromData := make([]string, 0, len(rawTabs))
+	allDatesVerified := true
+	for _, rawTab := range rawTabs {
+		var item struct {
+			Date    json.RawMessage `json:"date"`
+			TabName json.RawMessage `json:"tab_name"`
+			TabData json.RawMessage `json:"tab_data"`
+		}
+		if unmarshalError := json.Unmarshal(rawTab, &item); unmarshalError != nil {
+			return nil, false, nil, fmt.Errorf("invalid all_tab_data item: %w", unmarshalError)
+		}
+		sourceDate, sourceDateError := requiredString(item.Date, "all_tab_data date")
+		if sourceDateError != nil {
+			return nil, false, nil, sourceDateError
+		}
+		sourceDate = strings.ReplaceAll(sourceDate, "-", "")
+		if sourceDate != parsedDate.Format("20060102") {
+			return nil, false, nil, fmt.Errorf("all_tab_data date mismatch: requested %s, got %s", tradeDate, sourceDate)
+		}
+		tabName, tabNameError := requiredString(item.TabName, "tab_name")
+		if tabNameError != nil {
+			return nil, false, nil, tabNameError
+		}
+		if tabName == "涨停简图" {
+			continue
+		}
+		if _, duplicate := tabsByName[tabName]; duplicate {
+			return nil, false, nil, fmt.Errorf("duplicate all_tab_data tab_name %s", tabName)
+		}
+		rawStocks, stocksError := decodeRawArray(item.TabData, "tab_data for "+tabName)
+		if stocksError != nil {
+			return nil, false, nil, stocksError
+		}
+		stocks := make([]focus.TabStock, 0, len(rawStocks))
+		seenStocks := make(map[string]bool, len(rawStocks))
+		for _, rawStock := range rawStocks {
+			stock, stockError := parseTabStock(rawStock)
+			if stockError != nil {
+				return nil, false, nil, fmt.Errorf("tab %s: %w", tabName, stockError)
+			}
+			if seenStocks[stock.Code] {
+				return nil, false, nil, fmt.Errorf("duplicate stock %s in tab %s", stock.Code, tabName)
+			}
+			seenStocks[stock.Code] = true
+			stocks = append(stocks, stock)
+		}
+		tabsByName[tabName] = focus.Tab{Name: tabName, Stocks: stocks}
+		tabOrderFromData = append(tabOrderFromData, tabName)
+		allDatesVerified = allDatesVerified && sourceDate == parsedDate.Format("20060102")
+	}
+
+	orderedNames := make([]string, 0, len(tabsByName))
+	seenOrder := make(map[string]bool, len(order))
+	for _, name := range order {
+		if name == "涨停简图" {
+			continue
+		}
+		if _, exists := tabsByName[name]; !exists {
+			continue
+		}
+		if seenOrder[name] {
+			continue
+		}
+		seenOrder[name] = true
+		orderedNames = append(orderedNames, name)
+	}
+	for _, name := range tabOrderFromData {
+		if seenOrder[name] {
+			continue
+		}
+		seenOrder[name] = true
+		orderedNames = append(orderedNames, name)
+	}
+
+	tabs := make([]focus.Tab, 0, len(orderedNames))
+	for index, name := range orderedNames {
+		tab := tabsByName[name]
+		tab.Rank = index + 1
+		tabs = append(tabs, tab)
+	}
+	limitations := []string{}
+	if len(tabs) == 0 {
+		limitations = append(limitations, tabEmptyLimitation)
+	}
+	return tabs, allDatesVerified && len(tabs) > 0, limitations, nil
+}
+
+func parseTabStock(rawStock json.RawMessage) (focus.TabStock, error) {
+	var item struct {
+		Code           json.RawMessage `json:"stock_code"`
+		Name           json.RawMessage `json:"stock_name"`
+		MarketID       json.RawMessage `json:"market"`
+		Reason         json.RawMessage `json:"reason"`
+		AbnormalReason json.RawMessage `json:"abnormal_reason"`
+		DetailReason   json.RawMessage `json:"detail_reason"`
+	}
+	if unmarshalError := json.Unmarshal(rawStock, &item); unmarshalError != nil {
+		return focus.TabStock{}, fmt.Errorf("invalid tab stock item: %w", unmarshalError)
+	}
+	code, codeError := requiredString(item.Code, "tab stock code")
+	if codeError != nil || !focus.ValidCode(code) {
+		return focus.TabStock{}, fmt.Errorf("invalid tab stock code")
+	}
+	name, nameError := requiredString(item.Name, "tab stock name")
+	if nameError != nil {
+		return focus.TabStock{}, nameError
+	}
+	marketID, marketError := parseInteger(item.MarketID)
+	if marketError != nil || marketID <= 0 {
+		return focus.TabStock{}, fmt.Errorf("invalid market for tab stock %s", code)
+	}
+	reason, reasonError := optionalString(item.Reason)
+	if reasonError != nil {
+		return focus.TabStock{}, fmt.Errorf("invalid reason for tab stock %s", code)
+	}
+	abnormalReason, abnormalError := optionalString(item.AbnormalReason)
+	if abnormalError != nil {
+		return focus.TabStock{}, fmt.Errorf("invalid abnormal_reason for tab stock %s", code)
+	}
+	detailReason, detailError := optionalString(item.DetailReason)
+	if detailError != nil {
+		return focus.TabStock{}, fmt.Errorf("invalid detail_reason for tab stock %s", code)
+	}
+	return focus.TabStock{
+		Code:           code,
+		Name:           name,
+		MarketID:       marketID,
+		Reason:         reason,
+		AbnormalReason: abnormalReason,
+		DetailReason:   detailReason,
 	}, nil
 }
 

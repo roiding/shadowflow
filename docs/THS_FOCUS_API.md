@@ -11,7 +11,7 @@
 | `dataapi/limit_up/{limit_up_pool,open_limit_pool,lower_limit_pool}` | 完整涨停、炸板、跌停事件 | 匿名成功；按分页校验；仍是联动图的主数据源 |
 | `continuous_limit_pool` | 连板候选、几天几板、封单金额 | 匿名成功；源“几天几板”与连续封板天数不混算 |
 | `continuous_limit_up` | 按高度分层的股票梯队 | 匿名成功；无顶层日期回显，保留请求日期与限制 |
-| `block_top` | Top题材、相关涨停股票、源涨停原因和详细叙事 | 匿名成功；只返回Top20，不能当完整行业/概念成份；源叙事含AI生成内容 |
+| `block_top` | 普通Top20板块、相关涨停股票、源涨停原因和详细叙事 | 匿名成功；是宽泛板块榜，**不是**涨停简图的每日分类，不能冒充“名称炒作/东方系”等源标签 |
 | `limit_up`、`change?type=latest` | 冲刺涨停、最近异动 | 匿名成功；不能据最新一条异动还原全天秒级事件 |
 | `mobileapi/hotspot_focus/stock_pool/v1/get_limit_up_stocks` | 首板、各级连板、封单和源行业信息 | 匿名成功；历史2025-11-04、2026-06-04亦返回数据；未统一不同接口的股票范围 |
 | `get_limit_up_fail_stocks` | 按晋级级别分类的失败股票池 | 匿名成功；与当日炸板池不是同一集合，不能直接替换炸板事件 |
@@ -20,7 +20,7 @@
 | `limit_up_compare/v1/range_compare` | 最近30个交易日的连板对照 | 匿名成功；最新日的`seal_nextday=false`可能尚未结算，不能直接当失败 |
 | `chart/v1/get_chart` | 连板数量、晋级率、情绪、最高板、新高/趋势/大面数量等历史序列 | 匿名成功；`size`是点数，363/365点跨越一年以上；下调`end_time`成功取得2023年开始的较早窗口，未确定所有指标的精确最早日期 |
 | `market_state/v1/overview`、`get_wind_vane_stock` | 市场涨跌家数、量能、高位/龙头/异动集合 | 匿名成功；市场默认范围与三池scope不完全相同；例如33只与32只涨停并存 |
-| `ozone.../rank/{tab_list,all_tab_data,summary_image,list_recent_date}` | 涨停简图、题材分类、异动原因和详细原因 | `all_tab_data`对2026-11-06、11-05、10-23匿名成功且日期匹配；图片为PNG；最近日期列表为10日，但不等于数据只保留10日 |
+| `ozone.../rank/{tab_list,all_tab_data,board_group_data,summary_image,list_recent_date}` | 涨停简图分类、分类成员、异动原因和详细原因 | `all_tab_data`对2025-11-10至2026-11-11多个历史日期匿名成功且日期匹配；`tab_list`提供分类顺序，`all_tab_data`提供分类成员；`board_group_data`只做交叉校验，不能当涨停成员表 |
 | `dataq.../fetch/v1/specific_data` | 指定股票及指定指标的批量查询 | 匿名401、`cookie is empty`；仅风控Cookie仍401；只复用账号Cookie的探测虽然HTTP200，但核心指标为`NO_AUTH`和空值；原始App HAR中这些指标有实际数值，不能把两者视为同一验收结果 |
 | `hotspot_focus/permission/v1/query`、`chart_config/v1/query_config` | 账号权限和个人图表配置 | 匿名失败，账号会话成功；配置不可用不影响已知公开图表数据接口 |
 | `ozone.../permission/query?cate=review_history` | 名为`review_history`的权限位 | 匿名`no permission`，当前账号返回`is_valid=false`；数据接口仍可查多个历史日期，具体权限控制范围未证实 |
@@ -34,16 +34,16 @@
 
 ## 本轮项目接入
 
-主事件仍由三池决定。新增独立 `ths_focus_day` 保存题材、梯队、市场概览与两日晋级对照、抓取时间、原始响应和覆盖限制。三个事件池和补充数据分别发布，补充源失败不删除已经完整的事件归档。
+主事件仍由三池决定。新增独立 `ths_focus_day` 保存涨停简图分类、普通板块视图、梯队、市场概览与两日晋级对照、抓取时间、原始响应和覆盖限制。三个事件池和补充数据分别发布，补充源失败不删除已经完整的事件归档。
 
 - `end-of-day-events` 只负责涨停事件；同花顺题材补充由独立的 `ths-focus` 盘后任务在 `16:45` 执行，重试时跳过已完成分项。Compose中的事件开关按部署选择默认开启；直接运行Go程序时默认关闭，实际运行以配置为准。
-- 手动补充入口：`collect -task ths-focus -date YYYY-MM-DD -scope HS,GEM2STAR`。不会自动回补全年。
+- 手动补充入口：`collect -task ths-focus -date YYYY-MM-DD -scope HS,GEM2STAR`；历史回补：`collect -task ths-focus-range -from YYYY-MM-DD -to YYYY-MM-DD -scope HS,GEM2STAR`。回补可断点续跑，已含 tab 分类的日期会跳过。
 - `GET /api/v1/limit-up/focus?trade_date=YYYY-MM-DD&scope=HS,GEM2STAR` 只读本地。没有数据返回`not_collected`，不在打开页面时采集上游。
-- 股票联动页同时提供同花顺 Top20 历史累计题材聚类、全市场同日事件共现、来源解释和梯队信息。题材聚类和全市场共振分开展示；未分类/其他/原因不明的题材桶不进入聚类，东财行业/概念不作为题材主线来源。
-- `block_top`和梯队按请求scope记录，概览和两日对照使用`source_default`口径。部分接口没有日期回显，`source_date_verified=false`，界面显示限制；不能作为严格点时回测事实。
+- 股票联动页同时提供同花顺涨停简图分类的历史累计题材聚类、全市场同日事件共现、来源解释和梯队信息。题材聚类和全市场共振分开展示；未分类/其他/原因不明的分类不进入聚类，东财行业/概念不作为题材主线来源。
+- `block_top`仅作为普通板块视图保留；涨停简图分类和梯队按请求scope记录，概览和两日对照使用`source_default`口径。`all_tab_data`会回显并校验交易日期，其他部分接口仍可能无日期回显，`source_date_verified=false`，不能作为严格点时回测事实。
 - 跌停请求加入`330333/330334`，存储真实`first_limit_down_time/last_limit_down_time`，股性新增首次跌停时刻中位数和有效样本数。老记录缺失时保持未知，须重采后才有时间数据。
 
-其余股票池、情绪历史图表和完整题材简图已完成接口评估，尚未全部接成页面与生产归档。尤其不能把筛选后的盘中预览当成当时的全市场股票池，也不能把事后更新的原因当成事前可知信息。
+涨停简图分类已接入生产归档和页面；其余股票池、情绪历史图表等仍按各自验证状态处理。尤其不能把筛选后的盘中预览当成当时的全市场股票池，也不能把事后更新的原因当成事前可知信息。
 
 账号指标批次必须通过日期、股票身份、指标映射和权限校验。`attribute.permission_flag=NO_AUTH`属于指标权限拒绝，不计为成功归档，也不通过重试密码登录解决；正常缺值仍保留为`null`。原始App请求有非空指标，而此前Cookie复用探测未完整复现请求上下文，因此不能由`NO_AUTH`推断账号必须购买权限。原HAR中9只可交叉比对股票的`up_down_stock_limit_up_volume_money_new`与公开池`order_amount`一致，口径为封单额。
 

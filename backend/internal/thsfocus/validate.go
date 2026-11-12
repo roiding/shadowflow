@@ -30,11 +30,14 @@ func ValidateSnapshot(snapshot Snapshot) error {
 	if snapshot.SourceDateVerified {
 		return fmt.Errorf("%w: current source does not provide date evidence for every page", ErrInvalid)
 	}
+	if snapshot.Tabs != nil && !snapshot.TabDateVerified {
+		return fmt.Errorf("%w: limit-up chart tabs require a verified source date", ErrInvalid)
+	}
 	if snapshot.Blocks == nil || snapshot.Ladder == nil {
 		return fmt.Errorf("%w: blocks and ladder require explicit arrays", ErrInvalid)
 	}
-	if len(snapshot.Blocks) > MaxBlocks || len(snapshot.Ladder) > MaxLevels {
-		return fmt.Errorf("%w: block or ladder count exceeds the source limit", ErrInvalid)
+	if len(snapshot.Blocks) > MaxBlocks || len(snapshot.Ladder) > MaxLevels || len(snapshot.Tabs) > MaxTabs {
+		return fmt.Errorf("%w: block, ladder or tab count exceeds the source limit", ErrInvalid)
 	}
 	if (len(snapshot.Blocks) == 0 || len(snapshot.Ladder) == 0) && len(snapshot.Limitations) == 0 {
 		return fmt.Errorf("%w: empty source arrays require a coverage limitation", ErrInvalid)
@@ -56,7 +59,7 @@ func ValidateSnapshot(snapshot Snapshot) error {
 	if validateError := validateComparisonDate(snapshot.Comparison, snapshot.TradeDate); validateError != nil {
 		return validateError
 	}
-	if validateError := validateRawPages(snapshot.RawPages); validateError != nil {
+	if validateError := validateRawPages(snapshot.RawPages, snapshot.Tabs != nil); validateError != nil {
 		return validateError
 	}
 
@@ -82,6 +85,17 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		}
 		seenLevels[level.Height] = true
 		totalStocks += len(level.Stocks)
+	}
+	seenTabs := make(map[string]bool, len(snapshot.Tabs))
+	for _, tab := range snapshot.Tabs {
+		if validateError := validateTab(tab); validateError != nil {
+			return validateError
+		}
+		if seenTabs[tab.Name] {
+			return fmt.Errorf("%w: duplicate tab name %s", ErrInvalid, tab.Name)
+		}
+		seenTabs[tab.Name] = true
+		totalStocks += len(tab.Stocks)
 	}
 	if totalStocks > MaxSnapshotStocks {
 		return fmt.Errorf("%w: snapshot stock references exceed the size limit", ErrInvalid)
@@ -135,9 +149,13 @@ func validateComparisonDate(raw json.RawMessage, tradeDate string) error {
 	return nil
 }
 
-func validateRawPages(rawPages []json.RawMessage) error {
-	if len(rawPages) != MaxRawPages {
-		return fmt.Errorf("%w: a complete snapshot requires four raw pages", ErrInvalid)
+func validateRawPages(rawPages []json.RawMessage, hasTabs bool) error {
+	expectedPages := 4
+	if hasTabs {
+		expectedPages = 6
+	}
+	if len(rawPages) != expectedPages {
+		return fmt.Errorf("%w: a complete snapshot requires %d raw pages", ErrInvalid, expectedPages)
 	}
 	totalBytes := 0
 	for _, rawPage := range rawPages {
@@ -151,6 +169,41 @@ func validateRawPages(rawPages []json.RawMessage) error {
 	}
 	if totalBytes > MaxRawSnapshotBytes {
 		return fmt.Errorf("%w: raw pages exceed the snapshot size limit", ErrInvalid)
+	}
+	return nil
+}
+
+func validateTab(tab Tab) error {
+	if strings.TrimSpace(tab.Name) == "" || len(tab.Name) > MaxNameBytes {
+		return fmt.Errorf("%w: invalid tab name", ErrInvalid)
+	}
+	if tab.Rank <= 0 || tab.Rank > MaxTabs {
+		return fmt.Errorf("%w: invalid tab rank for %s", ErrInvalid, tab.Name)
+	}
+	if tab.Stocks == nil {
+		return fmt.Errorf("%w: tab %s requires an explicit stock list", ErrInvalid, tab.Name)
+	}
+	seenStocks := make(map[string]bool, len(tab.Stocks))
+	for _, stock := range tab.Stocks {
+		if validateError := validateTabStock(stock); validateError != nil {
+			return fmt.Errorf("tab %s: %w", tab.Name, validateError)
+		}
+		if seenStocks[stock.Code] {
+			return fmt.Errorf("%w: duplicate stock %s in tab %s", ErrInvalid, stock.Code, tab.Name)
+		}
+		seenStocks[stock.Code] = true
+	}
+	return nil
+}
+
+func validateTabStock(stock TabStock) error {
+	if !ValidCode(stock.Code) || strings.TrimSpace(stock.Name) == "" || len(stock.Name) > MaxNameBytes || stock.MarketID <= 0 {
+		return fmt.Errorf("%w: invalid stock identity for %s", ErrInvalid, stock.Code)
+	}
+	if len(stock.Reason) > MaxReasonBytes ||
+		len(stock.AbnormalReason) > MaxReasonBytes ||
+		len(stock.DetailReason) > MaxReasonDetailBytes {
+		return fmt.Errorf("%w: oversized stock text for %s", ErrInvalid, stock.Code)
 	}
 	return nil
 }

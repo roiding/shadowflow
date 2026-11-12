@@ -77,6 +77,10 @@ func (service *Service) CollectThsFocus(ctx context.Context, runAt time.Time) er
 		return finish(err)
 	}
 	run.ActualTradeDate, run.PageCount = tradeDate, len(snapshot.RawPages)
-	run.ExpectedTotal, run.FetchedTotal = len(snapshot.Blocks), len(snapshot.Blocks)
+	if snapshot.Tabs != nil {
+		run.ExpectedTotal, run.FetchedTotal = len(snapshot.Tabs), len(snapshot.Tabs)
+	} else {
+		run.ExpectedTotal, run.FetchedTotal = len(snapshot.Blocks), len(snapshot.Blocks)
+	}
 	return finish(nil)
 }

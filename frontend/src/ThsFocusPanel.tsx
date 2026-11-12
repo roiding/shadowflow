@@ -9,6 +9,7 @@ import {
   isThsFocusTradeDate,
   selectedThsFocusBlocks,
   selectedThsFocusLadder,
+  selectedThsFocusTabs,
   sortedThsFocusLadder,
   thsFocusCoverageNotice,
   thsFocusDateVerificationText,
@@ -25,7 +26,8 @@ import {
   type ThsFocusLevel,
   type ThsFocusMarketSummary,
   type ThsFocusPayload,
-  type ThsFocusStock,
+  type ThsFocusTab,
+  type ThsFocusTabHit,
 } from './api/thsfocus'
 import './ths-focus.css'
 
@@ -113,8 +115,9 @@ export function ThsFocusPanel({
   const payload = authRequired ? undefined : query.data
   const snapshot = payload?.status === 'complete' ? payload.snapshot ?? undefined : undefined
   const selectedBlocks = selectedThsFocusBlocks(snapshot, normalizedStockCode)
+  const selectedTabs = selectedThsFocusTabs(snapshot, normalizedStockCode)
   const selectedLadder = selectedThsFocusLadder(snapshot, normalizedStockCode)
-  const selectedStock = selectedBlocks[0]?.stock ?? selectedLadder?.stock
+  const selectedStockName = selectedTabs[0]?.stock.name ?? selectedBlocks[0]?.stock.name ?? selectedLadder?.stock.name
   const ladder = sortedThsFocusLadder(snapshot)
   const marketSummary = thsFocusMarketSummary(snapshot?.market, snapshot?.comparison)
   const status = statusView({
@@ -236,6 +239,7 @@ export function ThsFocusPanel({
             <div className="ths-focus-meta" aria-label="复盘补充来源信息">
               <span>来源 同花顺</span>
               <span>题材与梯队范围 {thsFocusScopeLabel(snapshot.scope)}</span>
+              <span>{snapshot.tab_date_verified ? '涨停简图日期已核对' : '涨停简图分类未归档或日期未核对'}</span>
               <span>市场摘要独立口径</span>
               <span>采集 {formatDateTime(snapshot.fetched_at)}</span>
               <span>{snapshot.source_date_verified ? '日期回显已核对' : '日期未回显'}</span>
@@ -246,12 +250,14 @@ export function ThsFocusPanel({
             <div className="ths-focus-grid">
               <SelectedStockSection
                 stockCode={normalizedStockCode}
-                selectedStock={selectedStock}
+                selectedStockName={selectedStockName}
                 selectedBlocks={selectedBlocks}
+                selectedTabs={selectedTabs}
               />
               <MarketSummarySection marketSummary={marketSummary} scope={normalizedScope} />
               <LadderSection ladder={ladder} stockCode={normalizedStockCode} />
             </div>
+            <ThemeTabsSection tabs={snapshot.tabs ?? []} stockCode={normalizedStockCode} />
           </>
         )}
       </div>
@@ -300,22 +306,24 @@ function FocusState({
 
 function SelectedStockSection({
   stockCode,
-  selectedStock,
+  selectedStockName,
   selectedBlocks,
+  selectedTabs,
 }: {
   stockCode: string
-  selectedStock?: ThsFocusStock
+  selectedStockName?: string
   selectedBlocks: ThsFocusBlockHit[]
+  selectedTabs: ThsFocusTabHit[]
 }) {
   return (
     <section className="ths-focus-card ths-focus-topics" aria-labelledby="ths-focus-topics-title">
       <div className="ths-focus-card-head">
         <div>
           <span className="ths-focus-card-eyebrow">选中股票</span>
-          <h3 id="ths-focus-topics-title">{selectedStock?.name ?? (stockCode || '未选择股票')}</h3>
-          <p>{stockCode ? `${stockCode} · 源连板数 ${selectedStock?.continue_num ?? '--'}` : '从联动页选择股票后查看命中题材'}</p>
+          <h3 id="ths-focus-topics-title">{selectedStockName ?? (stockCode || '未选择股票')}</h3>
+          <p>{stockCode ? `${stockCode} · 涨停简图分类命中` : '从联动页选择股票后查看命中题材'}</p>
         </div>
-        <span className="ths-focus-count">{selectedBlocks.length} 个 Top 题材命中</span>
+        <span className="ths-focus-count">{selectedTabs.length || selectedBlocks.length} 个题材命中</span>
       </div>
 
       {!stockCode && (
@@ -325,14 +333,54 @@ function SelectedStockSection({
         </div>
       )}
 
-      {stockCode && selectedBlocks.length === 0 && (
+      {stockCode && selectedTabs.length === 0 && selectedBlocks.length === 0 && (
         <div className="ths-focus-inline-empty">
           <Tag size={17} />
-          <span>所选股票未出现在源 Top 题材列表中。它可能仍出现在连板梯队，不能据此判断没有其它题材。</span>
+          <span>所选股票未出现在涨停简图分类中。它可能仍出现在连板梯队，不能据此判断没有其它题材。</span>
         </div>
       )}
 
-      {selectedBlocks.length > 0 && (
+      {selectedTabs.length > 0 && (
+        <div className="ths-focus-topic-list">
+          {selectedTabs.map((hit) => (
+            <article className="ths-focus-topic" key={`${hit.tab.name}-${hit.stock.code}`}>
+              <div className="ths-focus-topic-head">
+                <div>
+                  <h4>{hit.tab.name}</h4>
+                  <span>涨停简图分类</span>
+                </div>
+                <span className="ths-focus-source-order">源分类第 {hit.source_order} 项</span>
+              </div>
+
+              <div className="ths-focus-metric-row">
+                <FocusMetric label="分类涨停股" value={`${formatCount(hit.tab.stocks.length)} 只`} />
+                <FocusMetric label="源涨停标签" value={hit.stock.reason.trim() || '未提供'} />
+              </div>
+
+              <div className="ths-focus-reason">
+                <span className="ths-focus-field-label">
+                  <Tag size={13} />
+                  题材催化
+                </span>
+                <strong>{hit.stock.abnormal_reason.trim() || '源未提供题材催化'}</strong>
+                <small>分类与原因来自同花顺涨停简图，仅用于辅助解释，不代表已核验的因果。</small>
+              </div>
+
+              {hit.stock.detail_reason.trim() ? (
+                <details className="ths-focus-reason-detail">
+                  <summary>展开源说明原文（{hit.stock.detail_reason.trim().length.toLocaleString('zh-CN')} 字）</summary>
+                  <p>上游原文可能包含 AI 自动汇总与免责声明；这里仅保留原文供核对，不作为事实复制或因果依据。</p>
+                  <pre>{hit.stock.detail_reason}</pre>
+                </details>
+              ) : (
+                <p className="ths-focus-missing-detail">源未提供说明原文。</p>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
+
+      {selectedTabs.length === 0 && selectedBlocks.length > 0 && (
         <div className="ths-focus-topic-list">
           {selectedBlocks.map((hit) => (
             <article className="ths-focus-topic" key={hit.block.code}>
@@ -392,6 +440,57 @@ function FocusMetric({
       <span>{label}</span>
       <strong className={valueClassName}>{value}</strong>
     </div>
+  )
+}
+
+function ThemeTabsSection({ tabs, stockCode }: { tabs: ThsFocusTab[]; stockCode: string }) {
+  const uniqueStocks = new Set<string>()
+  tabs.forEach((tab) => tab.stocks.forEach((stock) => uniqueStocks.add(stock.code)))
+  return (
+    <section className="ths-focus-card ths-focus-tabs" aria-labelledby="ths-focus-tabs-title">
+      <div className="ths-focus-card-head">
+        <div>
+          <span className="ths-focus-card-eyebrow">涨停简图 · 每日源分类</span>
+          <h3 id="ths-focus-tabs-title">题材分类与成员</h3>
+          <p>来自 tab_list/all_tab_data，按源分类展开可见具体个股；block_top 仅作普通板块视图，不再冒充这里的主线分类。</p>
+        </div>
+        <span className="ths-focus-count">
+          {tabs.length} 类 · {uniqueStocks.size} 只去重个股
+        </span>
+      </div>
+
+      {tabs.length === 0 ? (
+        <div className="ths-focus-inline-empty">
+          <Tag size={17} />
+          <span>该日归档没有涨停简图分类。旧版 block_top 快照不会被回填成这里的分类。</span>
+        </div>
+      ) : (
+        <div className="ths-focus-tab-list">
+          {tabs.map((tab) => {
+            const containsSelected = tab.stocks.some((stock) => stock.code === stockCode)
+            return (
+              <details className={`ths-focus-tab-group ${containsSelected ? 'contains-selected' : ''}`} key={tab.name} open={containsSelected || undefined}>
+                <summary>
+                  <strong>{tab.name}</strong>
+                  <span>{tab.stocks.length} 只</span>
+                </summary>
+                <div className="ths-focus-tab-stocks">
+                  {tab.stocks.map((stock) => (
+                    <div className={`ths-focus-tab-stock ${stock.code === stockCode ? 'selected' : ''}`} key={`${tab.name}-${stock.code}`}>
+                      <div>
+                        <strong>{stock.name}</strong>
+                        <small>{stock.code}</small>
+                      </div>
+                      <span>{stock.abnormal_reason.trim() || stock.reason.trim() || '源未提供原因'}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )
+          })}
+        </div>
+      )}
+    </section>
   )
 }
 

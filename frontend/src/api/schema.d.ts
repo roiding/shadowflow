@@ -957,7 +957,7 @@ export interface paths {
         };
         /**
          * 已归档的同花顺题材与连板补充资料
-         * @description 只读取本地补充归档。题材为源Top列表，市场概览及晋级对比使用源默认口径；部分接口无日期回显，响应保留该限制。
+         * @description 只读取本地补充归档。涨停简图分类来自 tab_list/all_tab_data，block_top 仅作普通板块视图；市场概览及晋级对比使用源默认口径。
          */
         get: {
             parameters: {
@@ -1118,7 +1118,7 @@ export interface paths {
         };
         /**
          * 今日封板股票的联动核心
-         * @description 实时读取当前仍封住涨停的股票，在这些成员之间建立历史收盘封板共现子图，先把与今日成员历史高频共现、或命中今日Top20历史题材主线的未封板股票列为候选；再按“盘中确认满分且无风险折价”的理论上界分批读取盘中行情和自身历史，只有当前第 N 名不含暗盘的真实分严格高于所有未取数候选的上界加暗盘最大增量才停止，同分继续读取。粗筛结束后只对仍可能进入前 N 的少量候选请求一次暗盘资金；暗盘超时或部分失败时降级并标记状态，不阻塞整批；行情或自身历史不完整时明确失败。历史严格截止到今日之前最近一个完整归档日，今日快照与候选行情不写入历史，也不参与历史分母。结果依赖点击时的盘中快照，开板会使成员变化；共现为描述统计，不代表因果、带动或未来收益。
+         * @description 实时读取当前仍封住涨停的股票，在这些成员之间建立历史收盘封板共现子图，先把与今日成员历史高频共现、或命中今日涨停简图历史分类主线的未封板股票列为候选；再按“盘中确认满分且无风险折价”的理论上界分批读取盘中行情和自身历史，只有当前第 N 名不含暗盘的真实分严格高于所有未取数候选的上界加暗盘最大增量才停止，同分继续读取。粗筛结束后只对仍可能进入前 N 的少量候选请求一次暗盘资金；暗盘超时或部分失败时降级并标记状态，不阻塞整批；行情或自身历史不完整时明确失败。历史严格截止到今日之前最近一个完整归档日，今日快照与候选行情不写入历史，也不参与历史分母。结果依赖点击时的盘中快照，开板会使成员变化；共现为描述统计，不代表因果、带动或未来收益。
          */
         get: {
             parameters: {
@@ -1265,6 +1265,8 @@ export interface components {
             fetched_at: string;
             /** @description 当前源有不回显日期的子接口，此值固定为false。 */
             source_date_verified: boolean;
+            /** @description all_tab_data 是否回显并校验了所选交易日。旧版 block_top-only 归档可能缺失。 */
+            tab_date_verified?: boolean;
             limitations: string[];
             blocks: {
                 code: string;
@@ -1273,6 +1275,8 @@ export interface components {
                 limit_up_count: number;
                 stocks: components["schemas"]["ThsFocusStock"][];
             }[];
+            /** @description 涨停简图分类；旧版归档可能为 null，不得用 block_top 回填。 */
+            tabs?: components["schemas"]["ThsFocusTab"][] | null;
             ladder: {
                 height: number;
                 stocks: components["schemas"]["ThsFocusStock"][];
@@ -1285,6 +1289,23 @@ export interface components {
             comparison: {
                 [key: string]: unknown;
             };
+        };
+        ThsFocusTab: {
+            /** @description 保留源分类原名，例如“名称炒作”或““东方系””。 */
+            name: string;
+            rank: number;
+            stocks: components["schemas"]["ThsFocusTabStock"][];
+        };
+        ThsFocusTabStock: {
+            code: string;
+            name: string;
+            market_id: number;
+            /** @description 源涨停标签，例如“放量涨停||逆势涨停”。 */
+            reason: string;
+            /** @description 源题材催化短句。 */
+            abnormal_reason: string;
+            /** @description 源详细叙事，可能含AI生成内容。 */
+            detail_reason: string;
         };
         ThsFocusStock: {
             code: string;
@@ -1530,7 +1551,7 @@ export interface components {
             strongest_peer_code: string;
             strongest_peer_name: string;
             strongest_overlap_days: number;
-            /** @description 该股在回看窗口内积累的同花顺 Top20 题材标签，最多返回前 8 个；不是完整行业/概念成份。 */
+            /** @description 该股在回看窗口内积累的同花顺涨停简图分类标签，最多返回前 8 个；不是完整行业/概念成份。 */
             theme_tags: components["schemas"]["LimitUpThemeTag"][];
             /** @description 与今日其他封板成员共享至少一个有效同花顺题材标签的成员数。 */
             theme_neighbor_count: number;
@@ -1577,7 +1598,7 @@ export interface components {
             candidate_limit: number;
             /** @description 兼容字段，当前为空；今日主线改用 theme_mainline。 */
             mainline_themes: components["schemas"]["LimitUpMainlineTheme"][];
-            /** @description 由当前封板成员的历史题材标签实时聚类出的多条题材主线；至少 2 只成员共享同一标签。个股优先使用同花顺 Top20 历史累计标签；没有有效历史标签时，使用本地东财概念/行业关系兜底，并按名称映射到可识别的同花顺题材。按成员核心度、标签 IDF、时效和封板质量加权，不使用历史标签近期度。不解析今日实时 reason，未分类/其他/无明确原因的题材桶不参与。 */
+            /** @description 由当前封板成员的历史题材标签实时聚类出的多条题材主线；至少 2 只成员共享同一标签。个股优先使用同花顺涨停简图历史累计分类标签；没有有效历史标签时，使用本地东财概念/行业关系兜底，并按名称映射到可识别的同花顺题材。按成员核心度、标签 IDF、时效和封板质量加权，不使用历史标签近期度。不解析今日实时 reason，未分类/其他/无明确原因的分类不参与。 */
             theme_mainline: components["schemas"]["LimitUpThemeCluster"][];
             /** @description 每条实时主线各自独立排名的候选组。主线之间不合并为单一主线，同一候选可出现在多个组中。 */
             mainline_candidates: components["schemas"]["LimitUpTodayMainlineGroup"][];
@@ -1600,7 +1621,7 @@ export interface components {
             /** Format: date */
             last_date: string;
             /**
-             * @description 标签来源；ths 表示同花顺历史 Top20，eastmoney_concept/eastmoney_industry 表示东财关系兜底。
+             * @description 标签来源；ths 表示同花顺涨停简图历史分类，eastmoney_concept/eastmoney_industry 表示东财关系兜底。
              * @enum {string}
              */
             source?: "ths" | "eastmoney_concept" | "eastmoney_industry";

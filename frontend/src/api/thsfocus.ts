@@ -21,6 +21,21 @@ export interface ThsFocusBlock {
   stocks: ThsFocusStock[]
 }
 
+export interface ThsFocusTabStock {
+  code: string
+  name: string
+  market_id: number
+  reason: string
+  abnormal_reason: string
+  detail_reason: string
+}
+
+export interface ThsFocusTab {
+  name: string
+  rank: number
+  stocks: ThsFocusTabStock[]
+}
+
 export interface ThsFocusLevel {
   height: number
   stocks: ThsFocusStock[]
@@ -35,6 +50,8 @@ export interface ThsFocusSnapshot {
   source_date_verified: boolean
   blocks: ThsFocusBlock[]
   ladder: ThsFocusLevel[]
+  tabs?: ThsFocusTab[] | null
+  tab_date_verified?: boolean
   market: unknown
   comparison: unknown
   limitations: string[]
@@ -52,6 +69,12 @@ export type ThsFocusApiResponse = ApiEnvelope<ThsFocusPayload>
 export interface ThsFocusBlockHit {
   block: ThsFocusBlock
   stock: ThsFocusStock
+  source_order: number
+}
+
+export interface ThsFocusTabHit {
+  tab: ThsFocusTab
+  stock: ThsFocusTabStock
   source_order: number
 }
 
@@ -151,7 +174,10 @@ export function thsFocusResponseMatches(
     payload.snapshot.market_scope === THS_FOCUS_MARKET_SCOPE &&
     Array.isArray(payload.snapshot.blocks) &&
     Array.isArray(payload.snapshot.ladder) &&
-    Array.isArray(payload.snapshot.limitations)
+    Array.isArray(payload.snapshot.limitations) &&
+    (payload.snapshot.tabs === undefined ||
+      payload.snapshot.tabs === null ||
+      Array.isArray(payload.snapshot.tabs))
 }
 
 export function selectedThsFocusBlocks(
@@ -168,6 +194,20 @@ export function selectedThsFocusBlocks(
     }
   })
   return hits
+}
+
+export function selectedThsFocusTabs(
+  snapshot: ThsFocusSnapshot | undefined,
+  stockCode: string,
+): ThsFocusTabHit[] {
+  const normalizedCode = stockCode.trim()
+  if (!snapshot || !STOCK_CODE_PATTERN.test(normalizedCode) || !Array.isArray(snapshot.tabs)) return []
+  const hits: ThsFocusTabHit[] = []
+  snapshot.tabs.forEach((tab, tabIndex) => {
+    const stock = tab.stocks.find((candidate) => candidate.code === normalizedCode)
+    if (stock) hits.push({ tab, stock, source_order: tab.rank || tabIndex + 1 })
+  })
+  return hits.sort((left, right) => left.source_order - right.source_order)
 }
 
 export function selectedThsFocusLadder(
@@ -298,7 +338,7 @@ export function thsFocusDateVerificationText(verified: boolean | undefined): str
 }
 
 export function thsFocusCoverageNotice(): string {
-  return '源 Top 题材最多 20 项，是源列表而非市场全部题材或板块完整成份；原因标签与说明仅用于辅助核对，不构成因果关系。'
+  return '题材分类来自同花顺涨停简图的 tab_list/all_tab_data，是源当日整理口径而非全市场行业/概念全集；block_top 仅作普通板块视图，原因标签与说明仅用于辅助核对，不构成因果关系。'
 }
 
 export function thsFocusSourceLimitation(scope: string): string {
@@ -311,6 +351,9 @@ export function thsFocusReadableLimitation(limitation: string): string {
     .replaceAll('默认市场SourceDefault口径', '默认市场口径')
     .replaceAll('source_date_verified', '日期核验标记')
     .replaceAll('source_default', '源默认市场口径')
+    .replaceAll('tab_list/all_tab_data', '涨停简图分类')
+    .replaceAll('all_tab_data', '涨停简图分类')
+    .replaceAll('tab_list', '涨停简图分类')
     .replaceAll('block_top', '题材列表')
     .replaceAll('continuous_limit_up', '连板梯队')
     .replaceAll('market_state', '市场摘要')

@@ -245,11 +245,22 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 				{Code: "000002", Name: "乙", MarketID: 33, Reason: "机器人"},
 			},
 		}},
-		Ladder:      []thsfocus.Level{},
-		Market:      json.RawMessage(`{"rise_fall":{"rise":100,"fall":200,"deuce":10,"limit_up":10,"limit_down":2}}`),
-		Comparison:  json.RawMessage(`{"today_date":"2026-11-06"}`),
-		Limitations: []string{"测试空梯队"},
-		RawPages:    []json.RawMessage{json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`)},
+		Tabs: []thsfocus.Tab{{
+			Name: "机器人", Rank: 1,
+			Stocks: []thsfocus.TabStock{
+				{Code: "000001", Name: "甲", MarketID: 33, Reason: "放量涨停", AbnormalReason: "机器人"},
+				{Code: "000002", Name: "乙", MarketID: 33, Reason: "放量涨停", AbnormalReason: "机器人"},
+			},
+		}},
+		TabDateVerified: true,
+		Ladder:          []thsfocus.Level{},
+		Market:          json.RawMessage(`{"rise_fall":{"rise":100,"fall":200,"deuce":10,"limit_up":10,"limit_down":2}}`),
+		Comparison:      json.RawMessage(`{"today_date":"2026-11-06"}`),
+		Limitations:     []string{"测试空梯队"},
+		RawPages: []json.RawMessage{
+			json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`),
+			json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`),
+		},
 	}
 	if err := store.SaveThsFocus(ctx, focus); err != nil {
 		testingT.Fatal(err)
@@ -333,7 +344,7 @@ func TestLimitUpTodayNetworkExcludesTodayFromHistory(testingT *testing.T) {
 		testingT.Fatalf("today-core must call dark money once for the final candidate: calls=%d codes=%+v",
 			darkMoneySource.calls, darkMoneySource.codes)
 	}
-	if len(result.Data.ThemeMainline) != 1 || result.Data.ThemeMainline[0].Code != "885517" ||
+	if len(result.Data.ThemeMainline) != 1 || result.Data.ThemeMainline[0].Code != "机器人" ||
 		result.Data.ThemeMainline[0].MemberCount != 2 {
 		testingT.Fatalf("unexpected THS theme mainline: %+v", result.Data.ThemeMainline)
 	}

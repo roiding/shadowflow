@@ -23,10 +23,23 @@ func focusTestSnapshot() thsfocus.Snapshot {
 				{Code: "000003", Name: "未分类样本", MarketID: 33, Reason: "未分类"},
 			}},
 		},
-		Ladder: []thsfocus.Level{}, Market: json.RawMessage(`{"rise_fall":{"rise":100,"fall":200,"deuce":10,"limit_up":10,"limit_down":2}}`),
+		Tabs: []thsfocus.Tab{
+			{Name: "名称炒作", Rank: 1, Stocks: []thsfocus.TabStock{
+				{Code: "000001", Name: "样本", MarketID: 33, Reason: "放量涨停", AbnormalReason: "名称联动", DetailReason: "详情"},
+				{Code: "000002", Name: "同题材样本", MarketID: 33, Reason: "放量涨停", AbnormalReason: "名称联动", DetailReason: "详情"},
+			}},
+			{Name: "其他概念", Rank: 2, Stocks: []thsfocus.TabStock{
+				{Code: "000003", Name: "未分类样本", MarketID: 33, Reason: "未分类"},
+			}},
+		},
+		TabDateVerified: true,
+		Ladder:          []thsfocus.Level{}, Market: json.RawMessage(`{"rise_fall":{"rise":100,"fall":200,"deuce":10,"limit_up":10,"limit_down":2}}`),
 		Comparison:  json.RawMessage(`{"today_date":"2026-11-06","yesterday_date":"2026-11-05","board_list":[],"one_board":[]}`),
 		Limitations: []string{"题材Top列表，部分接口未回显日期"},
-		RawPages:    []json.RawMessage{json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`)},
+		RawPages: []json.RawMessage{
+			json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`),
+			json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`),
+		},
 	}
 }
 
@@ -46,11 +59,15 @@ func TestThsFocusScopeIsolationAtomicReplacementAndProvenance(testingT *testing.
 		testingT.Fatalf("bad persisted focus: %+v %v", read, err)
 	}
 	var themeRows int
-	if err := store.reader.QueryRow(`SELECT count(*) FROM ths_theme_stock_day`).Scan(&themeRows); err != nil || themeRows != 2 {
+	if err := store.reader.QueryRow(`SELECT count(*) FROM ths_theme_tab_stock WHERE usable=1`).Scan(&themeRows); err != nil || themeRows != 2 {
 		testingT.Fatalf("unclassified theme block leaked into index: rows=%d err=%v", themeRows, err)
 	}
+	var tabRows int
+	if err := store.reader.QueryRow(`SELECT count(*) FROM ths_theme_tab_day`).Scan(&tabRows); err != nil || tabRows != 2 {
+		testingT.Fatalf("tab categories were not persisted: rows=%d err=%v", tabRows, err)
+	}
 	profiles, err := store.ReadThemeProfiles(ctx, "2025-11-10", "2026-11-10", thsfocus.ScopeDefault, nil)
-	if err != nil || len(profiles) != 2 || len(profiles[0].Tags) != 1 || profiles[0].Tags[0].Name != "题材" {
+	if err != nil || len(profiles) != 2 || len(profiles[0].Tags) != 1 || profiles[0].Tags[0].Name != "名称炒作" {
 		testingT.Fatalf("bad theme profiles: %+v %v", profiles, err)
 	}
 	cooccurrences, err := store.ReadThemeCooccurrences(ctx, "2025-11-10", "2026-11-10", thsfocus.ScopeDefault, "000001")
@@ -62,7 +79,7 @@ func TestThsFocusScopeIsolationAtomicReplacementAndProvenance(testingT *testing.
 		testingT.Fatal("scope leaked")
 	}
 	snapshot.FetchedAt = snapshot.FetchedAt.Add(time.Hour)
-	snapshot.Blocks[0].Name = "修订题材"
+	snapshot.Tabs[0].Name = "修订题材"
 	if _, err := store.db.Exec(`CREATE TRIGGER fail_focus BEFORE UPDATE ON ths_focus_day BEGIN SELECT RAISE(ABORT,'test rollback'); END`); err != nil {
 		testingT.Fatal(err)
 	}
@@ -70,7 +87,7 @@ func TestThsFocusScopeIsolationAtomicReplacementAndProvenance(testingT *testing.
 		testingT.Fatal("expected interrupted publication")
 	}
 	read, err = store.ReadThsFocus(ctx, snapshot.TradeDate, snapshot.Scope)
-	if err != nil || read.Blocks[0].Name != "题材" {
+	if err != nil || read.Tabs[0].Name != "名称炒作" {
 		testingT.Fatal("failed replacement destroyed good snapshot")
 	}
 	if _, err := store.db.Exec(`DROP TRIGGER fail_focus`); err != nil {
@@ -83,7 +100,7 @@ func TestThsFocusScopeIsolationAtomicReplacementAndProvenance(testingT *testing.
 		testingT.Fatal("older data replaced newer revision")
 	}
 	var pages []byte
-	if err := store.reader.QueryRow(`SELECT raw_pages FROM ths_focus_day`).Scan(&pages); err != nil || string(pages) != "[{},{},{},{}]" {
+	if err := store.reader.QueryRow(`SELECT raw_pages FROM ths_focus_day`).Scan(&pages); err != nil || string(pages) != "[{},{},{},{},{},{}]" {
 		testingT.Fatal("raw evidence missing")
 	}
 }

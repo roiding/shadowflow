@@ -53,12 +53,12 @@ func (store *Store) ReadThemeProfiles(
 			args = append(args, code)
 		}
 	}
-	rows, err := store.reader.QueryContext(ctx, `SELECT stock_code,MAX(stock_name),theme_code,MAX(theme_name),
+	rows, err := store.reader.QueryContext(ctx, `SELECT stock_code,MAX(stock_name),tab_name,MAX(tab_name),
 COUNT(*),SUM(CASE WHEN trade_date>=? THEN 1 ELSE 0 END),MIN(trade_date),MAX(trade_date)
-FROM ths_theme_stock_day
-WHERE source=? AND scope=? AND trade_date>=? AND trade_date<=?`+where+`
-GROUP BY stock_code,theme_code
-ORDER BY stock_code,theme_code,MAX(trade_date) DESC`, args...)
+FROM ths_theme_tab_stock
+WHERE source=? AND scope=? AND trade_date>=? AND trade_date<=? AND usable=1`+where+`
+GROUP BY stock_code,tab_name
+ORDER BY stock_code,tab_name,MAX(trade_date) DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -106,8 +106,8 @@ ORDER BY stock_code,theme_code,MAX(trade_date) DESC`, args...)
 		}
 	}
 	labelRows, err := store.reader.QueryContext(ctx, `SELECT stock_code,COUNT(DISTINCT trade_date)
-FROM ths_theme_stock_day
-WHERE source=? AND scope=? AND trade_date>=? AND trade_date<=?`+labelWhere+`
+FROM ths_theme_tab_stock
+WHERE source=? AND scope=? AND trade_date>=? AND trade_date<=? AND usable=1`+labelWhere+`
 GROUP BY stock_code`, labelArgs...)
 	if err != nil {
 		return nil, err
@@ -157,14 +157,15 @@ func (store *Store) ReadThemeCooccurrences(
 	if _, _, err := validateThemeWindow(fromDate, asOf, scope); err != nil {
 		return nil, err
 	}
-	rows, err := store.reader.QueryContext(ctx, `SELECT c.trade_date,c.theme_code,c.theme_name,
+	rows, err := store.reader.QueryContext(ctx, `SELECT c.trade_date,c.tab_name,c.tab_name,
 p.stock_code,p.stock_name
-FROM ths_theme_stock_day c
-JOIN ths_theme_stock_day p
-  ON p.source=c.source AND p.scope=c.scope AND p.trade_date=c.trade_date AND p.theme_code=c.theme_code
+FROM ths_theme_tab_stock c
+JOIN ths_theme_tab_stock p
+  ON p.source=c.source AND p.scope=c.scope AND p.trade_date=c.trade_date AND p.tab_name=c.tab_name
 WHERE c.source=? AND c.scope=? AND c.stock_code=? AND c.trade_date>=? AND c.trade_date<=?
+  AND c.usable=1 AND p.usable=1
   AND p.stock_code<>?
-ORDER BY c.trade_date DESC,c.theme_code,p.stock_code`, thsfocus.Source, scope, code, fromDate, asOf, code)
+ORDER BY c.trade_date DESC,c.tab_name,p.stock_code`, thsfocus.Source, scope, code, fromDate, asOf, code)
 	if err != nil {
 		return nil, err
 	}

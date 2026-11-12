@@ -63,7 +63,7 @@ type TodayInput struct {
 	MinOverlap     int
 	TopCores       int
 	CandidateLimit int
-	// ThemeProfiles is the historical accumulated THS Top20 label index. It
+	// ThemeProfiles is the historical accumulated THS limit-up chart label index. It
 	// is the primary clustering source for today's mainline; Eastmoney board
 	// relations are intentionally not part of this path.
 	ThemeProfiles map[string]ThemeStockProfile
@@ -703,7 +703,7 @@ func buildTodayCandidates(
 	for index := range items {
 		item := &items[index]
 		// Keep the historical evidence raw here. The final blend is applied
-		// after live quotes and the explicit Top20 mainline are available.
+		// after live quotes and the explicit limit-up chart mainline are available.
 		item.candidate.HistoryScore = normalise(item.strength, maxStrength)
 	}
 	sort.SliceStable(items, func(left, right int) bool {
@@ -722,7 +722,7 @@ func buildTodayCandidates(
 	return result
 }
 
-// scoreTodayCandidates blends live confirmation, explicit Top20 mainline
+// scoreTodayCandidates blends live confirmation, explicit limit-up chart mainline
 // membership, historical specificity and coverage. Risk is applied as a
 // bounded discount instead of a positive component. When live quotes were not
 // requested, the remaining weights are renormalised so a historical-only view

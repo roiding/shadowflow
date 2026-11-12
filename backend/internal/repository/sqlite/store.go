@@ -144,6 +144,9 @@ func OpenWithReadConns(path string, readConns int) (*Store, error) {
 	if err := migrateThsThemeStock(store); err != nil {
 		return nil, fmt.Errorf("migrate THS theme-stock index: %w", err)
 	}
+	if err := migrateThsThemeTabs(store); err != nil {
+		return nil, fmt.Errorf("migrate THS limit-up chart tabs: %w", err)
+	}
 	if _, err := db.Exec(thsAuthSchema); err != nil {
 		return nil, fmt.Errorf("migrate THS auth tables: %w", err)
 	}

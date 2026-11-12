@@ -28,9 +28,9 @@ func main() {
 
 func run() error {
 	var task, date, at, scope, codes, from, to string
-	flag.StringVar(&task, "task", "", "task: boards, end-of-day, stock-kline, stock-kline-range, board-daily-close-backfill, daily-close, relations, limit-up, ths-focus, ths-login, ths-auth-status, ths-account-data, cleanup, maintenance, analytics, or is-trading-day")
-	flag.StringVar(&from, "from", "", "range start date YYYY-MM-DD for stock-kline-range")
-	flag.StringVar(&to, "to", "", "range end date YYYY-MM-DD for stock-kline-range")
+	flag.StringVar(&task, "task", "", "task: boards, end-of-day, stock-kline, stock-kline-range, board-daily-close-backfill, daily-close, relations, limit-up, ths-focus, ths-focus-range, ths-login, ths-auth-status, ths-account-data, cleanup, maintenance, analytics, or is-trading-day")
+	flag.StringVar(&from, "from", "", "range start date YYYY-MM-DD for stock-kline-range or ths-focus-range")
+	flag.StringVar(&to, "to", "", "range end date YYYY-MM-DD for stock-kline-range or ths-focus-range")
 	flag.StringVar(&date, "date", "", "trade date in YYYY-MM-DD")
 	flag.StringVar(&at, "at", "15:00", "snapshot time in HH:MM for boards")
 	flag.StringVar(&scope, "scope", "HS,GEM2STAR", "market scope for limit-up: HS,GEM2STAR or HS,GEM2STAR,ST,NEW")
@@ -72,6 +72,17 @@ func run() error {
 			return err
 		}
 		return collectStockKlineRange(cfg, from, to)
+	}
+	if task == "ths-focus-range" {
+		if from == "" || to == "" {
+			flag.Usage()
+			os.Exit(2)
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		return collectThsFocusRange(cfg, from, to, scope)
 	}
 	if task == "" || date == "" {
 		flag.Usage()

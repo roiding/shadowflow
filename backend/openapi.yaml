@@ -403,7 +403,7 @@ paths:
   /api/v1/limit-up/focus:
     get:
       summary: 已归档的同花顺题材与连板补充资料
-      description: 只读取本地补充归档。题材为源Top列表，市场概览及晋级对比使用源默认口径；部分接口无日期回显，响应保留该限制。
+      description: 只读取本地补充归档。涨停简图分类来自 tab_list/all_tab_data，block_top 仅作普通板块视图；市场概览及晋级对比使用源默认口径。
       parameters:
         - $ref: "#/components/parameters/TradeDate"
         - $ref: "#/components/parameters/LimitUpScope"
@@ -486,7 +486,7 @@ paths:
   /api/v1/limit-up/today-network:
     get:
       summary: 今日封板股票的联动核心
-      description: 实时读取当前仍封住涨停的股票，在这些成员之间建立历史收盘封板共现子图，先把与今日成员历史高频共现、或命中今日Top20历史题材主线的未封板股票列为候选；再按“盘中确认满分且无风险折价”的理论上界分批读取盘中行情和自身历史，只有当前第 N 名不含暗盘的真实分严格高于所有未取数候选的上界加暗盘最大增量才停止，同分继续读取。粗筛结束后只对仍可能进入前 N 的少量候选请求一次暗盘资金；暗盘超时或部分失败时降级并标记状态，不阻塞整批；行情或自身历史不完整时明确失败。历史严格截止到今日之前最近一个完整归档日，今日快照与候选行情不写入历史，也不参与历史分母。结果依赖点击时的盘中快照，开板会使成员变化；共现为描述统计，不代表因果、带动或未来收益。
+      description: 实时读取当前仍封住涨停的股票，在这些成员之间建立历史收盘封板共现子图，先把与今日成员历史高频共现、或命中今日涨停简图历史分类主线的未封板股票列为候选；再按“盘中确认满分且无风险折价”的理论上界分批读取盘中行情和自身历史，只有当前第 N 名不含暗盘的真实分严格高于所有未取数候选的上界加暗盘最大增量才停止，同分继续读取。粗筛结束后只对仍可能进入前 N 的少量候选请求一次暗盘资金；暗盘超时或部分失败时降级并标记状态，不阻塞整批；行情或自身历史不完整时明确失败。历史严格截止到今日之前最近一个完整归档日，今日快照与候选行情不写入历史，也不参与历史分母。结果依赖点击时的盘中快照，开板会使成员变化；共现为描述统计，不代表因果、带动或未来收益。
       parameters:
         - $ref: "#/components/parameters/LimitUpDays"
         - $ref: "#/components/parameters/LimitUpScope"
@@ -678,6 +678,7 @@ components:
         market_scope: { type: string, const: source_default }
         fetched_at: { type: string, format: date-time }
         source_date_verified: { type: boolean, description: 当前源有不回显日期的子接口，此值固定为false。 }
+        tab_date_verified: { type: boolean, description: all_tab_data 是否回显并校验了所选交易日。旧版 block_top-only 归档可能缺失。 }
         limitations: { type: array, items: { type: string } }
         blocks:
           type: array
@@ -690,6 +691,11 @@ components:
               change: { type: [number, "null"] }
               limit_up_count: { type: integer }
               stocks: { type: array, items: { $ref: "#/components/schemas/ThsFocusStock" } }
+        tabs:
+          type: array
+          nullable: true
+          description: 涨停简图分类；旧版归档可能为 null，不得用 block_top 回填。
+          items: { $ref: "#/components/schemas/ThsFocusTab" }
         ladder:
           type: array
           items:
@@ -700,6 +706,23 @@ components:
               stocks: { type: array, items: { $ref: "#/components/schemas/ThsFocusStock" } }
         market: { type: object, additionalProperties: true, description: 源市场概览，数字字符串及中文单位原样保留。 }
         comparison: { type: object, additionalProperties: true, description: 源前后两日晋级对照，rate为涨跌幅而非概率。 }
+    ThsFocusTab:
+      type: object
+      required: [name, rank, stocks]
+      properties:
+        name: { type: string, description: 保留源分类原名，例如“名称炒作”或““东方系””。 }
+        rank: { type: integer, minimum: 1 }
+        stocks: { type: array, items: { $ref: "#/components/schemas/ThsFocusTabStock" } }
+    ThsFocusTabStock:
+      type: object
+      required: [code, name, market_id, reason, abnormal_reason, detail_reason]
+      properties:
+        code: { type: string, pattern: '^[0-9]{6}$' }
+        name: { type: string }
+        market_id: { type: integer }
+        reason: { type: string, description: 源涨停标签，例如“放量涨停||逆势涨停”。 }
+        abnormal_reason: { type: string, description: 源题材催化短句。 }
+        detail_reason: { type: string, description: 源详细叙事，可能含AI生成内容。 }
     ThsFocusStock:
       type: object
       required: [code, name, market_id, continue_num, reason, reason_detail, high_days, change_percent]
@@ -922,7 +945,7 @@ components:
         strongest_overlap_days: { type: integer }
         theme_tags:
           type: array
-          description: 该股在回看窗口内积累的同花顺 Top20 题材标签，最多返回前 8 个；不是完整行业/概念成份。
+          description: 该股在回看窗口内积累的同花顺涨停简图分类标签，最多返回前 8 个；不是完整行业/概念成份。
           items: { $ref: "#/components/schemas/LimitUpThemeTag" }
         theme_neighbor_count: { type: integer, description: 与今日其他封板成员共享至少一个有效同花顺题材标签的成员数。 }
         theme_strength: { type: number, description: 与今日其他封板成员共享题材的 IDF 加权强度和；独立于同日收盘封板共现。 }
@@ -970,7 +993,7 @@ components:
           items: { $ref: "#/components/schemas/LimitUpMainlineTheme" }
         theme_mainline:
           type: array
-          description: 由当前封板成员的历史题材标签实时聚类出的多条题材主线；至少 2 只成员共享同一标签。个股优先使用同花顺 Top20 历史累计标签；没有有效历史标签时，使用本地东财概念/行业关系兜底，并按名称映射到可识别的同花顺题材。按成员核心度、标签 IDF、时效和封板质量加权，不使用历史标签近期度。不解析今日实时 reason，未分类/其他/无明确原因的题材桶不参与。
+          description: 由当前封板成员的历史题材标签实时聚类出的多条题材主线；至少 2 只成员共享同一标签。个股优先使用同花顺涨停简图历史累计分类标签；没有有效历史标签时，使用本地东财概念/行业关系兜底，并按名称映射到可识别的同花顺题材。按成员核心度、标签 IDF、时效和封板质量加权，不使用历史标签近期度。不解析今日实时 reason，未分类/其他/无明确原因的分类不参与。
           items: { $ref: "#/components/schemas/LimitUpThemeCluster" }
         mainline_candidates:
           type: array
@@ -995,7 +1018,7 @@ components:
         source:
           type: string
           enum: [ths, eastmoney_concept, eastmoney_industry]
-          description: 标签来源；ths 表示同花顺历史 Top20，eastmoney_concept/eastmoney_industry 表示东财关系兜底。
+          description: 标签来源；ths 表示同花顺涨停简图历史分类，eastmoney_concept/eastmoney_industry 表示东财关系兜底。
     LimitUpThemeStockProfile:
       type: object
       required: [code, name, market_type, label_days, tags]
