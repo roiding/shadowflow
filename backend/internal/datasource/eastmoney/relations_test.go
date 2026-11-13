@@ -16,6 +16,63 @@ import (
 	"github.com/roiding/shadowflow/internal/graymarket"
 )
 
+func TestFetchStockQuotesFallsBackToBackupQuotePath(t *testing.T) {
+	var primaryCalls, backupCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/qt/ulist.np/get":
+			primaryCalls.Add(1)
+			writer.WriteHeader(http.StatusInternalServerError)
+		case "/api/qt/ulist/get":
+			backupCalls.Add(1)
+			query := request.URL.Query()
+			if query.Get("pn") != "1" || query.Get("pz") != "100" || query.Get("po") != "1" || query.Get("np") != "1" {
+				t.Errorf("backup quote path is missing pagination: %s", request.URL.RawQuery)
+			}
+			if query.Get("secids") != "1.600001" {
+				t.Errorf("backup quote path dropped the requested secids: %s", request.URL.RawQuery)
+			}
+			_, _ = writer.Write([]byte(`{"rc":0,"data":{"total":1,"diff":{"0":{"f2":12.34,"f3":1.25,"f12":"600001","f13":1,"f14":"测试股份"}}}}`))
+		default:
+			t.Errorf("unexpected quote path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := NewClient("unused", server.Client(), 100).WithQuoteBaseURLs([]string{server.URL})
+	quotes, err := client.FetchStockQuotes(context.Background(), []graymarket.StockBoardRelation{
+		{StockCode: "600001", StockMarket: 1, StockName: "测试股份"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if primaryCalls.Load() == 0 || backupCalls.Load() == 0 {
+		t.Fatalf("primary/backup paths were not both exercised: primary=%d backup=%d", primaryCalls.Load(), backupCalls.Load())
+	}
+	if len(quotes) != 1 || !quotes[0].Available || quotes[0].LatestPrice != 12.34 {
+		t.Fatalf("backup quote rows were not mapped: %+v", quotes)
+	}
+}
+
+func TestFetchStockQuotesPrefersPrimaryQuotePath(t *testing.T) {
+	var backupCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/api/qt/ulist/get" {
+			backupCalls.Add(1)
+		}
+		_, _ = writer.Write([]byte(`{"rc":0,"data":{"total":1,"diff":[{"f2":12.34,"f3":1.25,"f12":"600001","f13":1,"f14":"测试股份"}]}}`))
+	}))
+	defer server.Close()
+	client := NewClient("unused", server.Client(), 100).WithQuoteBaseURLs([]string{server.URL})
+	if _, err := client.FetchStockQuotes(context.Background(), []graymarket.StockBoardRelation{
+		{StockCode: "600001", StockMarket: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if backupCalls.Load() != 0 {
+		t.Fatalf("healthy primary path must not touch the backup: %d calls", backupCalls.Load())
+	}
+}
+
 func TestDecodeQuoteRowsAcceptsObjectAndPreservesNumericOrder(t *testing.T) {
 	rows, err := decodeQuoteRows([]byte(`{"10":{"f12":"third"},"2":{"f12":"second"},"0":{"f12":"first"}}`))
 	if err != nil {

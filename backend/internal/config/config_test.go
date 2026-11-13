@@ -93,6 +93,28 @@ func TestLoadQuoteBaseURLs(t *testing.T) {
 	}
 }
 
+func TestLoadMarketProviderCooldown(t *testing.T) {
+	t.Setenv("SHADOWFLOW_MARKET_PROVIDER_COOLDOWN_SECONDS", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MarketProviderCooldown != 5*time.Minute {
+		t.Fatalf("default cooldown=%s, want 5m", cfg.MarketProviderCooldown)
+	}
+	t.Setenv("SHADOWFLOW_MARKET_PROVIDER_COOLDOWN_SECONDS", "45")
+	cfg, err = Load()
+	if err != nil || cfg.MarketProviderCooldown != 45*time.Second {
+		t.Fatalf("configured cooldown=%s, error=%v", cfg.MarketProviderCooldown, err)
+	}
+	for _, invalid := range []string{"9", "3601"} {
+		t.Setenv("SHADOWFLOW_MARKET_PROVIDER_COOLDOWN_SECONDS", invalid)
+		if _, err := Load(); err == nil {
+			t.Fatalf("expected cooldown %s to be rejected", invalid)
+		}
+	}
+}
+
 func TestLoadRunRetentionDefaultsAndValidation(t *testing.T) {
 	t.Setenv("SHADOWFLOW_SUCCESS_RUN_RETENTION_DAYS", "")
 	t.Setenv("SHADOWFLOW_FAILURE_RUN_RETENTION_DAYS", "")

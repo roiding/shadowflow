@@ -20,6 +20,12 @@ test('event archive run rows use the shared Chinese label', () => {
   assert.ok(qualityViewSource.includes('collectionRunLabel(run.snapshot_kind)'))
 })
 
+test('archive manifest reports both Eastmoney and THS five-minute sources', () => {
+  assert.ok(qualityViewSource.includes('sources.stock_kline_5m'))
+  assert.ok(qualityViewSource.includes('sources.stock_trends_1m_241'))
+  assert.ok(qualityViewSource.includes('sources.ths_kline_5m_actual'))
+})
+
 test('event archive requests and query keys carry the selected scope', () => {
   assert.ok(archivePanelSource.includes('limitUpQualityQueryKey(date, scope)'))
   assert.ok(archivePanelSource.includes('api.limitUpQuality(date, scope || undefined, signal)'))

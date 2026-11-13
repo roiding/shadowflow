@@ -95,13 +95,17 @@ type relationStore interface {
 }
 
 type Service struct {
-	source         Source
-	store          store
-	relationSource RelationSource
-	relationStore  relationStore
-	logger         *slog.Logger
-	retries        int
-	retryGap       time.Duration
+	source           Source
+	stockQuoteSource StockDailyQuoteSource
+	stockKlineSource StockKlineSource
+	boardQuoteSource BoardDailyQuoteSource
+	klineRangeSource stockKlineRangeSource
+	store            store
+	relationSource   RelationSource
+	relationStore    relationStore
+	logger           *slog.Logger
+	retries          int
+	retryGap         time.Duration
 	// allowMissingQuotes archives end-of-day funds without quote enrichment
 	// when the quote upstream is unavailable, instead of failing the whole
 	// archive part. Degraded board archives keep the full ranked board set;
@@ -113,6 +117,9 @@ type Service struct {
 	thsFocusSource     ThsFocusSource
 	thsFocusScope      string
 	thsAccountSource   THSAccountSource
+	upstreamPreparer   interface {
+		PrepareUpstreamRequests(context.Context, string, int, int) error
+	}
 }
 
 func New(source Source, store store, logger *slog.Logger) *Service {
@@ -127,6 +134,54 @@ func New(source Source, store store, logger *slog.Logger) *Service {
 // quote_available=0 instead of the whole end-of-day part failing.
 func (s *Service) WithAllowMissingQuotes(allow bool) *Service {
 	s.allowMissingQuotes = allow
+	return s
+}
+
+// WithStockKlineSource overrides only the five-minute lane. Rankings, quotes,
+// money and relations stay on the main Eastmoney source.
+func (s *Service) WithStockKlineSource(source StockKlineSource) *Service {
+	if source != nil {
+		s.stockKlineSource = source
+	}
+	return s
+}
+
+// WithStockQuoteSource routes daily constituent quote enrichment through the
+// market-data provider set. Ranking and funds endpoints stay on s.source.
+func (s *Service) WithStockQuoteSource(source StockDailyQuoteSource) *Service {
+	if source != nil {
+		s.stockQuoteSource = source
+	}
+	return s
+}
+
+// WithBoardQuoteSource routes board daily-close enrichment through the
+// market-data provider set.
+func (s *Service) WithBoardQuoteSource(source BoardDailyQuoteSource) *Service {
+	if source != nil {
+		s.boardQuoteSource = source
+	}
+	return s
+}
+
+// WithStockKlineRangeSource routes operator-run range backfills through the
+// market-data provider set.
+func (s *Service) WithStockKlineRangeSource(source stockKlineRangeSource) *Service {
+	if source != nil {
+		s.klineRangeSource = source
+	}
+	return s
+}
+
+// WithUpstreamPreparer routes proxy preparation to the component that can
+// actually choose the next market-data provider. A cooling Eastmoney source
+// must not make the kline lane wait for an unnecessary proxy prewarm.
+func (s *Service) WithUpstreamPreparer(preparer interface {
+	PrepareUpstreamRequests(context.Context, string, int, int) error
+}) *Service {
+	if preparer != nil {
+		s.upstreamPreparer = preparer
+	}
 	return s
 }
 
@@ -334,9 +389,13 @@ func (s *Service) collectMoneyArchiveIncremental(ctx context.Context, rankType g
 
 func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error {
 	tradeDate := runAt.Format("2006-01-02")
-	klineSource, ok := s.source.(StockKlineSource)
-	if !ok {
-		return errors.New("stock kline source is unavailable")
+	klineSource := s.stockKlineSource
+	if klineSource == nil {
+		var ok bool
+		klineSource, ok = s.source.(StockKlineSource)
+		if !ok {
+			return errors.New("stock kline source is unavailable")
+		}
 	}
 	runID := newRunID()
 	startedAt := time.Now().UTC()
@@ -404,7 +463,7 @@ func (s *Service) CollectStockKlines(ctx context.Context, runAt time.Time) error
 	snapshot.Records = filtered
 	run.ExpectedTotal = len(snapshot.Records) * 48
 	run.PageCount = len(snapshot.Records)
-	if incremental, ok := s.source.(IncrementalStockKlineSource); ok {
+	if incremental, ok := klineSource.(IncrementalStockKlineSource); ok {
 		pending := make([]graymarket.StockKlinePoint, 0, stockKlinePersistBatchStocks*48)
 		pendingStocks := 0
 		flush := func() error {
@@ -787,9 +846,13 @@ func (s *Service) enrichStockDailyClose(ctx context.Context, snapshot *graymarke
 }
 
 func (s *Service) enrichStockDailyQuotes(ctx context.Context, snapshot *graymarket.RankSnapshot) error {
-	source, ok := s.source.(StockDailyQuoteSource)
-	if !ok {
-		return errors.New("daily quote source is unavailable")
+	source := s.stockQuoteSource
+	if source == nil {
+		var ok bool
+		source, ok = s.source.(StockDailyQuoteSource)
+		if !ok {
+			return errors.New("daily quote source is unavailable")
+		}
 	}
 	relations := make([]graymarket.StockBoardRelation, 0, len(snapshot.Records))
 	for _, record := range snapshot.Records {
@@ -874,9 +937,13 @@ func clearQuoteFields(snapshot *graymarket.RankSnapshot) {
 }
 
 func (s *Service) enrichBoardDailyClose(ctx context.Context, snapshot *graymarket.RankSnapshot) error {
-	source, ok := s.source.(BoardDailyQuoteSource)
-	if !ok {
-		return errors.New("board daily quote source is unavailable")
+	source := s.boardQuoteSource
+	if source == nil {
+		var ok bool
+		source, ok = s.source.(BoardDailyQuoteSource)
+		if !ok {
+			return errors.New("board daily quote source is unavailable")
+		}
 	}
 	quotes, err := source.FetchBoardQuotes(ctx, snapshot.RankType)
 	if err != nil {

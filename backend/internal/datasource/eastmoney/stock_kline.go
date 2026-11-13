@@ -69,6 +69,12 @@ func (c *Client) FetchStockKlines5m(ctx context.Context, snapshot graymarket.Ran
 	return points, nil
 }
 
+// FetchStockKline5m exposes the existing per-day, per-stock archive fallback
+// (direct five-minute, then one-minute aggregation) to the market-data router.
+func (c *Client) FetchStockKline5m(ctx context.Context, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
+	return c.fetchStockKlineWithFallback(ctx, stock.TradeDate, stock)
+}
+
 func (c *Client) FetchStockKlines5mIncremental(ctx context.Context, snapshot graymarket.RankSnapshot, persist func([]graymarket.StockKlinePoint) error) (int, error) {
 	if snapshot.RankType != graymarket.RankStock || snapshot.TradeDate == "" || len(snapshot.Records) == 0 {
 		return 0, fmt.Errorf("invalid stock kline snapshot")
@@ -98,7 +104,7 @@ func (c *Client) FetchStockKlines5mIncremental(ctx context.Context, snapshot gra
 					return
 				case <-limiter.C:
 				}
-				points, err := c.fetchStockKlineWithRetry(ctx, snapshot.TradeDate, stock)
+				points, err := c.fetchStockKlineWithFallback(ctx, snapshot.TradeDate, stock)
 				select {
 				case results <- stockKlineResult{points: points, err: err}:
 				case <-ctx.Done():
@@ -224,15 +230,18 @@ func (c *Client) fetchStockKlineFromTrends(ctx context.Context, tradeDate string
 }
 
 func (c *Client) fetchStockKlineWithFallback(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
-	trendPoints, trendErr := c.fetchStockKlineFromTrends(ctx, tradeDate, stock)
-	if trendErr == nil {
-		return trendPoints, nil
-	}
-	historyPoints, historyErr := c.fetchStockKlineFromHistory(ctx, tradeDate, stock)
+	historyPoints, historyErr := c.fetchStockKlineWithRetry(ctx, tradeDate, stock)
 	if historyErr == nil {
 		return historyPoints, nil
 	}
-	return nil, errors.Join(fmt.Errorf("trends2: %w", trendErr), fmt.Errorf("historical kline: %w", historyErr))
+	if ctx.Err() != nil {
+		return nil, historyErr
+	}
+	trendPoints, trendErr := c.fetchStockKlineFromTrendsWithRetry(ctx, tradeDate, stock)
+	if trendErr == nil {
+		return trendPoints, nil
+	}
+	return nil, errors.Join(fmt.Errorf("five-minute kline: %w", historyErr), fmt.Errorf("one-minute trends2: %w", trendErr))
 }
 
 func (c *Client) fetchStockKlineFromHistory(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
@@ -268,7 +277,7 @@ func (c *Client) fetchStockKlineFromHistory(ctx context.Context, tradeDate strin
 		if payload.Data != nil {
 			count = len(payload.Data.Klines)
 		}
-		return nil, fmt.Errorf("expected 48 historical klines, got %d", count)
+		return nil, fmt.Errorf("%w: expected 48 historical klines, got %d", graymarket.ErrInstrumentUnavailable, count)
 	}
 	fetchedAt := time.Now().UTC()
 	points := make([]graymarket.StockKlinePoint, 48)
@@ -280,14 +289,14 @@ func (c *Client) fetchStockKlineFromHistory(ctx context.Context, tradeDate strin
 		}
 		at, err := time.ParseInLocation("2006-01-02 15:04", fields[0], snapshotLocation(stock.SnapshotAt))
 		if err != nil || at.Format("2006-01-02") != tradeDate {
-			return nil, fmt.Errorf("historical kline date mismatch %q", fields[0])
+			return nil, fmt.Errorf("%w: historical kline date mismatch %q", graymarket.ErrInstrumentUnavailable, fields[0])
 		}
 		index, ok := researchMinuteIndexForSource(at)
 		if !ok {
-			return nil, fmt.Errorf("unexpected historical kline time %s", fields[0])
+			return nil, fmt.Errorf("%w: unexpected historical kline time %s", graymarket.ErrInstrumentUnavailable, fields[0])
 		}
 		if _, duplicate := seen[index]; duplicate {
-			return nil, fmt.Errorf("duplicate historical kline time %s", fields[0])
+			return nil, fmt.Errorf("%w: duplicate historical kline time %s", graymarket.ErrInstrumentUnavailable, fields[0])
 		}
 		seen[index] = struct{}{}
 		numbers, err := klineNumbers(fields, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
@@ -310,7 +319,7 @@ func (c *Client) fetchStockKlineFromHistory(ctx context.Context, tradeDate strin
 		}
 	}
 	if len(seen) != 48 {
-		return nil, fmt.Errorf("historical kline has %d distinct points", len(seen))
+		return nil, fmt.Errorf("%w: historical kline has %d distinct points", graymarket.ErrInstrumentUnavailable, len(seen))
 	}
 	first := &points[0]
 	// When the opening auction prints no volume, the five-minute endpoint
@@ -468,7 +477,7 @@ func (c *Client) fetchStockKlineFromTrendURL(ctx context.Context, baseURL, trade
 		return nil, err
 	}
 	if payload.ReturnCode != 0 || payload.Data == nil {
-		return nil, fmt.Errorf("trend response has no data")
+		return nil, fmt.Errorf("%w: trend response has no data", graymarket.ErrInstrumentUnavailable)
 	}
 
 	location := snapshotLocation(stock.SnapshotAt)

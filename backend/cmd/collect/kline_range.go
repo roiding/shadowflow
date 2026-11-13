@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,7 +14,9 @@ import (
 	"github.com/roiding/shadowflow/internal/collector"
 	"github.com/roiding/shadowflow/internal/config"
 	"github.com/roiding/shadowflow/internal/datasource/eastmoney"
+	"github.com/roiding/shadowflow/internal/datasource/thsquote"
 	"github.com/roiding/shadowflow/internal/datasource/upstream"
+	"github.com/roiding/shadowflow/internal/marketdata"
 	"github.com/roiding/shadowflow/internal/repository/sqlite"
 )
 
@@ -53,7 +56,17 @@ func collectStockKlineRange(cfg config.Config, from, to string) error {
 	}
 	client := eastmoney.NewClient(cfg.UpstreamBaseURL, upstreamResult.Client, cfg.PageSize).
 		WithQuoteBaseURLs(cfg.QuoteBaseURLs).WithUpstreamGuard(upstreamResult.Guard)
-	service := collector.New(client, store, logger)
+	marketProviders, err := marketdata.NewProviderSet(client, thsquote.NewClient("", &http.Client{Timeout: 20 * time.Second}),
+		marketdata.Options{Cooldown: cfg.MarketProviderCooldown, Logger: logger})
+	if err != nil {
+		return err
+	}
+	service := collector.New(client, store, logger).
+		WithStockQuoteSource(marketProviders.DailyCloseQuotes).
+		WithBoardQuoteSource(marketProviders.BoardQuotes).
+		WithStockKlineSource(marketProviders.Klines).
+		WithStockKlineRangeSource(marketProviders.KlineRanges).
+		WithUpstreamPreparer(marketProviders)
 	report, err := service.CollectStockKlineRangePatch(ctx, fromDate, toDate)
 	if err != nil {
 		return err

@@ -26,7 +26,9 @@ import (
 	"github.com/roiding/shadowflow/internal/datasource/ths"
 	"github.com/roiding/shadowflow/internal/datasource/thsdataq"
 	"github.com/roiding/shadowflow/internal/datasource/thsfocus"
+	"github.com/roiding/shadowflow/internal/datasource/thsquote"
 	"github.com/roiding/shadowflow/internal/datasource/upstream"
+	"github.com/roiding/shadowflow/internal/marketdata"
 	"github.com/roiding/shadowflow/internal/quote"
 	"github.com/roiding/shadowflow/internal/repository/sqlite"
 	"github.com/roiding/shadowflow/internal/scheduler"
@@ -79,9 +81,22 @@ func main() {
 	}
 	client := eastmoney.NewClient(cfg.UpstreamBaseURL, upstreamClient, cfg.PageSize).
 		WithQuoteBaseURLs(cfg.QuoteBaseURLs).WithUpstreamGuard(guard)
+	protectedClient := &http.Client{Timeout: 20 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	marketProviders, err := marketdata.NewProviderSet(client, thsquote.NewClient("", protectedClient),
+		marketdata.Options{Cooldown: cfg.MarketProviderCooldown, Logger: logger})
+	if err != nil {
+		logger.Error("create market data providers", "error", err)
+		os.Exit(1)
+	}
 	thsClient := ths.NewClient(ths.DefaultBaseURL, &http.Client{Timeout: 20 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }})
 	collectorService := collector.New(client, store, logger).WithAllowMissingQuotes(cfg.AllowMissingQuotes).
+		WithStockQuoteSource(marketProviders.DailyCloseQuotes).
+		WithBoardQuoteSource(marketProviders.BoardQuotes).
+		WithStockKlineSource(marketProviders.Klines).
+		WithStockKlineRangeSource(marketProviders.KlineRanges).
+		WithUpstreamPreparer(marketProviders).
 		WithLimitUpSource(thsClient, cfg.LimitUpScope).
 		WithThsFocusSource(thsfocus.NewClient("", &http.Client{Timeout: 20 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}), cfg.LimitUpScope)
@@ -141,7 +156,7 @@ func main() {
 	_, eventDisabled := disabledKinds["end-of-day-events"]
 	_, postCloseDisabled := disabledKinds["end-of-day"]
 	eventsScheduled := cfg.SchedulerEnabled && cfg.LimitUpArchiveEnabled && !eventDisabled && !postCloseDisabled
-	apiServer, err := api.New(store, calendar, logger, api.Options{StaticDir: cfg.StaticDir, QuoteSource: quote.NewCache(client, logger), APIToken: cfg.APIToken, NormalRatePerMinute: cfg.NormalRatePerMinute, ExportRatePerMinute: cfg.ExportRatePerMinute, ScanRatePerMinute: cfg.ScanRatePerMinute, TrustedProxyCIDR: cfg.TrustedProxyCIDR, ProxyPool: proxyPool, LimitUpArchiveScheduled: eventsScheduled, LimitUpScope: cfg.LimitUpScope, LimitUpIntradaySource: thsClient, LimitUpQuoteSource: quote.NewLimitUpLiveQuoteSource(client), LimitUpDarkMoneySource: quote.NewLimitUpLiveDarkMoneySource(client)})
+	apiServer, err := api.New(store, calendar, logger, api.Options{StaticDir: cfg.StaticDir, QuoteSource: quote.NewCache(marketProviders.Quotes, logger), APIToken: cfg.APIToken, NormalRatePerMinute: cfg.NormalRatePerMinute, ExportRatePerMinute: cfg.ExportRatePerMinute, ScanRatePerMinute: cfg.ScanRatePerMinute, TrustedProxyCIDR: cfg.TrustedProxyCIDR, ProxyPool: proxyPool, LimitUpArchiveScheduled: eventsScheduled, LimitUpScope: cfg.LimitUpScope, LimitUpIntradaySource: thsClient, LimitUpQuoteSource: quote.NewLimitUpLiveQuoteSource(marketProviders.Quotes), LimitUpDarkMoneySource: quote.NewLimitUpLiveDarkMoneySource(marketProviders.DarkMoney)})
 	if err != nil {
 		logger.Error("create API", "error", err)
 		os.Exit(1)

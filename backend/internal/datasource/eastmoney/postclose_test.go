@@ -48,7 +48,11 @@ func TestFetchStockKlines5mReturnsCompletedStocksWithBatchError(testingT *testin
 	var failedRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(httpWriter http.ResponseWriter, httpRequest *http.Request) {
 		if strings.Contains(httpRequest.URL.Path, "trends") {
-			testingT.Fatalf("unexpected trends endpoint was requested: %s", httpRequest.URL.Path)
+			if httpRequest.URL.Query().Get("secid") == "0.000001" {
+				_, _ = httpWriter.Write([]byte("{"))
+				return
+			}
+			testingT.Fatalf("healthy stock should not reach the one-minute backup: %s", httpRequest.URL.Path)
 		}
 		if !strings.Contains(httpRequest.URL.Path, "/kline/get") {
 			testingT.Fatalf("unexpected endpoint was requested: %s", httpRequest.URL.Path)
@@ -323,7 +327,7 @@ func TestFetchStockKlines5mRequestsDirectPush2HisParametersAndNeverRequestsTrend
 	}
 }
 
-func TestFetchStockKlines5mDoesNotFallbackToOneMinuteOnFailure(testingT *testing.T) {
+func TestFetchStockKlines5mFallsBackToOneMinuteWhenFiveMinuteFails(testingT *testing.T) {
 	var trendsRequestCount atomic.Int32
 	var klineRequestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(httpWriter http.ResponseWriter, httpRequest *http.Request) {
@@ -348,7 +352,7 @@ func TestFetchStockKlines5mDoesNotFallbackToOneMinuteOnFailure(testingT *testing
 		RankType:   graymarket.RankStock,
 		SnapshotAt: closeAt,
 		Records: []graymarket.RankRecord{
-			{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Market: 1, Code: "600001", OpenPrice: 10, HighPrice: 11, LowPrice: 9, ClosePrice: 10, PreviousClose: 10, Volume: 241, Turnover: 24100, TurnoverRate: 0.01, QuoteAvailable: true},
+			{TradeDate: "2026-08-14", SnapshotAt: closeAt, RankType: graymarket.RankStock, Market: 1, Code: "600001", OpenPrice: 10, HighPrice: 10, LowPrice: 10, ClosePrice: 10, PreviousClose: 10, Volume: 241, Turnover: 24100, TurnoverRate: 0.01, QuoteAvailable: true},
 		},
 	}
 	client := NewClient("unused", server.Client(), 100).
@@ -356,17 +360,20 @@ func TestFetchStockKlines5mDoesNotFallbackToOneMinuteOnFailure(testingT *testing
 		WithStockKlineBaseURL(server.URL + "/api/qt/stock/kline/get")
 	client.stockKlineRetryGap = 0
 	points, err := client.FetchStockKlines5m(context.Background(), snapshot)
-	if err == nil {
-		testingT.Fatal("expected error on kline failure, got nil")
-	}
-	if trendsRequestCount.Load() != 0 {
-		testingT.Fatalf("trends2 should never be called as fallback on kline failure, got %d calls", trendsRequestCount.Load())
+	if err != nil {
+		testingT.Fatalf("one-minute backup should complete the day: %v", err)
 	}
 	if klineRequestCount.Load() < 4 {
-		testingT.Fatalf("expected at least 4 kline retry attempts, got %d", klineRequestCount.Load())
+		testingT.Fatalf("expected at least 4 five-minute attempts before falling back, got %d", klineRequestCount.Load())
 	}
-	if len(points) != 0 {
-		testingT.Fatalf("expected 0 points on complete failure, got %d", len(points))
+	if trendsRequestCount.Load() == 0 {
+		testingT.Fatal("expected the one-minute backup to be used after five-minute failures")
+	}
+	if len(points) != 48 {
+		testingT.Fatalf("expected 48 backup points, got %d", len(points))
+	}
+	if points[0].Source != graymarket.KlineSourceTrend241 {
+		testingT.Fatalf("backup source was not recorded: %s", points[0].Source)
 	}
 }
 

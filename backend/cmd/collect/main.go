@@ -5,13 +5,16 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
 	"github.com/roiding/shadowflow/internal/collector"
 	"github.com/roiding/shadowflow/internal/config"
 	"github.com/roiding/shadowflow/internal/datasource/eastmoney"
+	"github.com/roiding/shadowflow/internal/datasource/thsquote"
 	"github.com/roiding/shadowflow/internal/datasource/upstream"
+	"github.com/roiding/shadowflow/internal/marketdata"
 	"github.com/roiding/shadowflow/internal/repository/sqlite"
 	"github.com/roiding/shadowflow/internal/tradingcalendar"
 )
@@ -142,7 +145,17 @@ func run() error {
 	client := eastmoney.NewClient(cfg.UpstreamBaseURL, upstreamClient, cfg.PageSize).
 		WithQuoteBaseURLs(cfg.QuoteBaseURLs).
 		WithUpstreamGuard(upstreamResult.Guard)
-	service := collector.New(client, store, logger)
+	marketProviders, err := marketdata.NewProviderSet(client, thsquote.NewClient("", &http.Client{Timeout: 20 * time.Second}),
+		marketdata.Options{Cooldown: cfg.MarketProviderCooldown, Logger: logger})
+	if err != nil {
+		return err
+	}
+	service := collector.New(client, store, logger).
+		WithStockQuoteSource(marketProviders.DailyCloseQuotes).
+		WithBoardQuoteSource(marketProviders.BoardQuotes).
+		WithStockKlineSource(marketProviders.Klines).
+		WithStockKlineRangeSource(marketProviders.KlineRanges).
+		WithUpstreamPreparer(marketProviders)
 	timeout := 10 * time.Minute
 	// A full industry/concept relationship scan visits roughly a thousand
 	// boards. Keep the manual command aligned with the scheduled-job budget.

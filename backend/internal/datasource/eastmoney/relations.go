@@ -29,6 +29,11 @@ type quoteResponse struct {
 
 const stockQuoteBatchSize = 100
 
+const (
+	stockQuotePrimaryPath = "/api/qt/ulist.np/get"
+	stockQuoteBackupPath  = "/api/qt/ulist/get"
+)
+
 // FetchBoardQuotes reads the authoritative quote list for industry or
 // concept boards. It deliberately uses clist/get rather than ulist.np/get:
 // BK board codes are not stock codes.
@@ -141,7 +146,7 @@ func (c *Client) FetchStockQuotes(ctx context.Context, relations []graymarket.St
 			"fields": {"f2,f3,f4,f5,f6,f7,f8,f10,f12,f13,f14,f15,f16,f17,f18,f26,f62,f124,f184"},
 			"secids": {strings.Join(secids, ",")},
 		}
-		_, rows, err := c.fetchQuotePage(ctx, "/api/qt/ulist.np/get", params)
+		_, rows, err := c.fetchStockQuoteBatch(ctx, params)
 		if err != nil {
 			return nil, fmt.Errorf("fetch constituent quotes: %w", err)
 		}
@@ -373,6 +378,32 @@ func (c *Client) FetchBoardConstituents(ctx context.Context, board graymarket.Bo
 			board.Code, expectedTotal, rawRows, len(result))
 	}
 	return result, nil
+}
+
+func (c *Client) fetchStockQuoteBatch(ctx context.Context, params url.Values) (quoteResponse, []map[string]json.RawMessage, error) {
+	payload, rows, err := c.fetchQuotePage(ctx, stockQuotePrimaryPath, params)
+	if err == nil {
+		return payload, rows, nil
+	}
+	if ctx.Err() != nil {
+		return quoteResponse{}, nil, err
+	}
+	backup := url.Values{}
+	for key, values := range params {
+		backup[key] = values
+	}
+	backup.Set("pn", "1")
+	backup.Set("pz", strconv.Itoa(stockQuoteBatchSize))
+	backup.Set("po", "1")
+	backup.Set("np", "1")
+	backupPayload, backupRows, backupErr := c.fetchQuotePage(ctx, stockQuoteBackupPath, backup)
+	if backupErr != nil {
+		return quoteResponse{}, nil, errors.Join(
+			fmt.Errorf("%s: %w", stockQuotePrimaryPath, err),
+			fmt.Errorf("%s: %w", stockQuoteBackupPath, backupErr),
+		)
+	}
+	return backupPayload, backupRows, nil
 }
 
 func (c *Client) fetchQuotePage(ctx context.Context, path string, params url.Values) (quoteResponse, []map[string]json.RawMessage, error) {

@@ -213,6 +213,7 @@ docker buildx build --platform linux/arm64 --load \
 | `SHADOWFLOW_PAGE_SIZE` | `100` | 上游分页大小 |
 | `SHADOWFLOW_REQUEST_TIMEOUT_SECONDS` | `5` | 单次上游请求超时 |
 | `SHADOWFLOW_QUOTE_BASE_URLS` | `https://push2.eastmoney.com,https://push2delay.eastmoney.com` | 行情接口候选域名；主域空响应、网络错误或临时服务错误时切换 delay 域 |
+| `SHADOWFLOW_MARKET_PROVIDER_COOLDOWN_SECONDS` | `300` | 行情供应商失败后的冷却秒数（10..3600）；冷却期内后续请求直接使用同花顺备源，不重复撞故障源 |
 | `SHADOWFLOW_PROXY_POOL_URL` | 空 | 新版代理池服务根地址或 `/api/v1`；为空时上游直连，配置后严格走代理 |
 | `SHADOWFLOW_PROXY_POOL_TOKEN` | 空 | 本项目的项目 API Key，不使用管理 Token |
 | `SHADOWFLOW_PROXY_POOL_SOURCE_IDS` | 空 | 允许的来源 ID，逗号分隔；空值继承项目授权范围 |
@@ -314,7 +315,7 @@ go run ./cmd/collect -task relations -date 2026-08-13
 docker compose run --rm --entrypoint /app/collect shadowflow -task relations -date 2026-08-13
 ```
 
-`end-of-day` 在 `16:30` 执行，失败时于 `16:35`、`16:40` 补试，原子写入行业、概念、个股各自的完整日终榜和 48 个盘后修订资金点。`ths-focus` 在 `16:45`、`ths-account-data` 在 `16:50/17:10/17:50` 执行，都在个股五分钟 K 之前。`stock-kline` 在 `17:00` 执行，并于 `17:30`、`20:00` 补试，保存有成交个股的 48 根未复权五分钟 K。五分钟接口不可用时，会从同源 `trends2` 取得当日 241 根一分钟 OHLC，按 `09:35-11:30`、`13:05-15:00` 聚合为 48 根并与日 K 的 OHLC 交叉校验；分钟量额保留原值，不与可能包含 `15:00-15:30` 盘后交易的日终截面强制一致，241 根源数据也不长期保存。K 线任务以当日已归档日终个股截面为候选源，每只股票只有完整 48 根才会在事务中落库；整批允许部分成功，后续运行只补当日缺失股票。历史日没有当日主归档时不依赖事后猜测，系统以每日实际采集为准。`cleanup` 每天 `09:00` 检查上一交易日：两类板块资金与日终、个股资金、五分钟 K、完整日终榜和日 K 任一不完整，都不会删除盘中工作数据。
+`end-of-day` 在 `16:30` 执行，失败时于 `16:35`、`16:40` 补试，原子写入行业、概念、个股各自的完整日终榜和 48 个盘后修订资金点。`ths-focus` 在 `16:45`、`ths-account-data` 在 `16:50/17:10/17:50` 执行，都在个股五分钟 K 之前。`stock-kline` 在 `17:00` 执行，并于 `17:30`、`20:00` 补试，保存有成交个股的 48 根未复权五分钟 K。主源为东财直接五分钟；失败后先用同源 `trends2` 的 241 根一分钟 OHLC 聚合，再失败才切换到同花顺 `single_kline` 的 `adjust_type=actual`（不复权，来源记为 `ths_kline_5m_actual`）。各路径都要求当日完整 48 桶，并按日 K 的 OHLC 交叉校验；分钟量额保留原值，不与可能包含 `15:00-15:30` 盘后交易的日终截面强制一致，241 根源数据也不长期保存。K 线任务以当日已归档日终个股截面为候选源，每只股票只有完整 48 根才会在事务中落库；整批允许部分成功，后续运行只补当日缺失股票。历史日没有当日主归档时不依赖事后猜测，系统以每日实际采集为准。`cleanup` 每天 `09:00` 检查上一交易日：两类板块资金与日终、个股资金、五分钟 K、完整日终榜和日 K 任一不完整，都不会删除盘中工作数据。
 
 调度实例持久化在 SQLite `scheduled_job` 表中，使用原子 claim 和 lease 防止进程重启后重复执行；失败任务按类型保留重试预算，过期 lease 会自动回到队列。启动时会回补当日已错过且可安全重放的非分钟级任务。盘中采集、关系同步和盘后归档使用独立调度通道，关系扫描变慢不会阻塞分钟采集。每天 `09:05` 维护任务会按保留策略清理运行日志、调度任务、回收旧的临时原始响应、执行被动 WAL checkpoint，并按约 30 天周期运行 `PRAGMA optimize`。`/api/v1/research/quality` 的 `meta.archive_manifest` 提供统一的每日归档清单、代码集合摘要、来源契约和校验错误。
 

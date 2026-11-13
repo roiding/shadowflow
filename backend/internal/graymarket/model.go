@@ -64,6 +64,10 @@ const (
 var (
 	ErrNoData = errors.New("upstream returned no data")
 	ErrDecode = errors.New("upstream response decode failed")
+	// ErrInstrumentUnavailable means the request was answered but this
+	// particular stock has no usable series (for example a suspension). It
+	// must not cool down the whole supplier for every other stock.
+	ErrInstrumentUnavailable = errors.New("instrument data unavailable")
 )
 
 type RankRecord struct {
@@ -162,7 +166,11 @@ type StockKlinePoint struct {
 
 const (
 	KlineSourceFiveMinute = "stock_kline_5m"
-	KlineSourceTrend241   = "stock_trends_1m_241"
+	// KlineSourceTHSFiveMinute marks the THS Web five-minute backup. Its
+	// adjust_type=actual contract is unadjusted, but the supplier and endpoint
+	// stay explicit instead of pretending it was Eastmoney's klt=5 response.
+	KlineSourceTHSFiveMinute = "ths_kline_5m_actual"
+	KlineSourceTrend241      = "stock_trends_1m_241"
 	// KlineSourceFiveMinuteBackfill marks rows written by the operator-run
 	// range patcher, which fetches one long request per stock and skips the
 	// per-day daily-bar cross-check (upstream BSE series disagree with their

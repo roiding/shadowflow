@@ -412,6 +412,40 @@ func TestStockDailyQuoteEnrichmentRetainsUnavailableStocks(t *testing.T) {
 	}
 }
 
+type fakeDailyQuoteSource struct {
+	calls int
+}
+
+func (source *fakeDailyQuoteSource) FetchStockQuotes(_ context.Context, relations []graymarket.StockBoardRelation) ([]graymarket.StockQuote, error) {
+	source.calls++
+	quotes := make([]graymarket.StockQuote, 0, len(relations))
+	for _, relation := range relations {
+		quotes = append(quotes, graymarket.StockQuote{
+			StockCode: relation.StockCode, StockMarket: relation.StockMarket, StockName: relation.StockName,
+			LatestPrice: 10, OpenPrice: 9.5, HighPrice: 10.5, LowPrice: 9.25, PreviousClose: 9,
+			ChangePct: 0.1111, ChangeValue: 1, Volume: 100, Turnover: 1000, TurnoverRate: 0.02, Amplitude: 0.1,
+			QuoteTime: "2026-08-14T15:00:00+08:00", Available: true,
+		})
+	}
+	return quotes, nil
+}
+
+func TestStockDailyQuoteEnrichmentUsesMarketDataSource(t *testing.T) {
+	at := time.Date(2026, 8, 14, 15, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	snapshot := successfulSnapshot(at)
+	snapshot.RankType = graymarket.RankStock
+	snapshot.Records[0].RankType = graymarket.RankStock
+	source := &fakeSource{quoteErr: errors.New("primary quote endpoint should not be used")}
+	quotes := &fakeDailyQuoteSource{}
+	service := newTestService(source, &fakeStore{}).WithStockQuoteSource(quotes)
+	if err := service.enrichStockDailyClose(context.Background(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if quotes.calls != 1 || !snapshot.Records[0].QuoteAvailable || snapshot.Records[0].ClosePrice != 10 {
+		t.Fatalf("market-data quotes were not used: calls=%d record=%+v", quotes.calls, snapshot.Records[0])
+	}
+}
+
 func TestCollectBoardArchivesPersistTurnoverAndTurnoverRate(t *testing.T) {
 	location := time.FixedZone("Asia/Shanghai", 8*60*60)
 	for _, rankType := range []graymarket.RankType{graymarket.RankIndustry, graymarket.RankConcept} {

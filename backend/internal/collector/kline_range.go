@@ -41,9 +41,13 @@ type RangePatchReport struct {
 // after-hours prints; per-date completeness (48 slots) is still enforced and
 // incomplete dates are reported instead of written.
 func (s *Service) CollectStockKlineRangePatch(ctx context.Context, from, to time.Time) (RangePatchReport, error) {
-	rangeSource, ok := s.source.(stockKlineRangeSource)
-	if !ok {
-		return RangePatchReport{}, errors.New("stock kline range source is unavailable")
+	rangeSource := s.klineRangeSource
+	if rangeSource == nil {
+		var ok bool
+		rangeSource, ok = s.source.(stockKlineRangeSource)
+		if !ok {
+			return RangePatchReport{}, errors.New("stock kline range source is unavailable")
+		}
 	}
 	if to.Before(from) {
 		return RangePatchReport{}, errors.New("range patch: to date precedes from date")

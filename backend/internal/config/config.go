@@ -45,6 +45,7 @@ type Config struct {
 	TrustedProxyCIDR        string
 	UpstreamMaxConcurrency  int
 	UpstreamRatePerSecond   float64
+	MarketProviderCooldown  time.Duration
 	ProxyPoolURL            string
 	ProxyPoolToken          string
 	ProxyPoolRefreshEvery   time.Duration
@@ -148,6 +149,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	marketProviderCooldownSeconds, err := envInt("SHADOWFLOW_MARKET_PROVIDER_COOLDOWN_SECONDS", 300)
+	if err != nil {
+		return Config{}, err
+	}
 	proxyPoolRefreshSeconds, err := envInt("SHADOWFLOW_PROXY_POOL_REFRESH_SECONDS", 300)
 	if err != nil {
 		return Config{}, err
@@ -219,6 +224,9 @@ func Load() (Config, error) {
 	if upstreamConcurrency < 1 || upstreamRate <= 0 || readConns < 1 || readConns > 32 {
 		return Config{}, fmt.Errorf("upstream and SQLite concurrency settings are out of range")
 	}
+	if marketProviderCooldownSeconds < 10 || marketProviderCooldownSeconds > 3600 {
+		return Config{}, fmt.Errorf("SHADOWFLOW_MARKET_PROVIDER_COOLDOWN_SECONDS must be between 10 and 3600")
+	}
 	if proxyPoolRefreshSeconds < 30 || proxyPoolRefreshSeconds > 86400 ||
 		proxyPoolRequestTimeoutSeconds < 1 || proxyPoolRequestTimeoutSeconds > 60 ||
 		proxyPoolMaxAttempts < 1 || proxyPoolMaxAttempts > 10 ||
@@ -268,6 +276,7 @@ func Load() (Config, error) {
 		TrustedProxyCIDR:        strings.TrimSpace(os.Getenv("SHADOWFLOW_TRUSTED_PROXY_CIDR")),
 		UpstreamMaxConcurrency:  upstreamConcurrency,
 		UpstreamRatePerSecond:   upstreamRate,
+		MarketProviderCooldown:  time.Duration(marketProviderCooldownSeconds) * time.Second,
 		ProxyPoolURL:            strings.TrimSpace(os.Getenv("SHADOWFLOW_PROXY_POOL_URL")),
 		ProxyPoolToken:          strings.TrimSpace(os.Getenv("SHADOWFLOW_PROXY_POOL_TOKEN")),
 		ProxyPoolRefreshEvery:   time.Duration(proxyPoolRefreshSeconds) * time.Second,

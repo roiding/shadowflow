@@ -18,6 +18,12 @@ func (service *Service) PrepareUpstreamRequests(ctx context.Context, purpose str
 	if requests == 0 {
 		return ctx.Err()
 	}
+	if service.upstreamPreparer != nil {
+		if err := service.upstreamPreparer.PrepareUpstreamRequests(ctx, purpose, requests, concurrency); err != nil {
+			return fmt.Errorf("prepare %s upstream: %w", purpose, err)
+		}
+		return ctx.Err()
+	}
 	if preparer, ok := service.source.(interface {
 		PrepareUpstreamRequests(context.Context, string, int, int) error
 	}); ok {
