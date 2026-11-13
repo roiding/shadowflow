@@ -636,7 +636,7 @@ func TestCollectStockArchiveDegradesWithoutQuotes(t *testing.T) {
 		}
 	})
 
-	t.Run("degraded mode keeps the full darktrade universe", func(t *testing.T) {
+	t.Run("quote outage keeps funds for the tradeable universe", func(t *testing.T) {
 		store := &fakeStore{}
 		service := newTestService(source, store).WithAllowMissingQuotes(true)
 		if err := service.collectStockArchive(context.Background(), "20260814", closeAt, runAt); err != nil {
@@ -658,4 +658,30 @@ func TestCollectStockArchiveDegradesWithoutQuotes(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A quote outage must not turn the funds archive into an empty set: funding
+// points come from darktrade, independently of whether daily OHLC enrichment
+// succeeded. This is the regression that dropped 500/5378 curves on
+// 2026-11-13 when eastmoney closed the quote connection mid-archive.
+func TestCollectStockArchiveKeepsFundsWhenQuotesFail(t *testing.T) {
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	closeAt := time.Date(2026, 11, 13, 15, 0, 0, 0, location)
+	runAt := time.Date(2026, 11, 13, 16, 30, 0, 0, location)
+	snapshot := successfulSnapshot(closeAt)
+	snapshot.RankType = graymarket.RankStock
+	snapshot.Records[0].RankType = graymarket.RankStock
+	source := &fakeSource{results: []sourceResult{{snapshot: snapshot}}, quoteErr: errors.New("quote upstream closed")}
+	store := &fakeStore{}
+	service := newTestService(source, store).WithAllowMissingQuotes(true)
+	if err := service.collectStockArchive(context.Background(), "20261113", closeAt, runAt); err != nil {
+		t.Fatal(err)
+	}
+	if store.savedArchives != 1 || len(store.lastStockClose.Records) != 1 {
+		t.Fatalf("funds archive was dropped after a quote failure: %+v", store.lastStockClose)
+	}
+	record := store.lastStockClose.Records[0]
+	if record.QuoteAvailable || !record.MoneyAvailable || record.DarkMoney == 0 {
+		t.Fatalf("funds and quotes were not separated correctly: %+v", record)
+	}
 }
