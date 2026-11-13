@@ -19,7 +19,7 @@ const (
 	archiveParserVersion     = "shadowflow-archive-v1"
 	darkTradeContract        = "darktrade:version=101,cver=100,sortflag=6,desc=1"
 	darkTradeTickContract    = "darktradetick:version=100,cver=11.2.6,points=48"
-	stockKlineContract       = "stock-kline:klt=5,fqt=0|trends2:241-to-48-v1|ths:single_kline,min_5,actual"
+	stockKlineContract       = "stock-kline:klt=5,fqt=0|ths:single_kline,min_5,actual"
 	archiveManifestCompleted = "complete"
 	archiveManifestPending   = "incomplete"
 )

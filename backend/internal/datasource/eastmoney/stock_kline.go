@@ -69,8 +69,9 @@ func (c *Client) FetchStockKlines5m(ctx context.Context, snapshot graymarket.Ran
 	return points, nil
 }
 
-// FetchStockKline5m exposes the existing per-day, per-stock archive fallback
-// (direct five-minute, then one-minute aggregation) to the market-data router.
+// FetchStockKline5m exposes the per-day, per-stock archive fetch to the
+// market-data router. The native five-minute series is the only source here;
+// the router owns cross-provider failover.
 func (c *Client) FetchStockKline5m(ctx context.Context, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
 	return c.fetchStockKlineWithFallback(ctx, stock.TradeDate, stock)
 }
@@ -229,19 +230,15 @@ func (c *Client) fetchStockKlineFromTrends(ctx context.Context, tradeDate string
 	return nil, combined
 }
 
+// fetchStockKlineWithFallback intentionally has no one-minute aggregation
+// fallback. Aggregating 241 one-minute quote snapshots into 48 five-minute
+// bars produced endpoint drift (auction rows without trades), so the archive
+// now uses the native five-minute series only. The one-minute endpoint is
+// still consulted inside that path, but only to correct a first bar whose
+// open disagrees with the authoritative daily bar. Cross-provider failover
+// belongs to the marketdata router, not here.
 func (c *Client) fetchStockKlineWithFallback(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {
-	historyPoints, historyErr := c.fetchStockKlineWithRetry(ctx, tradeDate, stock)
-	if historyErr == nil {
-		return historyPoints, nil
-	}
-	if ctx.Err() != nil {
-		return nil, historyErr
-	}
-	trendPoints, trendErr := c.fetchStockKlineFromTrendsWithRetry(ctx, tradeDate, stock)
-	if trendErr == nil {
-		return trendPoints, nil
-	}
-	return nil, errors.Join(fmt.Errorf("five-minute kline: %w", historyErr), fmt.Errorf("one-minute trends2: %w", trendErr))
+	return c.fetchStockKlineWithRetry(ctx, tradeDate, stock)
 }
 
 func (c *Client) fetchStockKlineFromHistory(ctx context.Context, tradeDate string, stock graymarket.RankRecord) ([]graymarket.StockKlinePoint, error) {

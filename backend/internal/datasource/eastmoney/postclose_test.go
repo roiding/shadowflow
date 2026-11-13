@@ -327,7 +327,11 @@ func TestFetchStockKlines5mRequestsDirectPush2HisParametersAndNeverRequestsTrend
 	}
 }
 
-func TestFetchStockKlines5mFallsBackToOneMinuteWhenFiveMinuteFails(testingT *testing.T) {
+// The archive no longer aggregates 241 one-minute quote snapshots into
+// five-minute bars: that path drifted on auction rows with no trades. A
+// failing native five-minute series must surface the error instead, so the
+// marketdata router can fail over to another provider.
+func TestFetchStockKlines5mDoesNotFallBackToOneMinuteAggregation(testingT *testing.T) {
 	var trendsRequestCount atomic.Int32
 	var klineRequestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(httpWriter http.ResponseWriter, httpRequest *http.Request) {
@@ -360,20 +364,17 @@ func TestFetchStockKlines5mFallsBackToOneMinuteWhenFiveMinuteFails(testingT *tes
 		WithStockKlineBaseURL(server.URL + "/api/qt/stock/kline/get")
 	client.stockKlineRetryGap = 0
 	points, err := client.FetchStockKlines5m(context.Background(), snapshot)
-	if err != nil {
-		testingT.Fatalf("one-minute backup should complete the day: %v", err)
+	if err == nil {
+		testingT.Fatal("a failing five-minute series must not be replaced by one-minute aggregation")
+	}
+	if len(points) != 0 {
+		testingT.Fatalf("aggregated fallback points were returned: %d", len(points))
 	}
 	if klineRequestCount.Load() < 4 {
-		testingT.Fatalf("expected at least 4 five-minute attempts before falling back, got %d", klineRequestCount.Load())
+		testingT.Fatalf("expected at least 4 five-minute attempts, got %d", klineRequestCount.Load())
 	}
-	if trendsRequestCount.Load() == 0 {
-		testingT.Fatal("expected the one-minute backup to be used after five-minute failures")
-	}
-	if len(points) != 48 {
-		testingT.Fatalf("expected 48 backup points, got %d", len(points))
-	}
-	if points[0].Source != graymarket.KlineSourceTrend241 {
-		testingT.Fatalf("backup source was not recorded: %s", points[0].Source)
+	if trendsRequestCount.Load() != 0 {
+		testingT.Fatalf("one-minute aggregation must not run, got %d requests", trendsRequestCount.Load())
 	}
 }
 
