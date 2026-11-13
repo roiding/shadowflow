@@ -55,6 +55,28 @@ func quoteAvailableRecords(records []graymarket.RankRecord) []graymarket.RankRec
 	return result
 }
 
+// stockArchiveRecords keeps the non-BSE identities selected by the collector.
+// A snapshot with at least one usable quote is strict mode, so unavailable rows
+// are still rejected defensively. A snapshot with no usable quotes is the
+// deliberate funds-only degradation path and keeps the full HS universe.
+func stockArchiveRecords(records []graymarket.RankRecord) []graymarket.RankRecord {
+	hasQuote := false
+	for _, record := range records {
+		if record.QuoteAvailable && !bseStock(record.Market, record.Code) {
+			hasQuote = true
+			break
+		}
+	}
+	result := make([]graymarket.RankRecord, 0, len(records))
+	for _, record := range records {
+		if bseStock(record.Market, record.Code) || hasQuote && !record.QuoteAvailable {
+			continue
+		}
+		result = append(result, record)
+	}
+	return result
+}
+
 type Store struct {
 	db     *sql.DB
 	reader *sql.DB
@@ -1082,7 +1104,7 @@ func (s *Store) SaveStockArchive(ctx context.Context, runID string, snapshot gra
 	if snapshot.SnapshotAt.Format("15:04") != "15:00" {
 		return fmt.Errorf("stock close snapshot_at must be 15:00, got %s", snapshot.SnapshotAt.Format("15:04"))
 	}
-	records := quoteAvailableRecords(snapshot.Records)
+	records := stockArchiveRecords(snapshot.Records)
 	if len(records) == 0 {
 		return fmt.Errorf("incomplete stock archive: no eligible records from %d identities", len(snapshot.Records))
 	}
@@ -1091,8 +1113,8 @@ func (s *Store) SaveStockArchive(ctx context.Context, runID string, snapshot gra
 		return err
 	}
 	defer tx.Rollback()
-	// A rerun starts a fresh attempt. Only securities with a valid daily quote
-	// belong to either the daily identity snapshot or the five-minute archive.
+	// A rerun starts a fresh attempt. The collector supplies the eligible
+	// research universe; degraded archives intentionally have no daily quote.
 	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_research_5m WHERE trade_date=?`, snapshot.TradeDate); err != nil {
 		return err
 	}
@@ -1232,7 +1254,7 @@ func (s *Store) SaveStockArchiveBatch(ctx context.Context, runID string, snapsho
 	if snapshot.RankType != graymarket.RankStock || len(snapshot.Records) == 0 {
 		return fmt.Errorf("invalid stock archive batch")
 	}
-	records := quoteAvailableRecords(snapshot.Records)
+	records := stockArchiveRecords(snapshot.Records)
 	if len(records) == 0 {
 		return fmt.Errorf("stock archive has no eligible records")
 	}

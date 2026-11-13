@@ -312,6 +312,7 @@ func (s *Service) collectMoneyArchiveIncremental(ctx context.Context, rankType g
 			clearQuoteFields(&snapshot)
 			s.logger.Warn("stock quote enrichment failed; archiving funds without quotes",
 				"trade_date", snapshot.TradeDate, "error", err)
+			snapshot.Records = researchStockRecords(snapshot.Records)
 		} else {
 			// Eligibility is judged on real quotes; a degraded archive keeps
 			// the full darktrade universe or it would always be empty.
@@ -805,6 +806,7 @@ func (s *Service) collectStockArchive(ctx context.Context, requestedDate string,
 		clearQuoteFields(&snapshot)
 		s.logger.Warn("stock quote enrichment failed; archiving funds without quotes",
 			"trade_date", snapshot.TradeDate, "error", err)
+		snapshot.Records = researchStockRecords(snapshot.Records)
 	}
 	if !degraded {
 		snapshot.Records = eligibleStockRecords(snapshot.Records)
@@ -834,11 +836,28 @@ func (s *Service) collectStockArchive(ctx context.Context, requestedDate string,
 func eligibleStockRecords(records []graymarket.RankRecord) []graymarket.RankRecord {
 	eligible := make([]graymarket.RankRecord, 0, len(records))
 	for _, record := range records {
-		if record.QuoteAvailable && !(record.Market == 0 && strings.HasPrefix(record.Code, "92")) {
+		if record.QuoteAvailable && !bseStock(record) {
 			eligible = append(eligible, record)
 		}
 	}
 	return eligible
+}
+
+// researchStockRecords keeps the HS stock universe used by degraded archives.
+// Quote eligibility is intentionally not applied because every row has
+// QuoteAvailable=false in that mode, but BSE identities remain out of scope.
+func researchStockRecords(records []graymarket.RankRecord) []graymarket.RankRecord {
+	eligible := make([]graymarket.RankRecord, 0, len(records))
+	for _, record := range records {
+		if !bseStock(record) {
+			eligible = append(eligible, record)
+		}
+	}
+	return eligible
+}
+
+func bseStock(record graymarket.RankRecord) bool {
+	return record.Market == 0 && strings.HasPrefix(record.Code, "92")
 }
 
 func (s *Service) enrichStockDailyClose(ctx context.Context, snapshot *graymarket.RankSnapshot) error {

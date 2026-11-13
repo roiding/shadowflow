@@ -142,6 +142,51 @@ func TestStockArchiveReplacementPublishesOnlyCompleteStage(t *testing.T) {
 	}
 }
 
+func TestStockArchiveBatchAcceptsDegradedQuoteUniverse(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	location := time.FixedZone("Asia/Shanghai", 8*3600)
+	closeAt := time.Date(2026, 11, 13, 15, 0, 0, 0, location)
+	records := []graymarket.RankRecord{
+		{TradeDate: "2026-11-13", SnapshotAt: closeAt, RankType: graymarket.RankStock, Rank: 1, Market: 0, Code: "000001", Name: "甲", DarkMoney: 100},
+		{TradeDate: "2026-11-13", SnapshotAt: closeAt, RankType: graymarket.RankStock, Rank: 2, Market: 1, Code: "600001", Name: "乙", DarkMoney: 200},
+		{TradeDate: "2026-11-13", SnapshotAt: closeAt, RankType: graymarket.RankStock, Rank: 3, Market: 0, Code: "920071", Name: "北交所", DarkMoney: 300},
+	}
+	snapshot := graymarket.RankSnapshot{
+		TradeDate: "2026-11-13", RankType: graymarket.RankStock,
+		SnapshotAt: closeAt, Records: records,
+	}
+	pointSnapshot := snapshot
+	pointSnapshot.Records = records[:2]
+	if err := store.SaveStockArchiveBatch(ctx, "degraded-stock", snapshot, testMoneyPoints(pointSnapshot), true, true); err != nil {
+		t.Fatal(err)
+	}
+	var moneyRows, closeRows, quotedCloseRows, bseRows int
+	if err := store.db.QueryRowContext(ctx, `SELECT coalesce(sum(money_available),0) FROM stock_research_5m WHERE trade_date=?`, snapshot.TradeDate).Scan(&moneyRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*),coalesce(sum(quote_available),0) FROM rank_snapshot
+WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock'`, snapshot.TradeDate).Scan(&closeRows, &quotedCloseRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM rank_snapshot
+WHERE trade_date=? AND snapshot_kind='daily_close' AND rank_type='stock' AND market=0 AND code='920071'`, snapshot.TradeDate).Scan(&bseRows); err != nil {
+		t.Fatal(err)
+	}
+	quality, err := store.StockArchiveQuality(ctx, snapshot.TradeDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moneyRows != 96 || closeRows != 2 || quotedCloseRows != 0 || bseRows != 0 || quality.ExpectedStocks != 2 {
+		t.Fatalf("degraded archive was filtered or retained BSE: money=%d close=%d quoted=%d bse=%d quality=%+v",
+			moneyRows, closeRows, quotedCloseRows, bseRows, quality)
+	}
+}
+
 func TestBoardStageIsolationAndIncompleteFirstArchive(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {

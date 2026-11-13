@@ -619,6 +619,10 @@ func TestCollectStockArchiveDegradesWithoutQuotes(t *testing.T) {
 		TradeDate: snapshot.TradeDate, SnapshotAt: closeAt, RankType: graymarket.RankStock,
 		Rank: 2, Market: 1, Code: "600002", Name: "second", DarkMoney: 456,
 	})
+	snapshot.Records = append(snapshot.Records, graymarket.RankRecord{
+		TradeDate: snapshot.TradeDate, SnapshotAt: closeAt, RankType: graymarket.RankStock,
+		Rank: 3, Market: 0, Code: "920071", Name: "BSE", DarkMoney: 789,
+	})
 	source := &fakeSource{results: []sourceResult{{snapshot: snapshot}}, quoteErr: errors.New("quote upstream refused")}
 
 	t.Run("strict mode fails the archive", func(t *testing.T) {
@@ -643,6 +647,9 @@ func TestCollectStockArchiveDegradesWithoutQuotes(t *testing.T) {
 		}
 		expectedDark := map[string]int64{"BK001": 123, "600002": 456}
 		for _, record := range store.lastStockClose.Records {
+			if record.Code == "920071" {
+				t.Fatalf("degraded stock archive retained a BSE identity: %+v", record)
+			}
 			if record.QuoteAvailable || record.ClosePrice != 0 || record.QuoteTime != "" {
 				t.Fatalf("degraded stock archive kept quote data: %+v", record)
 			}
