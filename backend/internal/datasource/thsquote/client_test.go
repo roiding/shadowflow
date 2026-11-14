@@ -33,8 +33,8 @@ func TestFetchStockQuotesMapsDocumentedFieldsAndBatchesFifty(t *testing.T) {
 		for _, code := range payload.CodeList[0].Codes {
 			quotes = append(quotes, map[string]any{
 				"market": "33", "code": code,
-				"data_fields": []string{"55", "6", "7", "8", "9", "10", "13", "19"},
-				"value":       [][]any{{"test-stock", 9.8, 10.0, 10.5, 9.7, 10.1, 678, 123400}},
+				"data_fields": []string{"55", "6", "7", "8", "9", "10", "13", "19", "1968584", "1771976"},
+				"value":       [][]any{{"test-stock", 9.8, 10.0, 10.5, 9.7, 10.1, 678, 123400, 2.25, 1.35}},
 			})
 		}
 		_ = json.NewEncoder(writer).Encode(map[string]any{
@@ -56,8 +56,45 @@ func TestFetchStockQuotesMapsDocumentedFieldsAndBatchesFifty(t *testing.T) {
 		quote.OpenPrice != 10.0 || quote.PreviousClose != 9.8 || quote.Volume != 7 || quote.Turnover != 123400 {
 		t.Fatalf("fields were mapped incorrectly: %+v", quote)
 	}
+	// THS sends turnover rate as a percent and the project stores a fraction;
+	// the volume ratio already shares Eastmoney's scale.
+	if quote.TurnoverRate != 0.0225 || !quote.VolumeRatioAvailable || quote.VolumeRatio != 1.35 {
+		t.Fatalf("turnover rate or volume ratio was not normalized: %+v", quote)
+	}
 	if quote.StockName != "test-stock" || !quote.Available || quote.QuoteTime != "" {
 		t.Fatalf("unexpected availability/name: %+v", quote)
+	}
+}
+
+func TestFetchStockQuotesKeepsNullTurnoverRateDistinctFromZero(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload snapshotRequest
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"status_code": 0, "status_msg": "ok",
+			"data": map[string]any{"quote_data": []any{map[string]any{
+				"market": "33", "code": "000001",
+				"data_fields": []string{"55", "6", "7", "8", "9", "10", "13", "19", "1968584", "1771976"},
+				"value":       [][]any{{"suspended", 9.8, 0.0, 0.0, 0.0, 0.0, 0, 0, nil, nil}},
+			}}, "fail_params": nil},
+		})
+	}))
+	defer server.Close()
+	quotes, err := NewClient(server.URL, server.Client()).WithSnapshotBaseURL(server.URL).
+		FetchStockQuotes(context.Background(), []graymarket.StockBoardRelation{{StockCode: "000001"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quotes) != 1 {
+		t.Fatalf("unexpected quote count: %d", len(quotes))
+	}
+	if quotes[0].VolumeRatioAvailable {
+		t.Fatalf("null volume ratio must not be reported as available: %+v", quotes[0])
+	}
+	if quotes[0].TurnoverRate != 0 {
+		t.Fatalf("null turnover rate should stay zero: %+v", quotes[0])
 	}
 }
 
@@ -108,6 +145,54 @@ func TestFetchStockKline5mBuildsOneStockArchiveCurve(t *testing.T) {
 	}
 	if points[0].Volume != 2 || points[0].Turnover != 10 || points[0].Source != graymarket.KlineSourceTHSFiveMinute {
 		t.Fatalf("unexpected point mapping: %+v", points[0])
+	}
+}
+
+func TestFetchStockKline5mReconcilesBarVolumeToDailyTotal(t *testing.T) {
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		values := make([][]any, 0, 48)
+		for index := 0; index < 48; index++ {
+			at := time.Date(2026, 11, 13, 9, 35, 0, 0, location).Add(time.Duration(index) * 5 * time.Minute)
+			if index >= 24 {
+				at = time.Date(2026, 11, 13, 13, 5, 0, 0, location).Add(time.Duration(index-24) * 5 * time.Minute)
+			}
+			// Each bar is an odd number of shares, so per-bar rounding to lots
+			// accumulates drift that the daily total must still absorb.
+			values = append(values, []any{at.UnixMilli(), 10.0, 10.1, 9.9, 10.0, 250, 10})
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"status_code": 0, "status_msg": "ok",
+			"data": map[string]any{"quote_data": []any{map[string]any{
+				"market": "33", "code": "000001",
+				"data_fields": []string{"1", "7", "8", "9", "11", "13", "19"},
+				"value":       values,
+			}}, "fail_params": nil},
+		})
+	}))
+	defer server.Close()
+	stock := graymarket.RankRecord{
+		Code: "000001", TradeDate: "2026-11-13",
+		SnapshotAt: time.Date(2026, 11, 13, 15, 0, 0, 0, location),
+		OpenPrice:  10, HighPrice: 10.1, LowPrice: 9.9, ClosePrice: 10, PreviousClose: 9.8,
+		// 48 bars x 250 shares = 12000 shares = 120 lots.
+		Volume: 120, TurnoverRate: 0.02,
+	}
+	points, err := NewClient(server.URL, server.Client()).FetchStockKline5m(context.Background(), stock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total int64
+	for _, point := range points {
+		total += point.Volume
+		// 250 shares rounds to 3 lots per bar; absorbing the aggregate drift
+		// may take one lot back from a bar, never move it outside that range.
+		if point.Volume < 2 || point.Volume > 3 {
+			t.Fatalf("bar volume moved outside the rounding range: %d", point.Volume)
+		}
+	}
+	if total != stock.Volume {
+		t.Fatalf("bar volume sums to %d, want the daily total %d", total, stock.Volume)
 	}
 }
 

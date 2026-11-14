@@ -140,7 +140,7 @@ func (c *Client) FetchStockQuotes(ctx context.Context, relations []graymarket.St
 	}
 	payload := snapshotRequest{
 		CodeList: wanted, TradeClass: "intraday",
-		DataFields: []string{"6", "7", "8", "9", "10", "13", "19", "55"},
+		DataFields: []string{"6", "7", "8", "9", "10", "13", "19", "55", "1968584", "1771976"},
 		Lang:       "zh_hans", GPID: 1,
 	}
 	encoded, err := json.Marshal(payload)
@@ -217,7 +217,7 @@ func decodeSnapshotQuote(quote snapshotQuote, fetchedAt time.Time) (graymarket.S
 	for index, field := range quote.DataFields {
 		indexes[field] = index
 	}
-	for _, field := range []string{"6", "7", "8", "9", "10", "13", "19", "55"} {
+	for _, field := range []string{"6", "7", "8", "9", "10", "13", "19", "55", "1968584", "1771976"} {
 		if _, ok := indexes[field]; !ok {
 			return graymarket.StockQuote{}, fmt.Errorf("%w: THS snapshot lacks field %s", graymarket.ErrDecode, field)
 		}
@@ -255,6 +255,27 @@ func decodeSnapshotQuote(quote snapshotQuote, fetchedAt time.Time) (graymarket.S
 	if err != nil {
 		return graymarket.StockQuote{}, err
 	}
+	// Field 1968584 is the source turnover rate in percent; the project-wide
+	// StockQuote.TurnoverRate is a fraction. Field 1771976 is a volume ratio
+	// already on the same scale as Eastmoney's f10, so the two providers feed
+	// the same scoring formula without a second correction.
+	turnoverRatePercent, turnoverRateAvailable, err := rowNullableFloat(row, indexes["1968584"])
+	if err != nil {
+		return graymarket.StockQuote{}, err
+	}
+	volumeRatio, volumeRatioAvailable, err := rowNullableFloat(row, indexes["1771976"])
+	if err != nil {
+		return graymarket.StockQuote{}, err
+	}
+	if turnoverRatePercent < 0 || volumeRatio < 0 {
+		return graymarket.StockQuote{}, fmt.Errorf("%w: negative THS turnover rate or volume ratio", graymarket.ErrDecode)
+	}
+	if !turnoverRateAvailable {
+		// Eastmoney also reports zero when the field is absent; keep the two
+		// providers byte-compatible instead of failing the whole batch for a
+		// single suspended stock.
+		turnoverRatePercent = 0
+	}
 	market, err := marketNumber(quote.Market)
 	if err != nil {
 		return graymarket.StockQuote{}, err
@@ -262,7 +283,9 @@ func decodeSnapshotQuote(quote snapshotQuote, fetchedAt time.Time) (graymarket.S
 	result := graymarket.StockQuote{
 		StockCode: quote.Code, StockMarket: market, StockName: name, LatestPrice: latestPrice,
 		OpenPrice: openPrice, HighPrice: highPrice, LowPrice: lowPrice, PreviousClose: previousClose,
-		Volume: lotsFromShares(volume), Turnover: turnover, FetchedAt: fetchedAt, Available: latestPrice > 0,
+		Volume: lotsFromShares(volume), Turnover: turnover, TurnoverRate: turnoverRatePercent / 100,
+		VolumeRatio: volumeRatio, VolumeRatioAvailable: volumeRatioAvailable,
+		FetchedAt: fetchedAt, Available: latestPrice > 0,
 	}
 	if previousClose > 0 {
 		result.ChangeValue = latestPrice - previousClose
@@ -490,6 +513,11 @@ func decodePoints(quote klineQuote, stock graymarket.RankRecord, fetchedAt time.
 		points[index].Amplitude = (points[index].HighPrice - points[index].LowPrice) / previousClose
 		points[index].ChangeValue = points[index].ClosePrice - previousClose
 		points[index].ChangePct = points[index].ChangeValue / previousClose
+	}
+	if err := reconcileBarVolume(points, stock.Volume); err != nil {
+		return nil, err
+	}
+	for index := range points {
 		if stock.Volume > 0 {
 			points[index].TurnoverRate = stock.TurnoverRate * float64(points[index].Volume) / float64(stock.Volume)
 		}
@@ -499,6 +527,61 @@ func decodePoints(quote klineQuote, stock graymarket.RankRecord, fetchedAt time.
 		return nil, fmt.Errorf("%w: THS five-minute OHLC conflicts with the daily bar", graymarket.ErrDecode)
 	}
 	return points, nil
+}
+
+// reconcileBarVolume absorbs the sub-lot rounding drift of converting each
+// five-minute bar from shares to lots, so the archived 48 bars sum to exactly
+// the daily volume just like the Eastmoney source. Each bar can move at most
+// half a lot, so drift beyond one lot per bar means the two endpoints
+// disagree and must not be silently patched.
+func reconcileBarVolume(points []graymarket.StockKlinePoint, dailyVolume int64) error {
+	if dailyVolume <= 0 || len(points) == 0 {
+		return nil
+	}
+	var total int64
+	for _, point := range points {
+		total += point.Volume
+	}
+	drift := dailyVolume - total
+	if drift == 0 {
+		return nil
+	}
+	if drift > int64(len(points)) || drift < -int64(len(points)) {
+		return fmt.Errorf("%w: THS bar volume sums to %d but the daily bar is %d",
+			graymarket.ErrInstrumentUnavailable, total, dailyVolume)
+	}
+	// Spread the residual one lot at a time over the largest bars: positive
+	// drift adds lots, negative drift removes them from bars that have volume.
+	order := make([]int, len(points))
+	for index := range order {
+		order[index] = index
+	}
+	sort.SliceStable(order, func(left, right int) bool {
+		return points[order[left]].Volume > points[order[right]].Volume
+	})
+	step := int64(1)
+	if drift < 0 {
+		step = -1
+		drift = -drift
+	}
+	for drift > 0 {
+		applied := false
+		for _, index := range order {
+			if points[index].Volume+step < 0 {
+				continue
+			}
+			points[index].Volume += step
+			drift--
+			applied = true
+			if drift == 0 {
+				break
+			}
+		}
+		if !applied {
+			return fmt.Errorf("%w: THS bar volume reconciliation would go negative", graymarket.ErrInstrumentUnavailable)
+		}
+	}
+	return nil
 }
 
 func researchMinuteIndex(at time.Time) (int, bool) {
@@ -545,6 +628,23 @@ func rowFloat(row []json.RawMessage, index int) (float64, error) {
 		return 0, fmt.Errorf("%w: invalid THS price field", graymarket.ErrDecode)
 	}
 	return value, nil
+}
+
+// rowNullableFloat accepts the null cells THS returns for suspended or
+// pre-listing instruments, reporting availability separately so callers can
+// keep a genuine zero distinct from a missing metric.
+func rowNullableFloat(row []json.RawMessage, index int) (float64, bool, error) {
+	if index < 0 || index >= len(row) {
+		return 0, false, fmt.Errorf("%w: missing THS numeric field", graymarket.ErrDecode)
+	}
+	if string(bytes.TrimSpace(row[index])) == "null" {
+		return 0, false, nil
+	}
+	value, err := rowFloat(row, index)
+	if err != nil {
+		return 0, false, err
+	}
+	return value, true, nil
 }
 
 func rowMoney(row []json.RawMessage, index int) (int64, error) {

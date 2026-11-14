@@ -690,14 +690,48 @@ WHERE name='ths_volume_lots_v1')`).Scan(&migrated); err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE stock_research_5m AS research SET
+	// Restrict the rewrite to the partitions that actually carry THS rows.
+	// A correlated full-table UPDATE over years of archived minutes would
+	// otherwise hold the write lock for minutes during startup.
+	rows, err := tx.Query(`SELECT DISTINCT trade_date FROM stock_kline_source WHERE source=?`,
+		graymarket.KlineSourceTHSFiveMinute)
+	if err != nil {
+		return err
+	}
+	var tradeDates []string
+	for rows.Next() {
+		var tradeDate string
+		if err := rows.Scan(&tradeDate); err != nil {
+			rows.Close()
+			return err
+		}
+		tradeDates = append(tradeDates, tradeDate)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if len(tradeDates) > 0 {
+		statement, err := tx.Prepare(`UPDATE stock_research_5m AS research SET
 volume=(volume+50)/100,
 turnover_rate_ppm=(research.turnover_rate_ppm+50)/100
-WHERE research.kline_available=1
+WHERE research.trade_date=? AND research.kline_available=1
 AND EXISTS(SELECT 1 FROM stock_kline_source source
 	WHERE source.trade_date=research.trade_date AND source.market=research.market
-	AND source.code=research.code AND source.source=? )`, graymarket.KlineSourceTHSFiveMinute); err != nil {
-		return err
+	AND source.code=research.code AND source.source=? )`)
+		if err != nil {
+			return err
+		}
+		for _, tradeDate := range tradeDates {
+			if _, err := statement.Exec(tradeDate, graymarket.KlineSourceTHSFiveMinute); err != nil {
+				statement.Close()
+				return err
+			}
+		}
+		if err := statement.Close(); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at) VALUES('ths_volume_lots_v1',?)`,
 		formatTimestamp(time.Now().UTC())); err != nil {
