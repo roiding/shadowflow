@@ -20,6 +20,22 @@ const (
 	defaultBodyLimit = 1 << 20
 )
 
+// sharesPerLot converts THS volume (shares) into the project-wide volume unit
+// (lots). Eastmoney's kline and snapshot endpoints report lots, so storing the
+// raw THS figure would make one provider exactly 100x the other and would also
+// inflate derived turnover rates by the same factor.
+const sharesPerLot = 100
+
+// lotsFromShares rounds instead of truncating: a five-minute bar can contain
+// odd-lot sells, so truncation would bias every bar downward by up to 99
+// shares and break the sum-of-bars == daily-volume invariant.
+func lotsFromShares(shares int64) int64 {
+	if shares <= 0 {
+		return 0
+	}
+	return (shares + sharesPerLot/2) / sharesPerLot
+}
+
 type Client struct {
 	baseURL         string
 	snapshotBaseURL string
@@ -246,7 +262,7 @@ func decodeSnapshotQuote(quote snapshotQuote, fetchedAt time.Time) (graymarket.S
 	result := graymarket.StockQuote{
 		StockCode: quote.Code, StockMarket: market, StockName: name, LatestPrice: latestPrice,
 		OpenPrice: openPrice, HighPrice: highPrice, LowPrice: lowPrice, PreviousClose: previousClose,
-		Volume: volume, Turnover: turnover, FetchedAt: fetchedAt, Available: latestPrice > 0,
+		Volume: lotsFromShares(volume), Turnover: turnover, FetchedAt: fetchedAt, Available: latestPrice > 0,
 	}
 	if previousClose > 0 {
 		result.ChangeValue = latestPrice - previousClose
@@ -443,7 +459,7 @@ func decodePoints(quote klineQuote, stock graymarket.RankRecord, fetchedAt time.
 		point := graymarket.StockKlinePoint{
 			TradeDate: stock.TradeDate, SnapshotAt: at, Market: stock.Market, Code: stock.Code,
 			Source: graymarket.KlineSourceTHSFiveMinute, OpenPrice: open, HighPrice: high, LowPrice: low, ClosePrice: closePrice,
-			Volume: volume, Turnover: turnover, FetchedAt: fetchedAt,
+			Volume: lotsFromShares(volume), Turnover: turnover, FetchedAt: fetchedAt,
 		}
 		points = append(points, point)
 		seen[index] = struct{}{}

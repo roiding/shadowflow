@@ -1,0 +1,9 @@
+# Verification environment: CPython 3.9.13, macOS x86_64; existing libomp.
+lightgbm==4.6.0
+numpy==2.0.2
+pandas==2.3.3
+python-dateutil==3.0.0
+pytz==2026.6
+scipy==1.13.1
+six==1.17.0
+tzdata==2026.6

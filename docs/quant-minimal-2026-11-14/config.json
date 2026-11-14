@@ -1,0 +1,31 @@
+{
+  "label_version": "cash-nav-next-open-v1",
+  "horizon": 5,
+  "availability_mode": "strict_vintage",
+  "feature_columns": ["ret_1d_adjusted", "ret_5d_adjusted", "ret_20d_adjusted", "volatility_20d", "log_amount", "amount_ratio_20d", "turnover_pct", "amplitude_pct"],
+  "train_start": "2024-01-01",
+  "validation_start": "2026-05-01",
+  "test_start": "2026-08-01",
+  "test_end": "2026-11-05",
+  "minimum_dates": {"train": 252, "validation": 40, "test": 40},
+  "minimum_label_coverage": 0.98,
+  "num_boost_round": 800,
+  "early_stopping_rounds": 50,
+  "parameters": {
+    "objective": "regression",
+    "metric": "l2",
+    "learning_rate": 0.03,
+    "num_leaves": 15,
+    "max_depth": 4,
+    "min_data_in_leaf": 200,
+    "lambda_l2": 10,
+    "feature_fraction": 0.9,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 1,
+    "num_threads": 2,
+    "seed": 20261114,
+    "deterministic": true,
+    "force_col_wise": true,
+    "verbosity": -1
+  }
+}

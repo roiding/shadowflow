@@ -1,0 +1,188 @@
+{
+  "2026-11-11_000001": {
+    "daily": [
+      {
+        "trade_date": "2026-11-11",
+        "code": "000001",
+        "open_price": 11.83,
+        "high_price": 11.86,
+        "low_price": 11.7,
+        "close_price": 11.71,
+        "previous_close": 11.86,
+        "volume": 1057038,
+        "turnover": 1245341421,
+        "turnover_rate": 0.0054,
+        "quote_available": 1
+      }
+    ],
+    "minutes": [
+      {
+        "rows": 48,
+        "volume_sum": 1057290,
+        "turnover_sum": 1245636503,
+        "turnover_rate_ppm_sum": 5800
+      }
+    ],
+    "source": [
+      {
+        "source": "stock_kline_5m",
+        "point_count": 48
+      }
+    ]
+  },
+  "2026-11-11_600000": {
+    "daily": [
+      {
+        "trade_date": "2026-11-11",
+        "code": "600000",
+        "open_price": 10.22,
+        "high_price": 10.31,
+        "low_price": 10.15,
+        "close_price": 10.17,
+        "previous_close": 10.2,
+        "volume": 485046,
+        "turnover": 496375448,
+        "turnover_rate": 0.0015,
+        "quote_available": 1
+      }
+    ],
+    "minutes": [
+      {
+        "rows": 48,
+        "volume_sum": 485120,
+        "turnover_sum": 496450706,
+        "turnover_rate_ppm_sum": 800
+      }
+    ],
+    "source": [
+      {
+        "source": "stock_kline_5m",
+        "point_count": 48
+      }
+    ]
+  },
+  "2026-11-11_300308": {
+    "daily": [
+      {
+        "trade_date": "2026-11-11",
+        "code": "300308",
+        "open_price": 480.42,
+        "high_price": 547.79,
+        "low_price": 480.42,
+        "close_price": 542.0,
+        "previous_close": 471.0,
+        "volume": 607350,
+        "turnover": 31229065541,
+        "turnover_rate": 0.0547,
+        "quote_available": 1
+      }
+    ],
+    "minutes": [
+      {
+        "rows": 48,
+        "volume_sum": 607348,
+        "turnover_sum": 31229065495,
+        "turnover_rate_ppm_sum": 54900
+      }
+    ],
+    "source": [
+      {
+        "source": "stock_kline_5m",
+        "point_count": 48
+      }
+    ]
+  },
+  "2026-11-13_000001": {
+    "daily": [
+      {
+        "trade_date": "2026-11-13",
+        "code": "000001",
+        "open_price": 11.76,
+        "high_price": 12.1,
+        "low_price": 11.7,
+        "close_price": 12.07,
+        "previous_close": 11.79,
+        "volume": 2189430,
+        "turnover": 2624481926,
+        "turnover_rate": 0.0113,
+        "quote_available": 1
+      }
+    ],
+    "minutes": [
+      {
+        "rows": 48,
+        "volume_sum": 2189839,
+        "turnover_sum": 2624971949,
+        "turnover_rate_ppm_sum": 11400
+      }
+    ],
+    "source": [
+      {
+        "source": "stock_kline_5m",
+        "point_count": 48
+      }
+    ]
+  },
+  "2026-11-13_600000": {
+    "daily": [
+      {
+        "trade_date": "2026-11-13",
+        "code": "600000",
+        "open_price": 10.19,
+        "high_price": 10.44,
+        "low_price": 10.12,
+        "close_price": 10.4,
+        "previous_close": 10.21,
+        "volume": 761573,
+        "turnover": 786507841,
+        "turnover_rate": 0.0023,
+        "quote_available": 1
+      }
+    ],
+    "minutes": [
+      {
+        "rows": 48,
+        "volume_sum": 76157313,
+        "turnover_sum": 786507840,
+        "turnover_rate_ppm_sum": 230002
+      }
+    ],
+    "source": [
+      {
+        "source": "ths_kline_5m_actual",
+        "point_count": 48
+      }
+    ]
+  },
+  "2026-11-13_300308": {
+    "daily": [
+      {
+        "trade_date": "2026-11-13",
+        "code": "300308",
+        "open_price": 520.0,
+        "high_price": 525.0,
+        "low_price": 461.71,
+        "close_price": 466.2,
+        "previous_close": 508.9,
+        "volume": 536097,
+        "turnover": 25873664127,
+        "turnover_rate": 0.0483,
+        "quote_available": 1
+      }
+    ],
+    "minutes": [
+      {
+        "rows": 48,
+        "volume_sum": 53609714,
+        "turnover_sum": 25873664000,
+        "turnover_rate_ppm_sum": 4830001
+      }
+    ],
+    "source": [
+      {
+        "source": "ths_kline_5m_actual",
+        "point_count": 48
+      }
+    ]
+  }
+}

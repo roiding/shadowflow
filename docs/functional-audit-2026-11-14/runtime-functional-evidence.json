@@ -1,0 +1,495 @@
+{
+  "observed_at_shanghai": "2026-11-14T10:14:01+08:00",
+  "relation_day_status": [
+    {
+      "trade_date": "2026-11-09",
+      "status": "success",
+      "attempts": 1,
+      "max_boards": 1027,
+      "max_relations": 96284
+    },
+    {
+      "trade_date": "2026-11-10",
+      "status": "success",
+      "attempts": 1,
+      "max_boards": 1027,
+      "max_relations": 95679
+    },
+    {
+      "trade_date": "2026-11-11",
+      "status": "success",
+      "attempts": 1,
+      "max_boards": 1027,
+      "max_relations": 95791
+    },
+    {
+      "trade_date": "2026-11-12",
+      "status": "failed",
+      "attempts": 9,
+      "max_boards": 79,
+      "max_relations": 6488
+    },
+    {
+      "trade_date": "2026-11-13",
+      "status": "failed",
+      "attempts": 9,
+      "max_boards": 0,
+      "max_relations": 0
+    }
+  ],
+  "relation_jobs": [
+    {
+      "job_key": "2026-11-12T07:00:relations:2026-11-12",
+      "kind": "relations",
+      "trade_date": "2026-11-12",
+      "status": "failed",
+      "attempt_count": 3,
+      "max_attempts": 3,
+      "last_error_code": "job_failed",
+      "last_error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get "
+    },
+    {
+      "job_key": "2026-11-12T07:30:relations:2026-11-12",
+      "kind": "relations",
+      "trade_date": "2026-11-12",
+      "status": "failed",
+      "attempt_count": 3,
+      "max_attempts": 3,
+      "last_error_code": "job_failed",
+      "last_error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get "
+    },
+    {
+      "job_key": "2026-11-12T08:00:relations:2026-11-12",
+      "kind": "relations",
+      "trade_date": "2026-11-12",
+      "status": "failed",
+      "attempt_count": 3,
+      "max_attempts": 3,
+      "last_error_code": "job_failed",
+      "last_error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get "
+    },
+    {
+      "job_key": "2026-11-13T07:00:relations:2026-11-13",
+      "kind": "relations",
+      "trade_date": "2026-11-13",
+      "status": "failed",
+      "attempt_count": 3,
+      "max_attempts": 3,
+      "last_error_code": "job_failed",
+      "last_error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get "
+    },
+    {
+      "job_key": "2026-11-13T07:30:relations:2026-11-13",
+      "kind": "relations",
+      "trade_date": "2026-11-13",
+      "status": "failed",
+      "attempt_count": 3,
+      "max_attempts": 3,
+      "last_error_code": "job_failed",
+      "last_error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get "
+    },
+    {
+      "job_key": "2026-11-13T08:00:relations:2026-11-13",
+      "kind": "relations",
+      "trade_date": "2026-11-13",
+      "status": "failed",
+      "attempt_count": 3,
+      "max_attempts": 3,
+      "last_error_code": "job_failed",
+      "last_error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get "
+    }
+  ],
+  "event_coverage": [
+    {
+      "source": "ths_limit_up",
+      "scope": "HS,GEM2STAR",
+      "days": 259,
+      "first_date": "2025-10-22",
+      "last_date": "2026-11-13",
+      "sealed_rows": 17564,
+      "broken_rows": 6603,
+      "down_rows": 3900
+    },
+    {
+      "source": "ths_limit_up",
+      "scope": "HS,GEM2STAR,ST,NEW",
+      "days": 254,
+      "first_date": "2025-10-22",
+      "last_date": "2026-11-06",
+      "sealed_rows": 19938,
+      "broken_rows": 7508,
+      "down_rows": 5963
+    }
+  ],
+  "focus_coverage": [
+    {
+      "source": "ths_focus",
+      "scope": "HS,GEM2STAR",
+      "days": 245,
+      "first_date": "2025-11-10",
+      "last_date": "2026-11-13"
+    }
+  ],
+  "theme_coverage": [
+    {
+      "source": "ths_focus",
+      "scope": "HS,GEM2STAR",
+      "days": 243,
+      "first_date": "2025-11-12",
+      "last_date": "2026-11-13",
+      "tab_rows": 2659,
+      "usable_tabs": 2423
+    }
+  ],
+  "label_20261111_h1": [
+    {
+      "signal_date": "2026-11-11",
+      "target_date": "2026-11-13",
+      "horizon": 1,
+      "rank_type": "stock",
+      "rows": 5026,
+      "min_return": -0.216979188131053,
+      "max_return": 0.23677581863979835
+    }
+  ],
+  "label_sample": [
+    {
+      "signal_date": "2026-11-11",
+      "target_date": "2026-11-13",
+      "horizon": 1,
+      "code": "000001",
+      "return_rate": 0.030742954739538808,
+      "label_version": "future-returns-v1"
+    },
+    {
+      "signal_date": "2026-11-11",
+      "target_date": "2026-11-13",
+      "horizon": 1,
+      "code": "000002",
+      "return_rate": -0.04375000000000007,
+      "label_version": "future-returns-v1"
+    },
+    {
+      "signal_date": "2026-11-11",
+      "target_date": "2026-11-13",
+      "horizon": 1,
+      "code": "000006",
+      "return_rate": -0.08702531645569633,
+      "label_version": "future-returns-v1"
+    },
+    {
+      "signal_date": "2026-11-11",
+      "target_date": "2026-11-13",
+      "horizon": 1,
+      "code": "000007",
+      "return_rate": -0.08606557377049184,
+      "label_version": "future-returns-v1"
+    },
+    {
+      "signal_date": "2026-11-11",
+      "target_date": "2026-11-13",
+      "horizon": 1,
+      "code": "000008",
+      "return_rate": -0.03056768558951961,
+      "label_version": "future-returns-v1"
+    }
+  ],
+  "feature_days": [
+    {
+      "trade_date": "2026-08-14",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-08-17",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-08-18",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-08-19",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-08-20",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-08-21",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-08-24",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-08-25",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-08-26",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-08-27",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-08-28",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-08-31",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-01",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-02",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-03",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-04",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-07",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-08",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-09",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-10",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-11",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-14",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-15",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-16",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-17",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-18",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-09-21",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-10-13",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-11-06",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-11-09",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-11-10",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-11-11",
+      "feature_version": "daily-features-v1"
+    },
+    {
+      "trade_date": "2026-11-13",
+      "feature_version": "daily-features-v1"
+    }
+  ],
+  "corporate_action_tables": [],
+  "last_archive_runs": [
+    {
+      "requested_date": "2026-11-13",
+      "snapshot_kind": "stock_kline_5m",
+      "rank_type": "stock",
+      "status": "success",
+      "fetched_total": 241248,
+      "duration_ms": 1063502,
+      "error_code": "",
+      "error_message": ""
+    },
+    {
+      "requested_date": "2026-11-13",
+      "snapshot_kind": "research_5m",
+      "rank_type": "stock",
+      "status": "success",
+      "fetched_total": 241248,
+      "duration_ms": 984097,
+      "error_code": "",
+      "error_message": ""
+    },
+    {
+      "requested_date": "2026-11-13",
+      "snapshot_kind": "research_5m",
+      "rank_type": "stock",
+      "status": "failed",
+      "fetched_total": 0,
+      "duration_ms": 69616,
+      "error_code": "upstream_error",
+      "error_message": "completed 500/5378 money curves: stock archive has no eligible records\nstock archive has no eligible records"
+    },
+    {
+      "requested_date": "2026-11-13",
+      "snapshot_kind": "research_5m",
+      "rank_type": "stock",
+      "status": "failed",
+      "fetched_total": 0,
+      "duration_ms": 69525,
+      "error_code": "upstream_error",
+      "error_message": "completed 500/5378 money curves: stock archive has no eligible records\nstock archive has no eligible records"
+    },
+    {
+      "requested_date": "2026-11-13",
+      "snapshot_kind": "research_5m",
+      "rank_type": "stock",
+      "status": "failed",
+      "fetched_total": 0,
+      "duration_ms": 70009,
+      "error_code": "upstream_error",
+      "error_message": "completed 500/5378 money curves: stock archive has no eligible records\nstock archive has no eligible records"
+    },
+    {
+      "requested_date": "2026-11-13",
+      "snapshot_kind": "ths_focus",
+      "rank_type": "stock",
+      "status": "success",
+      "fetched_total": 7,
+      "duration_ms": 7344,
+      "error_code": "",
+      "error_message": ""
+    },
+    {
+      "requested_date": "2026-11-13",
+      "snapshot_kind": "research_5m",
+      "rank_type": "stock",
+      "status": "failed",
+      "fetched_total": 0,
+      "duration_ms": 69515,
+      "error_code": "upstream_error",
+      "error_message": "completed 500/5378 money curves: stock archive has no eligible records\nstock archive has no eligible records"
+    },
+    {
+      "requested_date": "2026-11-13",
+      "snapshot_kind": "research_5m",
+      "rank_type": "stock",
+      "status": "failed",
+      "fetched_total": 0,
+      "duration_ms": 69483,
+      "error_code": "upstream_error",
+      "error_message": "completed 500/5378 money curves: stock archive has no eligible records\nstock archive has no eligible records"
+    },
+    {
+      "requested_date": "2026-11-13",
+      "snapshot_kind": "research_5m",
+      "rank_type": "stock",
+      "status": "failed",
+      "fetched_total": 0,
+      "duration_ms": 69497,
+      "error_code": "upstream_error",
+      "error_message": "completed 500/5378 money curves: stock archive has no eligible records\nstock archive has no eligible records"
+    },
+    {
+      "requested_date": "2026-11-13",
+      "snapshot_kind": "research_5m",
+      "rank_type": "stock",
+      "status": "failed",
+      "fetched_total": 0,
+      "duration_ms": 70011,
+      "error_code": "upstream_error",
+      "error_message": "completed 500/5378 money curves: stock archive has no eligible records\nstock archive has no eligible records"
+    },
+    {
+      "requested_date": "2026-11-13",
+      "snapshot_kind": "research_5m",
+      "rank_type": "stock",
+      "status": "failed",
+      "fetched_total": 0,
+      "duration_ms": 69504,
+      "error_code": "upstream_error",
+      "error_message": "completed 500/5378 money curves: stock archive has no eligible records\nstock archive has no eligible records"
+    },
+    {
+      "requested_date": "2026-11-13",
+      "snapshot_kind": "research_5m",
+      "rank_type": "stock",
+      "status": "failed",
+      "fetched_total": 0,
+      "duration_ms": 69504,
+      "error_code": "upstream_error",
+      "error_message": "completed 500/5378 money curves: stock archive has no eligible records\nstock archive has no eligible records"
+    },
+    {
+      "requested_date": "2026-11-13",
+      "snapshot_kind": "research_5m",
+      "rank_type": "stock",
+      "status": "failed",
+      "fetched_total": 0,
+      "duration_ms": 69514,
+      "error_code": "upstream_error",
+      "error_message": "completed 500/5378 money curves: stock archive has no eligible records\nstock archive has no eligible records"
+    },
+    {
+      "requested_date": "2026-11-13",
+      "snapshot_kind": "research_5m",
+      "rank_type": "stock",
+      "status": "failed",
+      "fetched_total": 0,
+      "duration_ms": 69510,
+      "error_code": "upstream_error",
+      "error_message": "completed 500/5378 money curves: stock archive has no eligible records\nstock archive has no eligible records"
+    }
+  ],
+  "config_explicit": {
+    "SHADOWFLOW_ALLOW_MISSING_QUOTES": "true"
+  },
+  "relation_api": {
+    "http": 200,
+    "meta": {
+      "as_of": "2026-11-13",
+      "relation_scope": "all_industry_concept",
+      "relation_source": "quote_clist",
+      "stock_code": "000001"
+    },
+    "rows": 28
+  },
+  "relation_changes_api": {
+    "http": 200,
+    "meta": {
+      "board_type": "",
+      "trade_date": "2026-11-13"
+    },
+    "rows": 0
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "kind": "synthetic_training_flow_only",
+  "no_real_training": true,
+  "checks": {
+    "valid_inputs_train_and_publish": true,
+    "future_feature_rejected": true,
+    "wrong_horizon_rejected": true,
+    "strict_mode_rejects_later_known_vintages": true,
+    "reconstructed_mode_explicitly_marked": true
+  },
+  "versions": {
+    "numpy": "2.0.2",
+    "pandas": "2.3.3",
+    "lightgbm": "4.6.0"
+  },
+  "partition_dates": {
+    "train": 289,
+    "validation": 74,
+    "test": 81
+  }
+}

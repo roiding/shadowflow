@@ -1,0 +1,1 @@
+{"status_code": 0, "data": {"quote_data": [{"market": "33", "code": "000001", "delay": false, "data_fields": ["1", "7", "8", "9", "11", "13", "19"], "value": [[1767922500000, 11.53, 11.53, 11.49, 11.5, 4213000, 48499366]]}], "fail_params": null}, "status_msg": "ok"}

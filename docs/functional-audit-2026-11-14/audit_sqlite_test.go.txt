@@ -1,0 +1,68 @@
+package sqlite
+
+// Diagnostic reproductions. PASS means the documented existing behavior was
+// reproduced; it does not certify the behavior as financially correct.
+import (
+    "context"
+    "math"
+    "testing"
+
+    "github.com/roiding/shadowflow/internal/graymarket"
+)
+
+func TestFunctionalAuditRawSplitLabelAndCalendarGap(t *testing.T) {
+    store, err := Open(":memory:")
+    if err != nil { t.Fatal(err) }
+    defer store.Close()
+    ctx := context.Background()
+    for index, date := range []string{"2026-09-02", "2026-09-04"} {
+        snapshot := completeArchiveFixture(t, store, date, 1, false)
+        price := 10.0
+        if index == 1 { price = 5.0 }
+        for i := range snapshot.Records {
+            record := &snapshot.Records[i]
+            record.OpenPrice, record.ClosePrice = price, price
+            record.HighPrice, record.LowPrice, record.PreviousClose = price, price, price
+        }
+        if err := store.SaveStockArchive(ctx, "audit", snapshot, testMoneyPoints(snapshot)); err != nil { t.Fatal(err) }
+        points := testStockKlines(date, snapshot.SnapshotAt.Location(), snapshot.Records[0])
+        for i := range points {
+            points[i].OpenPrice, points[i].ClosePrice = price, price
+            points[i].HighPrice, points[i].LowPrice = price, price
+        }
+        if err := store.SaveStockKlines(ctx, "audit", points); err != nil { t.Fatal(err) }
+        if _, err := store.SealArchiveRevision(ctx, date, "audit-"+date); err != nil { t.Fatal(err) }
+    }
+    labels, err := store.FutureReturnLabels(ctx, "2026-09-02", "", "", 1)
+    if err != nil { t.Fatal(err) }
+    found := false
+    for _, label := range labels {
+        if label.RankType != graymarket.RankStock { continue }
+        found = true
+        if math.Abs(label.ReturnRate + 0.5) > 1e-10 || label.TargetDate != "2026-09-04" {
+            t.Fatalf("diagnostic behavior changed: %+v", label)
+        }
+        t.Logf("observed: horizon=1 maps Sep02->Sep04; raw 10->5 gives return=%g; a 2-for-1 split would have economic return=0", label.ReturnRate)
+    }
+    if !found { t.Fatal("stock label absent") }
+}
+
+func TestFunctionalAuditCumulativeMoneyDividedBySingleBucket(t *testing.T) {
+    store, err := Open(":memory:")
+    if err != nil { t.Fatal(err) }
+    defer store.Close()
+    for i := 0; i < 48; i++ {
+        _, err := store.db.Exec(`INSERT INTO stock_research_5m
+        (trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,money_available,
+        turnover,turnover_rate_ppm,kline_available)
+        VALUES ('2026-11-11',?,0,'000001',0,?,0,?,1,100,1000,1)`, i, (i+1)*10, (i+1)*10)
+        if err != nil { t.Fatal(err) }
+    }
+    metrics, err := store.ReadCandidateHistoryMetrics(context.Background(), "2026-11-11", []string{"000001"}, 20, 47)
+    if err != nil { t.Fatal(err) }
+    sample := metrics["000001"]
+    if len(sample.MainFlowPcts) != 1 || sample.MainFlowPcts[0] != 480 {
+        t.Fatalf("diagnostic behavior changed: %+v", sample)
+    }
+    t.Logf("observed historical main-flow=%.2f%%, cumulative-consistent result=10%%; historical turnover=%.2f%%, cumulative-consistent result=4.8%%", sample.MainFlowPcts[0], sample.TurnoverRates[0])
+}

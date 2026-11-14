@@ -854,6 +854,78 @@ func TestSaveStockArchivePersists48MoneyBarsAndDailyK(t *testing.T) {
 	}
 }
 
+// THS stores volume in shares while Eastmoney stores lots. The first THS
+// archive therefore landed 100x too large; the one-shot migration must rewrite
+// only THS-provenance rows and leave Eastmoney data untouched.
+func TestMigrateTHSVolumeLotsRewritesOnlyTHSRows(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	tradeDate := "2026-11-13"
+	location := time.FixedZone("Asia/Shanghai", 8*3600)
+	at := func(clock string) time.Time {
+		value, _ := time.ParseInLocation("2006-01-02 15:04", tradeDate+" "+clock, location)
+		return value
+	}
+	for _, stock := range []struct {
+		market int
+		code   string
+		source string
+		volume int64
+		rate   int64
+	}{
+		{1, "600000", graymarket.KlineSourceTHSFiveMinute, 76157300, 46235},
+		{0, "000001", graymarket.KlineSourceFiveMinute, 31879, 2000},
+	} {
+		entry := at("15:00")
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO stock_research_5m
+(trade_date,minute_index,market,code,money_rank,dark_money,regular_money,main_money_inflow,volume,turnover,
+amplitude_ppm,change_pct_ppm,change_value_e4,turnover_rate_ppm,kline_available,money_available)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, tradeDate, 47, stock.market, stock.code, 1, 0, 0, 0,
+			stock.volume, 0, 0, 0, 0, stock.rate, 1, 1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO stock_kline_source
+(trade_date,market,code,source,point_count,parser_version,fetched_at,run_id)
+VALUES (?,?,?,?,?,?,?,?)`, tradeDate, stock.market, stock.code, stock.source, 48, "test", formatTimestamp(entry), "run"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Open() already ran the migration against an empty database, so clear the
+	// marker before exercising it against the fixture rows.
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM database_maintenance WHERE name='ths_volume_lots_v1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateTHSVolumeLots(store); err != nil {
+		t.Fatal(err)
+	}
+	for code, want := range map[string]struct{ volume, rate int64 }{
+		"600000": {761573, 462},
+		"000001": {31879, 2000},
+	} {
+		var volume, rate int64
+		if err := store.db.QueryRowContext(ctx, `SELECT volume,turnover_rate_ppm
+FROM stock_research_5m WHERE trade_date=? AND code=?`, tradeDate, code).Scan(&volume, &rate); err != nil {
+			t.Fatal(err)
+		}
+		if volume != want.volume || rate != want.rate {
+			t.Fatalf("%s was not normalized: volume=%d rate=%d, want %+v", code, volume, rate, want)
+		}
+	}
+	// The marker keeps a rerun from dividing a second time.
+	if err := migrateTHSVolumeLots(store); err != nil {
+		t.Fatal(err)
+	}
+	var volume int64
+	if err := store.db.QueryRowContext(ctx, `SELECT volume FROM stock_research_5m
+WHERE trade_date=? AND code='600000'`, tradeDate).Scan(&volume); err != nil || volume != 761573 {
+		t.Fatalf("migration is not idempotent: volume=%d err=%v", volume, err)
+	}
+}
+
 func TestMigrateStockResearchUniverseRemovesUnavailablePlaceholders(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {

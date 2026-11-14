@@ -1,0 +1,22 @@
+[
+  {
+    "name": "industry_catalog",
+    "observed_at_shanghai": "2026-11-14T10:17:50+08:00",
+    "url": "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f12&fields=f12%2Cf14&fs=m%3A90%2Bt%3A2%2Bf%3A%2150",
+    "runtime": "production_host_direct_probe",
+    "http": 200,
+    "business": 0,
+    "declared_total": 496,
+    "rows": 100
+  },
+  {
+    "name": "board_constituents",
+    "observed_at_shanghai": "2026-11-14T10:17:53+08:00",
+    "url": "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f12&fields=f12%2Cf13%2Cf14&fs=b%3ABK0448",
+    "runtime": "production_host_direct_probe",
+    "http": 200,
+    "business": 0,
+    "declared_total": 94,
+    "rows": 94
+  }
+]

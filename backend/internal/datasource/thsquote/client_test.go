@@ -53,7 +53,7 @@ func TestFetchStockQuotesMapsDocumentedFieldsAndBatchesFifty(t *testing.T) {
 	}
 	quote := quotes[0]
 	if quote.LatestPrice != 10.1 || quote.HighPrice != 10.5 || quote.LowPrice != 9.7 ||
-		quote.OpenPrice != 10.0 || quote.PreviousClose != 9.8 || quote.Volume != 678 || quote.Turnover != 123400 {
+		quote.OpenPrice != 10.0 || quote.PreviousClose != 9.8 || quote.Volume != 7 || quote.Turnover != 123400 {
 		t.Fatalf("fields were mapped incorrectly: %+v", quote)
 	}
 	if quote.StockName != "test-stock" || !quote.Available || quote.QuoteTime != "" {
@@ -80,7 +80,7 @@ func TestFetchStockKline5mBuildsOneStockArchiveCurve(t *testing.T) {
 			if index >= 24 {
 				at = time.Date(2026, 11, 13, 13, 5, 0, 0, location).Add(time.Duration(index-24) * 5 * time.Minute)
 			}
-			values = append(values, []any{at.UnixMilli(), 10.0, 10.1, 9.9, 10.0, 2, 10})
+			values = append(values, []any{at.UnixMilli(), 10.0, 10.1, 9.9, 10.0, 200, 10})
 		}
 		_ = json.NewEncoder(writer).Encode(map[string]any{
 			"status_code": 0, "status_msg": "ok",
@@ -162,14 +162,14 @@ func TestFetchStockKline5mSkipsOtherDatesBeforeSelecting48Buckets(t *testing.T) 
 		values := make([][]any, 0, 400)
 		for day := 3; day <= 12; day++ {
 			at := time.Date(2026, 11, day, 9, 35, 0, 0, location)
-			values = append(values, []any{at.UnixMilli(), 10, 10.1, 9.9, 10, 2, 10})
+			values = append(values, []any{at.UnixMilli(), 10, 10.1, 9.9, 10, 200, 10})
 		}
 		for index := 0; index < 48; index++ {
 			at := time.Date(2026, 11, 13, 9, 35, 0, 0, location).Add(time.Duration(index) * 5 * time.Minute)
 			if index >= 24 {
 				at = time.Date(2026, 11, 13, 13, 5, 0, 0, location).Add(time.Duration(index-24) * 5 * time.Minute)
 			}
-			values = append(values, []any{at.UnixMilli(), 10, 10.1, 9.9, 10, 2, 10})
+			values = append(values, []any{at.UnixMilli(), 10, 10.1, 9.9, 10, 200, 10})
 		}
 		_ = json.NewEncoder(writer).Encode(map[string]any{
 			"status_code": 0, "status_msg": "ok",
@@ -193,6 +193,28 @@ func TestFetchStockKline5mSkipsOtherDatesBeforeSelecting48Buckets(t *testing.T) 
 	if len(points) != 48 || points[0].SnapshotAt.Format("2006-01-02 15:04") != "2026-11-13 09:35" ||
 		points[47].SnapshotAt.Format("2006-01-02 15:04") != "2026-11-13 15:00" {
 		t.Fatalf("other dates leaked into the archive curve: count=%d", len(points))
+	}
+}
+
+// THS reports volume in shares while Eastmoney reports lots. Storing the raw
+// THS figure made one provider exactly 100x the other and inflated the derived
+// turnover rate by 100x as well.
+func TestLotsFromSharesNormalizesProviderUnits(t *testing.T) {
+	cases := []struct {
+		shares int64
+		want   int64
+	}{
+		{shares: 0, want: 0},
+		{shares: 218943000, want: 2189430},
+		{shares: 4503300, want: 45033},
+		{shares: 250, want: 3},
+		{shares: 149, want: 1},
+		{shares: 49, want: 0},
+	}
+	for _, testCase := range cases {
+		if got := lotsFromShares(testCase.shares); got != testCase.want {
+			t.Fatalf("lotsFromShares(%d)=%d, want %d", testCase.shares, got, testCase.want)
+		}
 	}
 }
 

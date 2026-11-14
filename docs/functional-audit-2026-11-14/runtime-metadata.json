@@ -1,0 +1,644 @@
+{
+  "observed_at_shanghai": "2026-11-14T10:09:11+08:00",
+  "revision": "dccf0e7e516e7ccdc86139fb11c1e139f7ee4735",
+  "runtime": {
+    "Status": "running",
+    "StartedAt": "2026-11-13T14:37:14.657377342Z",
+    "OOMKilled": false
+  },
+  "restart_count": 0,
+  "config": {
+    "SHADOWFLOW_COLD_DATABASE_PATH": "/data/shadowflow-cold.db",
+    "SHADOWFLOW_LIMIT_UP_ARCHIVE_ENABLED": "true",
+    "SHADOWFLOW_DATABASE_PATH": "/data/shadowflow.db"
+  },
+  "database_files": {
+    "shadowflow-cold.db": 1510711296,
+    "shadowflow.db-wal": 16512,
+    "shadowflow.db": 5204131840,
+    "shadowflow.db-shm": 32768
+  },
+  "relation_runs": [
+    {
+      "trade_date": "2026-11-13",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-13T00:10:09.829544971Z",
+      "finished_at": "2026-11-13T00:10:11.556000208Z",
+      "duration_ms": 1726,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-13",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-13T00:05:07.827920163Z",
+      "finished_at": "2026-11-13T00:05:09.564935362Z",
+      "duration_ms": 1737,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-13",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-13T00:00:05.832293123Z",
+      "finished_at": "2026-11-13T00:00:07.57667852Z",
+      "duration_ms": 1744,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-13",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-12T23:40:09.832514339Z",
+      "finished_at": "2026-11-12T23:40:11.562380367Z",
+      "duration_ms": 1729,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-13",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-12T23:35:07.833404958Z",
+      "finished_at": "2026-11-12T23:35:09.564372564Z",
+      "duration_ms": 1730,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-13",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-12T23:30:05.829712669Z",
+      "finished_at": "2026-11-12T23:30:07.562236322Z",
+      "duration_ms": 1732,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-13",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-12T23:10:09.827601515Z",
+      "finished_at": "2026-11-12T23:10:11.566239405Z",
+      "duration_ms": 1738,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-13",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-12T23:05:07.832905884Z",
+      "finished_at": "2026-11-12T23:05:09.563044751Z",
+      "duration_ms": 1730,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-13",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-12T23:00:05.835400007Z",
+      "finished_at": "2026-11-12T23:00:07.580335695Z",
+      "duration_ms": 1744,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-12",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-12T00:10:09.739831246Z",
+      "finished_at": "2026-11-12T00:10:11.458123056Z",
+      "duration_ms": 1718,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-12",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-12T00:05:07.747004583Z",
+      "finished_at": "2026-11-12T00:05:09.472558947Z",
+      "duration_ms": 1725,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-12",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-12T00:00:05.741933068Z",
+      "finished_at": "2026-11-12T00:00:07.454754718Z",
+      "duration_ms": 1712,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-12",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-11T23:40:09.74604936Z",
+      "finished_at": "2026-11-11T23:40:11.476525373Z",
+      "duration_ms": 1730,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-12",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-11T23:35:07.745881885Z",
+      "finished_at": "2026-11-11T23:35:09.45516989Z",
+      "duration_ms": 1709,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-12",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-11T23:30:05.743596562Z",
+      "finished_at": "2026-11-11T23:30:07.460044824Z",
+      "duration_ms": 1716,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-12",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-11T23:10:25.74604775Z",
+      "finished_at": "2026-11-11T23:10:27.46712794Z",
+      "duration_ms": 1721,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-12",
+      "status": "failed",
+      "board_count": 0,
+      "relation_count": 0,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-11T23:05:23.746058106Z",
+      "finished_at": "2026-11-11T23:05:25.462878128Z",
+      "duration_ms": 1716,
+      "error_code": "upstream_error",
+      "error_message": "fetch industry board catalog: fetch industry board catalog page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf14&fltt=2&fs=m%3A90%2Bt%3A2%2Bf%3A%2150&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-12",
+      "status": "failed",
+      "board_count": 79,
+      "relation_count": 6488,
+      "added_count": 0,
+      "removed_count": 0,
+      "started_at": "2026-11-11T23:00:05.761568334Z",
+      "finished_at": "2026-11-11T23:00:22.654192504Z",
+      "duration_ms": 16892,
+      "error_code": "upstream_error",
+      "error_message": "fetch constituents for industry BK1205: fetch constituents for industry BK1205 page 1: https://push2.eastmoney.com: Get \"https://push2.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf13%2Cf14&fltt=2&fs=b%3ABK1205&invt=2&np=1&pn=1&po=1&pz=100\": EOF\nhttps://push2delay.eastmoney.com: Get \"https://push2delay.eastmoney.com/api/qt/clist/get?fid=f12&fields=f12%2Cf13%2Cf14&fltt=2&fs=b%3ABK1205&invt=2&np=1&pn=1&po=1&pz=100\": EOF"
+    },
+    {
+      "trade_date": "2026-11-11",
+      "status": "success",
+      "board_count": 1027,
+      "relation_count": 95791,
+      "added_count": 872,
+      "removed_count": 760,
+      "started_at": "2026-11-10T23:00:05.687233658Z",
+      "finished_at": "2026-11-10T23:04:50.276057607Z",
+      "duration_ms": 284588,
+      "error_code": "",
+      "error_message": ""
+    },
+    {
+      "trade_date": "2026-11-10",
+      "status": "success",
+      "board_count": 1027,
+      "relation_count": 95679,
+      "added_count": 707,
+      "removed_count": 1312,
+      "started_at": "2026-11-09T23:00:05.66419147Z",
+      "finished_at": "2026-11-09T23:04:41.382284803Z",
+      "duration_ms": 275718,
+      "error_code": "",
+      "error_message": ""
+    },
+    {
+      "trade_date": "2026-11-09",
+      "status": "success",
+      "board_count": 1027,
+      "relation_count": 96284,
+      "added_count": 10663,
+      "removed_count": 3335,
+      "started_at": "2026-11-08T23:00:05.713858161Z",
+      "finished_at": "2026-11-08T23:04:52.458048329Z",
+      "duration_ms": 286744,
+      "error_code": "",
+      "error_message": ""
+    }
+  ],
+  "relation_last_success": [
+    {
+      "trade_date": "2026-11-11",
+      "board_count": 1027,
+      "relation_count": 95791,
+      "started_at": "2026-11-10T23:00:05.687233658Z",
+      "finished_at": "2026-11-10T23:04:50.276057607Z"
+    }
+  ],
+  "relation_baselines": [
+    {
+      "baseline_date": "2026-08-14"
+    }
+  ],
+  "archive_manifests": [
+    {
+      "trade_date": "2026-11-13",
+      "status": "complete",
+      "stock_close_rows": 5026,
+      "stock_daily_kline_rows": 5026,
+      "stock_money_rows": 241248,
+      "stock_kline_rows": 241248,
+      "expected_stock_rows": 5026,
+      "expected_stock_kline_rows": 241248,
+      "validation_errors_json": "null",
+      "kline_source_counts_json": "{\"stock_kline_5m\":83,\"stock_trends_1m_241\":12,\"ths_kline_5m_actual\":4931}"
+    },
+    {
+      "trade_date": "2026-11-12",
+      "status": "incomplete",
+      "stock_close_rows": 5028,
+      "stock_daily_kline_rows": 5028,
+      "stock_money_rows": 241344,
+      "stock_kline_rows": 5760,
+      "expected_stock_rows": 5028,
+      "expected_stock_kline_rows": 241344,
+      "validation_errors_json": "[\"stock five-minute kline rows: expected 241344, got 5760\"]",
+      "kline_source_counts_json": "{\"stock_kline_5m\":120}"
+    },
+    {
+      "trade_date": "2026-11-11",
+      "status": "complete",
+      "stock_close_rows": 5029,
+      "stock_daily_kline_rows": 5029,
+      "stock_money_rows": 241392,
+      "stock_kline_rows": 241392,
+      "expected_stock_rows": 5029,
+      "expected_stock_kline_rows": 241392,
+      "validation_errors_json": "null",
+      "kline_source_counts_json": "{\"stock_kline_5m\":5029}"
+    },
+    {
+      "trade_date": "2026-11-10",
+      "status": "complete",
+      "stock_close_rows": 5028,
+      "stock_daily_kline_rows": 5028,
+      "stock_money_rows": 241344,
+      "stock_kline_rows": 241344,
+      "expected_stock_rows": 5028,
+      "expected_stock_kline_rows": 241344,
+      "validation_errors_json": "null",
+      "kline_source_counts_json": "{\"stock_kline_5m\":5028}"
+    },
+    {
+      "trade_date": "2026-11-09",
+      "status": "complete",
+      "stock_close_rows": 5027,
+      "stock_daily_kline_rows": 5027,
+      "stock_money_rows": 241296,
+      "stock_kline_rows": 241296,
+      "expected_stock_rows": 5027,
+      "expected_stock_kline_rows": 241296,
+      "validation_errors_json": "null",
+      "kline_source_counts_json": "{\"stock_kline_5m\":5027}"
+    },
+    {
+      "trade_date": "2026-11-06",
+      "status": "complete",
+      "stock_close_rows": 5027,
+      "stock_daily_kline_rows": 5027,
+      "stock_money_rows": 241296,
+      "stock_kline_rows": 241296,
+      "expected_stock_rows": 5027,
+      "expected_stock_kline_rows": 241296,
+      "validation_errors_json": "null",
+      "kline_source_counts_json": "{\"stock_kline_5m\":5027}"
+    },
+    {
+      "trade_date": "2026-11-05",
+      "status": "complete",
+      "stock_close_rows": 5026,
+      "stock_daily_kline_rows": 5026,
+      "stock_money_rows": 241248,
+      "stock_kline_rows": 241248,
+      "expected_stock_rows": 5026,
+      "expected_stock_kline_rows": 241248,
+      "validation_errors_json": "null",
+      "kline_source_counts_json": "{\"stock_kline_5m_backfill\":5026}"
+    },
+    {
+      "trade_date": "2026-11-04",
+      "status": "complete",
+      "stock_close_rows": 5026,
+      "stock_daily_kline_rows": 5026,
+      "stock_money_rows": 241248,
+      "stock_kline_rows": 241248,
+      "expected_stock_rows": 5026,
+      "expected_stock_kline_rows": 241248,
+      "validation_errors_json": "null",
+      "kline_source_counts_json": "{\"stock_kline_5m_backfill\":5026}"
+    },
+    {
+      "trade_date": "2026-11-03",
+      "status": "complete",
+      "stock_close_rows": 5025,
+      "stock_daily_kline_rows": 5025,
+      "stock_money_rows": 241200,
+      "stock_kline_rows": 241200,
+      "expected_stock_rows": 5025,
+      "expected_stock_kline_rows": 241200,
+      "validation_errors_json": "null",
+      "kline_source_counts_json": "{\"stock_kline_5m_backfill\":5025}"
+    },
+    {
+      "trade_date": "2026-11-02",
+      "status": "complete",
+      "stock_close_rows": 5026,
+      "stock_daily_kline_rows": 5026,
+      "stock_money_rows": 241248,
+      "stock_kline_rows": 241248,
+      "expected_stock_rows": 5026,
+      "expected_stock_kline_rows": 241248,
+      "validation_errors_json": "null",
+      "kline_source_counts_json": "{\"stock_kline_5m_backfill\":5026}"
+    },
+    {
+      "trade_date": "2026-10-30",
+      "status": "complete",
+      "stock_close_rows": 5026,
+      "stock_daily_kline_rows": 5026,
+      "stock_money_rows": 241248,
+      "stock_kline_rows": 241248,
+      "expected_stock_rows": 5026,
+      "expected_stock_kline_rows": 241248,
+      "validation_errors_json": "null",
+      "kline_source_counts_json": "{\"stock_kline_5m_backfill\":5026}"
+    },
+    {
+      "trade_date": "2026-10-29",
+      "status": "complete",
+      "stock_close_rows": 5025,
+      "stock_daily_kline_rows": 5025,
+      "stock_money_rows": 241200,
+      "stock_kline_rows": 241200,
+      "expected_stock_rows": 5025,
+      "expected_stock_kline_rows": 241200,
+      "validation_errors_json": "null",
+      "kline_source_counts_json": "{\"stock_kline_5m_backfill\":5025}"
+    },
+    {
+      "trade_date": "2026-10-28",
+      "status": "complete",
+      "stock_close_rows": 5025,
+      "stock_daily_kline_rows": 5025,
+      "stock_money_rows": 241200,
+      "stock_kline_rows": 241200,
+      "expected_stock_rows": 5025,
+      "expected_stock_kline_rows": 241200,
+      "validation_errors_json": "null",
+      "kline_source_counts_json": "{\"stock_kline_5m_backfill\":5025}"
+    },
+    {
+      "trade_date": "2026-10-27",
+      "status": "complete",
+      "stock_close_rows": 5025,
+      "stock_daily_kline_rows": 5025,
+      "stock_money_rows": 241200,
+      "stock_kline_rows": 241200,
+      "expected_stock_rows": 5025,
+      "expected_stock_kline_rows": 241200,
+      "validation_errors_json": "null",
+      "kline_source_counts_json": "{\"stock_kline_5m_backfill\":5025}"
+    },
+    {
+      "trade_date": "2026-10-26",
+      "status": "complete",
+      "stock_close_rows": 5025,
+      "stock_daily_kline_rows": 5025,
+      "stock_money_rows": 241200,
+      "stock_kline_rows": 241200,
+      "expected_stock_rows": 5025,
+      "expected_stock_kline_rows": 241200,
+      "validation_errors_json": "null",
+      "kline_source_counts_json": "{\"stock_kline_5m_backfill\":5025}"
+    }
+  ],
+  "archive_dates": [
+    {
+      "trade_date": "2026-11-13",
+      "revision_id": "kline-8f758eb4eef44488417b0a4e0b18a07e"
+    },
+    {
+      "trade_date": "2026-11-11",
+      "revision_id": "kline-4edff10c6a14ffed8a2a4e2d03040f66"
+    },
+    {
+      "trade_date": "2026-11-10",
+      "revision_id": "kline-096f9fdfdbc3621a25abace83cd5201f"
+    },
+    {
+      "trade_date": "2026-11-09",
+      "revision_id": "kline-616b9bc11c78d5d83cb807493a593b3c"
+    },
+    {
+      "trade_date": "2026-11-06",
+      "revision_id": "seal-1e6c3094f5afb657484bc7d8aa0ff4d0"
+    },
+    {
+      "trade_date": "2026-10-13",
+      "revision_id": "kline-319899cd14822b8ec2d06434a426f0e8"
+    },
+    {
+      "trade_date": "2026-09-21",
+      "revision_id": "kline-range-d298d2aaa62fec92b416b359086b4d28"
+    },
+    {
+      "trade_date": "2026-09-18",
+      "revision_id": "kline-2c57f6accbd69af7399a6a710a92856a"
+    },
+    {
+      "trade_date": "2026-09-17",
+      "revision_id": "kline-1ae1d329f7b933b3d7d5f8b67d23f679"
+    },
+    {
+      "trade_date": "2026-09-16",
+      "revision_id": "kline-c2f375e5ed4befff6bc4d7557b57f51c"
+    },
+    {
+      "trade_date": "2026-09-15",
+      "revision_id": "kline-f936260394b1de88561ef9c7407fd3a4"
+    },
+    {
+      "trade_date": "2026-09-14",
+      "revision_id": "kline-31e0c5b8ca09373977429b130bad44fc"
+    },
+    {
+      "trade_date": "2026-09-11",
+      "revision_id": "kline-deaa2441961ef9b245cb593fad476a33"
+    },
+    {
+      "trade_date": "2026-09-10",
+      "revision_id": "kline-2bc61af74faec22e8479cfa53ad08252"
+    },
+    {
+      "trade_date": "2026-09-09",
+      "revision_id": "kline-572ccaa0ed51f2dc71f809c6b56339a6"
+    },
+    {
+      "trade_date": "2026-09-08",
+      "revision_id": "kline-25cbda582650586e6be0230cdde67d1c"
+    },
+    {
+      "trade_date": "2026-09-07",
+      "revision_id": "kline-340af15852f745209b36f24d31daf159"
+    },
+    {
+      "trade_date": "2026-09-04",
+      "revision_id": "kline-d66da14594646f2b9c138069e6bc168a"
+    },
+    {
+      "trade_date": "2026-09-03",
+      "revision_id": "kline-eae2ef0f04bad221e8609328314b6833"
+    },
+    {
+      "trade_date": "2026-09-02",
+      "revision_id": "kline-cfe634f9ca44bb0ed390c16cc23472c1"
+    },
+    {
+      "trade_date": "2026-09-01",
+      "revision_id": "kline-b396fc9fd9cdbe25850a815ff9c2bea2"
+    },
+    {
+      "trade_date": "2026-08-31",
+      "revision_id": "kline-44046e3d5d521f0eb0349bf66e3b3f9b"
+    },
+    {
+      "trade_date": "2026-08-28",
+      "revision_id": "kline-511ad2dffd64dc7b86b23904e23eb3f6"
+    },
+    {
+      "trade_date": "2026-08-27",
+      "revision_id": "kline-ad6f86829b503f72e8652e869d265413"
+    },
+    {
+      "trade_date": "2026-08-26",
+      "revision_id": "kline-ef26736282d6c1ee05381f7e746e97b8"
+    },
+    {
+      "trade_date": "2026-08-25",
+      "revision_id": "kline-7a3b57cb3ce7259db693e4609655395b"
+    },
+    {
+      "trade_date": "2026-08-24",
+      "revision_id": "kline-79b8614419ed6a29b7087343d2778662"
+    },
+    {
+      "trade_date": "2026-08-21",
+      "revision_id": "kline-7ef2d29545d56ea938708cacb8b9afe6"
+    },
+    {
+      "trade_date": "2026-08-20",
+      "revision_id": "kline-161b25b0a7c272d7e3dba4015aa2d10a"
+    },
+    {
+      "trade_date": "2026-08-19",
+      "revision_id": "kline-1681e6a61fd9b295d3c70e5d9549503d"
+    },
+    {
+      "trade_date": "2026-08-18",
+      "revision_id": "kline-393ce18f2b25bc17c1e749dc5fd66afd"
+    },
+    {
+      "trade_date": "2026-08-17",
+      "revision_id": "legacy-20260817"
+    },
+    {
+      "trade_date": "2026-08-14",
+      "revision_id": "legacy-20260814"
+    }
+  ],
+  "metadata_schema": [
+    {
+      "name": "limit_up_day",
+      "sql": "CREATE TABLE limit_up_day (\n    source TEXT NOT NULL,\n    scope TEXT NOT NULL,\n    trade_date TEXT NOT NULL,\n    fetched_at TEXT NOT NULL,\n    sealed_count INTEGER NOT NULL CHECK (sealed_count >= 0),\n    broken_count INTEGER NOT NULL CHECK (broken_count >= 0),\n    down_count INTEGER NOT NULL CHECK (down_count >= 0),\n    touched_count INTEGER NOT NULL CHECK (touched_count = sealed_count + broken_count),\n    content_hash TEXT NOT NULL,\n    raw_pages BLOB NOT NULL,\n    parser_version TEXT NOT NULL,\n    PRIMARY KEY (source, scope, trade_date)\n) WITHOUT ROWID"
+    },
+    {
+      "name": "ths_focus_day",
+      "sql": "CREATE TABLE ths_focus_day (\n    source TEXT NOT NULL,\n    scope TEXT NOT NULL,\n    trade_date TEXT NOT NULL,\n    fetched_at TEXT NOT NULL,\n    payload_json TEXT NOT NULL,\n    raw_pages BLOB NOT NULL,\n    PRIMARY KEY (source, scope, trade_date)\n) WITHOUT ROWID"
+    },
+    {
+      "name": "ths_theme_tab_day",
+      "sql": "CREATE TABLE ths_theme_tab_day (\n    source TEXT NOT NULL,\n    scope TEXT NOT NULL,\n    trade_date TEXT NOT NULL,\n    tab_name TEXT NOT NULL,\n    tab_rank INTEGER NOT NULL,\n    stock_count INTEGER NOT NULL,\n    usable INTEGER NOT NULL,\n    fetched_at TEXT NOT NULL,\n    PRIMARY KEY (source, scope, trade_date, tab_name)\n) WITHOUT ROWID"
+    },
+    {
+      "name": "ths_theme_tab_stock",
+      "sql": "CREATE TABLE ths_theme_tab_stock (\n    source TEXT NOT NULL,\n    scope TEXT NOT NULL,\n    trade_date TEXT NOT NULL,\n    tab_name TEXT NOT NULL,\n    tab_rank INTEGER NOT NULL,\n    stock_code TEXT NOT NULL,\n    stock_name TEXT NOT NULL,\n    market_id INTEGER NOT NULL,\n    reason TEXT NOT NULL,\n    abnormal_reason TEXT NOT NULL,\n    detail_reason TEXT NOT NULL,\n    usable INTEGER NOT NULL,\n    PRIMARY KEY (source, scope, trade_date, tab_name, stock_code)\n) WITHOUT ROWID"
+    }
+  ]
+}

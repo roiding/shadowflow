@@ -1,0 +1,51 @@
+[
+  {
+    "name": "em_direct_industry_catalog",
+    "observed_at": "2026-11-14T10:15:38.018091+08:00",
+    "url": "https://push2.eastmoney.com/api/qt/clist/get",
+    "request": {
+      "pn": 1,
+      "pz": 100,
+      "po": 1,
+      "np": 1,
+      "fltt": 2,
+      "invt": 2,
+      "fid": "f12",
+      "fields": "f12,f14",
+      "fs": "m:90+t:2+f:!50"
+    },
+    "target_date": null,
+    "network_mode": "direct_no_env_proxy",
+    "http": 200,
+    "sha256": "adef14ead119c4dba090e6bd2881e156b3fef7f52b51d73bf45208aa13d3dfec",
+    "business_code": 0,
+    "rows": 100,
+    "declared_total": 496,
+    "elapsed_ms": 113
+  },
+  {
+    "name": "em_direct_day_raw",
+    "observed_at": "2026-11-14T10:15:41.136670+08:00",
+    "url": "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+    "request": {
+      "secid": "0.000001",
+      "klt": 101,
+      "fqt": 0,
+      "beg": "20250317",
+      "end": "20250324",
+      "lmt": 10,
+      "fields1": "f1,f2,f3,f4,f5,f6",
+      "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
+    },
+    "target_date": "2025-03-24",
+    "network_mode": "direct_no_env_proxy",
+    "http": 200,
+    "sha256": "67ea8a15f58747ca5e091367abfc70c495ae4b260461da13c47ec00fd0140dd3",
+    "business_code": 0,
+    "rows": 6,
+    "declared_total": null,
+    "first": "2025-03-17,11.63,11.50,11.67,11.46,4603612,5315522816.99,1.75,-3.93,-0.47,2.37",
+    "last": "2025-03-24,11.41,11.38,11.44,11.34,1164577,1325564001.84,0.88,-0.35,-0.04,0.60",
+    "elapsed_ms": 235
+  }
+]

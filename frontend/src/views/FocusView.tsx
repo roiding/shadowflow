@@ -32,7 +32,7 @@ const FOCUS_FIELDS: Array<{ field: FocusField; label: string; unit: string; fact
   { field: 'rank', label: '榜单排名', unit: '名', factor: 1, step: 1 },
   { field: 'close_price', label: '收盘价', unit: '元', factor: 1, step: 0.01 },
   { field: 'amplitude', label: '振幅', unit: '%', factor: 0.01, step: 0.1 },
-  { field: 'volume', label: '成交量', unit: '股', factor: 1, step: 100 },
+  { field: 'volume', label: '成交量', unit: '手', factor: 1, step: 100 },
   { field: 'up_count', label: '上涨家数', unit: '家', factor: 1, step: 1 },
   { field: 'flat_count', label: '平盘家数', unit: '家', factor: 1, step: 1 },
   { field: 'down_count', label: '下跌家数', unit: '家', factor: 1, step: 1 },

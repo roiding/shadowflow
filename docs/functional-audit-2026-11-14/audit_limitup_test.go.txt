@@ -1,0 +1,24 @@
+package limitup
+
+import (
+    "testing"
+    "time"
+)
+
+func TestFunctionalAuditSingleThemeNormalisationCancelsDecay(t *testing.T) {
+    sealedAt := time.Date(2026, 11, 13, 9, 35, 0, 0, Shanghai())
+    members := []TodayMember{
+        {Code:"000001", LastLimitAt:&sealedAt},
+        {Code:"000002", LastLimitAt:&sealedAt},
+    }
+    profiles := map[string]ThemeStockProfile{}
+    for _, code := range []string{"000001","000002","000003"} {
+        profiles[code] = ThemeStockProfile{Code:code, Tags:[]ThemeTag{{Code:"芯片", Name:"芯片", Occurrences:2, Source:ThemeSourceTHS}}}
+    }
+    early := ComputeThemeMainline(members, profiles, sealedAt, nil, nil)
+    late := ComputeThemeMainline(members, profiles, time.Date(2026,11,13,14,55,0,0,Shanghai()), []Event{{Code:"000003"}}, nil)
+    if len(early)!=1 || len(late)!=1 || early[0].Weight!=1 || late[0].Weight!=1 || late[0].Freshness>=early[0].Freshness {
+        t.Fatalf("diagnostic behavior changed: early=%+v late=%+v", early,late)
+    }
+    t.Logf("observed: early weight=%.2f; late freshness=%.4f quality=%.4f but weight=%.2f", early[0].Weight,late[0].Freshness,late[0].SealQuality,late[0].Weight)
+}

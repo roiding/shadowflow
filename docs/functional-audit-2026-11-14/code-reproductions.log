@@ -1,0 +1,20 @@
+=== RUN   TestFunctionalAuditRawSplitLabelAndCalendarGap
+2026/11/14 10:23:47 INFO stock universe narrowed to HS: BSE prints removed tables=rank_snapshot,stock_research_5m,stock_kline_source
+    functional_audit_overlay_test.go:45: observed: horizon=1 maps Sep02->Sep04; raw 10->5 gives return=-0.5; a 2-for-1 split would have economic return=0
+--- PASS: TestFunctionalAuditRawSplitLabelAndCalendarGap (0.08s)
+=== RUN   TestFunctionalAuditCumulativeMoneyDividedBySingleBucket
+2026/11/14 10:23:48 INFO stock universe narrowed to HS: BSE prints removed tables=rank_snapshot,stock_research_5m,stock_kline_source
+    functional_audit_overlay_test.go:67: observed historical main-flow=480.00%, cumulative-consistent result=10%; historical turnover=0.10%, cumulative-consistent result=4.8%
+--- PASS: TestFunctionalAuditCumulativeMoneyDividedBySingleBucket (0.03s)
+PASS
+ok  	github.com/roiding/shadowflow/internal/repository/sqlite	6.583s
+=== RUN   TestFunctionalAuditSingleThemeNormalisationCancelsDecay
+    functional_audit_overlay_test.go:23: observed: early weight=1.00; late freshness=0.3412 quality=0.8000 but weight=1.00
+--- PASS: TestFunctionalAuditSingleThemeNormalisationCancelsDecay (0.00s)
+PASS
+ok  	github.com/roiding/shadowflow/internal/limitup	5.218s
+=== RUN   TestFunctionalAuditOverwritesEndpointPrices
+    functional_audit_overlay_test.go:26: observed: source first open 9.7 -> 10.0; source last close 9.6 -> 10.5, accepted without a correction flag
+--- PASS: TestFunctionalAuditOverwritesEndpointPrices (0.00s)
+PASS
+ok  	github.com/roiding/shadowflow/internal/datasource/thsquote	2.658s

@@ -201,6 +201,9 @@ func OpenWithReadConns(path string, readConns int) (*Store, error) {
 	if err := migrateStockUniverseHS(store); err != nil {
 		return nil, fmt.Errorf("migrate stock universe to HS: %w", err)
 	}
+	if err := migrateTHSVolumeLots(store); err != nil {
+		return nil, fmt.Errorf("normalize THS kline volume units: %w", err)
+	}
 	if err := migrateResearchCloseModel(db); err != nil {
 		return nil, fmt.Errorf("migrate 15:00 close snapshots: %w", err)
 	}
@@ -665,6 +668,42 @@ WHERE name='stock_universe_hs_v1')`).Scan(&migrated); err != nil {
 	slog.Info("stock universe narrowed to HS: BSE prints removed",
 		"tables", "rank_snapshot,stock_research_5m,stock_kline_source")
 	return nil
+}
+
+// migrateTHSVolumeLots rewrites THS-sourced five-minute rows from shares into
+// lots. THS reports field 13 in shares while Eastmoney reports lots, so the
+// first THS archive (2026-11-13) was stored 100x too large and its derived
+// turnover rate was inflated by the same factor. Only rows whose provenance is
+// THS are touched; Eastmoney rows and unknown legacy rows stay as-is. The
+// marker makes the rewrite idempotent because rounding is not reversible.
+func migrateTHSVolumeLots(store *Store) error {
+	var migrated int
+	if err := store.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM database_maintenance
+WHERE name='ths_volume_lots_v1')`).Scan(&migrated); err != nil {
+		return err
+	}
+	if migrated == 1 {
+		return nil
+	}
+	tx, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE stock_research_5m AS research SET
+volume=(volume+50)/100,
+turnover_rate_ppm=(research.turnover_rate_ppm+50)/100
+WHERE research.kline_available=1
+AND EXISTS(SELECT 1 FROM stock_kline_source source
+	WHERE source.trade_date=research.trade_date AND source.market=research.market
+	AND source.code=research.code AND source.source=? )`, graymarket.KlineSourceTHSFiveMinute); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO database_maintenance(name,completed_at) VALUES('ths_volume_lots_v1',?)`,
+		formatTimestamp(time.Now().UTC())); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // migrateStockResearchUniverse removes placeholder five-minute rows for

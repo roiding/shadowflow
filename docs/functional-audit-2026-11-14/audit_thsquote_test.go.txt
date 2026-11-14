@@ -1,0 +1,27 @@
+package thsquote
+
+import (
+    "encoding/json"
+    "testing"
+    "time"
+
+    "github.com/roiding/shadowflow/internal/graymarket"
+)
+
+func TestFunctionalAuditOverwritesEndpointPrices(t *testing.T) {
+    zone := time.FixedZone("Asia/Shanghai",28800)
+    quote := klineQuote{Code:"000001", Market:"33", DataFields:[]string{"1","7","8","9","11","13","19"}}
+    for i:=0;i<48;i++ {
+        at:=time.Date(2026,11,13,9,35,0,0,zone).Add(time.Duration(i)*5*time.Minute)
+        if i>=24 { at=time.Date(2026,11,13,13,5,0,0,zone).Add(time.Duration(i-24)*5*time.Minute) }
+        values:=[]any{at.UnixMilli(),9.7,11.0,9.0,9.6,200,2000}
+        row:=make([]json.RawMessage,len(values))
+        for j,value:=range values { row[j],_=json.Marshal(value) }
+        quote.Value=append(quote.Value,row)
+    }
+    stock:=graymarket.RankRecord{Code:"000001",Market:0,TradeDate:"2026-11-13",OpenPrice:10,HighPrice:11,LowPrice:9,ClosePrice:10.5,PreviousClose:10,Volume:96,TurnoverRate:0.01}
+    points,err:=decodePoints(quote,stock,time.Now())
+    if err!=nil { t.Fatal(err) }
+    if points[0].OpenPrice!=10 || points[47].ClosePrice!=10.5 { t.Fatal("diagnostic behavior changed") }
+    t.Logf("observed: source first open 9.7 -> %.1f; source last close 9.6 -> %.1f, accepted without a correction flag",points[0].OpenPrice,points[47].ClosePrice)
+}
