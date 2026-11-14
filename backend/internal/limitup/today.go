@@ -1073,9 +1073,10 @@ func liveCandidateScore(candidate *TodayCandidate, histories map[string]Candidat
 		activeWeight += TodayLiveWeightTurnover
 	}
 	if candidate.VolumeRatio != nil {
-		// EastMoney's volume ratio is already self-normalised: current
+		// The supplier's volume ratio is already self-normalised: current
 		// cumulative volume divided by this stock's own recent same-time
-		// average. Use it directly instead of comparing stocks to each other.
+		// average. Eastmoney f10 and THS field 1771976 share that scale, so
+		// use it directly instead of comparing stocks to each other.
 		volumeQuality := clamp01(*candidate.VolumeRatio / 2)
 		weightedScore += TodayLiveWeightVolume * volumeQuality
 		activeWeight += TodayLiveWeightVolume
